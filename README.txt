@@ -39,15 +39,5 @@ PostgreSQL is used by lstm-autoencoder; schema is auto-initialized on start. Con
 # Kafka Topics
 Default topics (created by Kafka container): zeek-conn, zeek-http, zeek-dns, zeek-ssl, plus malicious-* outputs and supervised-* outputs.
 
-# Models and Large Files
-- Model artifacts (.joblib, .h5, etc.) are intentionally git-ignored to keep the repo under GitHub size limits. Place needed models into `supervised/API/app/models/` (or bind-mount via volumes) before running.
-- PCAP samples are also ignored; mount your own captures to feed Zeek.
 
-# Git / Push Notes
-- Remote (SSH): git@github.com:alixa13/anomaly-with-correct-unsupervised.git
-- If you amend history to drop large files, force push: `git push -u origin main -f`
-
-# Quick Troubleshooting
-- Permission denied (publickey) on push: ensure ssh-agent has your key (`ssh-add -l`), and GitHub has the public key.
-- Large file push rejected: ensure models/pcaps remain untracked (see .gitignore).
 

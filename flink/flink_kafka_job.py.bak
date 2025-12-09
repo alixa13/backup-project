@@ -1,0 +1,52 @@
+import json
+from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.datastream.connectors.kafka import FlinkKafkaConsumer
+from pyflink.common.serialization import SimpleStringSchema
+from pyflink.common.typeinfo import Types
+
+
+def kafka_flink_job():
+    # Set up the Flink execution environment
+    env = StreamExecutionEnvironment.get_execution_environment()
+    env.set_parallelism(1)
+
+    # Kafka consumer configuration
+    kafka_props = {
+        'bootstrap.servers': 'kafka:9092',  # Kafka broker address
+        'group.id': 'flink-zeek-consumer',
+        'auto.offset.reset': 'earliest'  # Start consuming from the beginning if no offsets exist
+    }
+
+    # Create a Kafka consumer
+    kafka_consumer = FlinkKafkaConsumer(
+        topics='zeek_logs',
+        deserialization_schema=SimpleStringSchema(),  # Deserialize messages as raw strings
+        properties=kafka_props
+    )
+
+    # Add Kafka as a source to the Flink environment
+    raw_logs = env.add_source(kafka_consumer)
+
+    # Process logs: parse JSON and filter valid messages
+    def parse_log(log_line):
+        try:
+            # Parse the JSON message
+            log_data = json.loads(log_line)
+            return log_data
+        except json.JSONDecodeError:
+            print(f"Invalid JSON received: {log_line}")
+            return None  # Ignore invalid messages
+
+    parsed_logs = raw_logs.map(parse_log, output_type=Types.PICKLED_BYTE_ARRAY()) \
+        .filter(lambda log: log is not None)  # Exclude invalid messages
+
+    # Print the parsed logs to the console
+    parsed_logs.print()
+
+    # Execute the Flink job
+    env.execute("Kafka to Flink Log Processor")
+
+
+if __name__ == "__main__":
+    kafka_flink_job()
+

@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Environments
+.venv/
+venv/
+*/.venv/
+*/venv/
+
+# IDE
+.vscode/
+*.swp
+
+# Logs & temp
+*.log
+monitor_log_*.txt
+
+# Data/model artifacts
+lstm-autoencoder/data/
+lstm-autoencoder/app/data/
+lstm-autoencoder/models/
+supervised/tmp/
+supervised/API/app/models/*.joblib
+supervised/API/app/models/*.h5
+supervised/API/app/models/*.pb
+supervised/API/app/models/*.ckpt
+supervised/API/app/models/*.pkl
+supervised/API/app/models/*.sav
+supervised/API/app/models/*.pt
+
+# Build outputs
+flink/jars/
+FlinkKafkaProject/target/
+
+# Captures and large samples
+pcap/
+
+# Misc
+.DS_Store

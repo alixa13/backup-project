@@ -1,0 +1,1 @@
+@load ./kafka.zeek

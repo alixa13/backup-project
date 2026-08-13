@@ -1203,14 +1203,13 @@ git commit -m "feat(domain): add SourceKey record and bounded SourceWindowState 
 **Interfaces:**
 - Produces: five fixture files under `tests/fixtures/zeek_conn/` consumed by Task 7's parser tests and Task 8's mapper tests, and Task 14's end-to-end test.
 
-- [ ] **Step 1: Write the failing sanity test**
+`domain` never gains a Jackson dependency, in test scope or otherwise — the Global Constraints rule ("domain: zero imports of Kafka, Flink, ClickHouse, ONNX, or Jackson, enforced by the module's own dependency list") stays literally true for the whole plan, not just for main code. The sanity check below uses a small hand-rolled brace-balance scanner instead. It is deliberately not a real JSON parser — Task 7's `JsonZeekConnParser` (in `adapter-kafka`, which does depend on Jackson) is what actually validates these fixtures' structure and content. This test only proves the fixture files exist, are readable, and are shaped roughly like the two categories they're meant to represent (well-formed vs. deliberately broken).
 
-This test only proves the fixture directory and files are readable JSON (or, for the malformed one, readable bytes) before later tasks build real behavior on top of them.
+- [ ] **Step 1: Write the failing sanity test**
 
 ```java
 package io.netsecml.platform.domain.event;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -1222,19 +1221,51 @@ class ZeekConnFixturesReadableTest {
     private static final Path FIXTURES = Paths.get("..", "..", "tests", "fixtures", "zeek_conn");
 
     @Test
-    void validFixturesParseAsJsonObjects() throws IOException {
-        ObjectMapper mapper = new ObjectMapper();
+    void validFixturesHaveBalancedJsonBraces() throws IOException {
         for (String name : new String[]{"valid-tcp-ssl.json", "valid-udp-dns.json"}) {
-            byte[] bytes = Files.readAllBytes(FIXTURES.resolve(name));
-            assertTrue(mapper.readTree(bytes).isObject(), name + " must parse as a JSON object");
+            String content = Files.readString(FIXTURES.resolve(name));
+            assertTrue(hasBalancedBraces(content), name + " must have balanced { } outside of string literals");
         }
     }
 
     @Test
-    void malformedFixtureIsNotValidJson() throws IOException {
-        ObjectMapper mapper = new ObjectMapper();
-        byte[] bytes = Files.readAllBytes(FIXTURES.resolve("malformed.json"));
-        assertThrows(Exception.class, () -> mapper.readTree(bytes));
+    void malformedFixtureHasUnbalancedBraces() throws IOException {
+        String content = Files.readString(FIXTURES.resolve("malformed.json"));
+        assertFalse(hasBalancedBraces(content), "malformed.json is deliberately missing a closing brace");
+    }
+
+    /**
+     * Skips characters inside double-quoted string literals (respecting backslash escapes)
+     * so a brace inside a JSON string value does not affect the count.
+     */
+    private boolean hasBalancedBraces(String content) {
+        int depth = 0;
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = 0; i < content.length(); i++) {
+            char c = content.charAt(i);
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                } else if (c == '\\') {
+                    escaped = true;
+                } else if (c == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+            } else if (c == '{') {
+                depth++;
+            } else if (c == '}') {
+                depth--;
+                if (depth < 0) {
+                    return false;
+                }
+            }
+        }
+        return depth == 0 && !inString;
     }
 }
 ```
@@ -1242,24 +1273,9 @@ class ZeekConnFixturesReadableTest {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `./mvnw -pl modules/domain test -Dtest=ZeekConnFixturesReadableTest`
-Expected: FAIL — fixture files do not exist yet, and `domain` has no Jackson dependency yet either (this surfaces now, fixed in Step 3).
+Expected: FAIL — fixture files do not exist yet, so `Files.readString(...)` throws `NoSuchFileException`.
 
-- [ ] **Step 3: Add Jackson as a test-scope dependency to `domain`**
-
-This test module needs Jackson only to sanity-check fixtures are valid JSON; production `domain` code still imports nothing from Jackson (checked in Step 5).
-
-Modify `modules/domain/pom.xml` — add inside `<dependencies>`, before the closing tag:
-
-```xml
-    <dependency>
-      <groupId>com.fasterxml.jackson.core</groupId>
-      <artifactId>jackson-databind</artifactId>
-      <version>2.17.1</version>
-      <scope>test</scope>
-    </dependency>
-```
-
-- [ ] **Step 4: Create the source contract and fixture files**
+- [ ] **Step 3: Create the source contract and fixture files**
 
 Create `contracts/source/zeek-conn-source-v1.json`:
 
@@ -1371,12 +1387,12 @@ Create `tests/fixtures/zeek_conn/malformed.json`:
 { "id": "Cbroken", "ts": 1786608040.0, "id_orig_h": "10.0.0.5"
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 4: Run test to verify it passes**
 
 Run: `./mvnw -pl modules/domain test -Dtest=ZeekConnFixturesReadableTest`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add contracts/source/zeek-conn-source-v1.json \
@@ -1385,7 +1401,6 @@ git add contracts/source/zeek-conn-source-v1.json \
         tests/fixtures/zeek_conn/missing-required-field.json \
         tests/fixtures/zeek_conn/invalid-port.json \
         tests/fixtures/zeek_conn/malformed.json \
-        modules/domain/pom.xml \
         modules/domain/src/test/java/io/netsecml/platform/domain/event/ZeekConnFixturesReadableTest.java
 git commit -m "feat(contracts): add zeek-conn-source-v1 contract and sanitized fixtures"
 ```

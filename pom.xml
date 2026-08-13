@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>io.netsecml.platform</groupId>
+  <artifactId>ml-platform</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+
+  <name>Network Security ML Platform</name>
+  <description>
+    Kafka conn telemetry -> Flink feature pipeline -> CPU ONNX inference -> Kafka outputs
+    -> asynchronous ClickHouse archive. Java 21 / Flink 2.2.1, two-engineer MVP, no GPU.
+    This POM defines the reactor only. Step 1 scope: empty, compiling child modules.
+    Infrastructure and feature dependencies are added module-by-module in later
+    implementation steps (see Repository_Structure.md, Section D and E).
+  </description>
+
+  <modules>
+    <module>modules/domain</module>
+    <module>modules/ports</module>
+    <module>modules/application</module>
+    <module>modules/adapter-kafka</module>
+    <module>modules/adapter-flink</module>
+    <module>modules/adapter-onnx</module>
+    <module>modules/adapter-clickhouse</module>
+    <module>modules/adapter-registry-filesystem</module>
+    <module>modules/adapter-monitoring</module>
+    <module>modules/bootstrap-online-job</module>
+    <module>modules/bootstrap-archive-job</module>
+  </modules>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.compiler.release>21</maven.compiler.release>
+    <junit.version>5.10.2</junit.version>
+    <maven.compiler.plugin.version>3.13.0</maven.compiler.plugin.version>
+    <maven.surefire.plugin.version>3.2.5</maven.surefire.plugin.version>
+  </properties>
+
+  <!--
+    Dependency management is intentionally minimal in Step 1: only the shared test
+    framework. Flink, Kafka, ONNX Runtime, ClickHouse, and Jackson versions are added
+    to dependencyManagement here when their owning module is implemented, per the
+    "Initial Java dependencies" list in Repository_Structure.md Section D.
+  -->
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.junit</groupId>
+        <artifactId>junit-bom</artifactId>
+        <version>${junit.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>${maven.compiler.plugin.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>${maven.surefire.plugin.version}</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
+</project>

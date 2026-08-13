@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netsec-ml"
+version = "0.1.0"
+description = "CPU-only training project for the Network Security ML Platform. Consumes canonical Java/Flink feature vectors only; never reimplements Zeek parsing or feature extraction."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+
+# Step 1 scope: dependency list only, no implementation. Versions are pinned
+# starting at Roadmap.md Day 6-8 (dataset snapshot, training, ONNX export).
+dependencies = [
+    "scikit-learn",
+    "skl2onnx",
+    "onnxruntime",
+    "clickhouse-connect",
+    "pyarrow",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

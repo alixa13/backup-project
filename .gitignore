@@ -1,0 +1,51 @@
+# --- Java / Maven ---
+target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+.classpath
+.project
+.settings/
+*.iml
+.idea/
+
+# --- Python (training/) ---
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+
+# --- Environment / secrets ---
+.env
+*.env.local
+*.pem
+*.key
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+
+# --- Runtime volumes (see respective README.md for what's tracked) ---
+models/**
+!models/.gitignore
+!models/README.md
+
+artifacts/**
+!artifacts/.gitignore
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Local tool state (not shared team config) ---
+.claude/settings.local.json
+.superpowers/

@@ -1,0 +1,4 @@
+# Runtime model artifacts are versioned by the registry manifest, not Git.
+*
+!.gitignore
+!README.md

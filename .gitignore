@@ -49,3 +49,6 @@ logs/
 # --- Local tool state (not shared team config) ---
 .claude/settings.local.json
 .superpowers/
+
+# --- Git worktrees for isolated plan execution ---
+.worktrees/

@@ -62,11 +62,14 @@ public final class OnlineFeatureJob {
             .process(new ConnFeatureProcessFunction())
             .name("conn-feature-extraction");
 
+        FeatureVectorSerializer featureSerializer = new FeatureVectorSerializer();
+        RejectedRecordSerializer rejectedSerializer = new RejectedRecordSerializer();
+
         KafkaSink<FeatureVector> featureSink = KafkaSink.<FeatureVector>builder()
             .setBootstrapServers(bootstrapServers)
             .setRecordSerializer(KafkaRecordSerializationSchema.<FeatureVector>builder()
                 .setTopic(featureVectorTopic)
-                .setValueSerializationSchema(vector -> new FeatureVectorSerializer().serialize(featureVectorTopic, vector))
+                .setValueSerializationSchema(vector -> featureSerializer.serialize(featureVectorTopic, vector))
                 .build())
             .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
             .build();
@@ -77,7 +80,7 @@ public final class OnlineFeatureJob {
             .setBootstrapServers(bootstrapServers)
             .setRecordSerializer(KafkaRecordSerializationSchema.<RejectedRecord>builder()
                 .setTopic(dlqTopic)
-                .setValueSerializationSchema(r -> new RejectedRecordSerializer().serialize(dlqTopic,
+                .setValueSerializationSchema(r -> rejectedSerializer.serialize(dlqTopic,
                     new RejectedRecordPayload(r.rawPayload(), r.reason().name(), r.detail())))
                 .build())
             .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)

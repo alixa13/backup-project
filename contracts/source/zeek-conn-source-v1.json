@@ -1,0 +1,26 @@
+{
+  "id": "zeek-conn-source-v1",
+  "description": "Required and optional fields for a Zeek conn.log record delivered as one Kafka JSON message.",
+  "requiredFields": [
+    { "name": "id", "type": "string", "notes": "upstream record id, namespaced with sensor to form EventId" },
+    { "name": "ts", "type": "number", "notes": "epoch seconds, may include fractional milliseconds" },
+    { "name": "id_orig_h", "type": "string", "notes": "source IP" },
+    { "name": "id_orig_p", "type": "integer", "notes": "source port, 0-65535" },
+    { "name": "id_resp_h", "type": "string", "notes": "destination IP" },
+    { "name": "id_resp_p", "type": "integer", "notes": "destination port, 0-65535" },
+    { "name": "proto", "type": "string", "notes": "tcp | udp | icmp | other, case-insensitive" },
+    { "name": "conn_state", "type": "string", "notes": "Zeek connection state code" }
+  ],
+  "optionalFields": [
+    { "name": "service", "type": "string", "notes": "dns | http | ssl | other, absent if unidentified" },
+    { "name": "duration", "type": "number", "notes": "seconds, absent for connections with no data" },
+    { "name": "orig_bytes", "type": "integer" },
+    { "name": "resp_bytes", "type": "integer" },
+    { "name": "orig_pkts", "type": "integer" },
+    { "name": "resp_pkts", "type": "integer" },
+    { "name": "missed_bytes", "type": "integer" },
+    { "name": "local_orig", "type": "boolean" },
+    { "name": "local_resp", "type": "boolean" }
+  ],
+  "invalidRecordPolicy": "Malformed JSON or a missing required field routes to netsec.conn.dlq.v1 with a reason code; unknown additive fields are tolerated and ignored."
+}

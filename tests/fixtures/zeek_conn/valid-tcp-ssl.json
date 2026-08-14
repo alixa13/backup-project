@@ -1,0 +1,19 @@
+{
+  "id": "Cabc123XYZ",
+  "ts": 1786608000.123456,
+  "id_orig_h": "10.0.0.5",
+  "id_orig_p": 51820,
+  "id_resp_h": "93.184.216.34",
+  "id_resp_p": 443,
+  "proto": "tcp",
+  "service": "ssl",
+  "conn_state": "SF",
+  "duration": 1.5,
+  "orig_bytes": 2048,
+  "resp_bytes": 4096,
+  "orig_pkts": 10,
+  "resp_pkts": 12,
+  "missed_bytes": 0,
+  "local_orig": true,
+  "local_resp": false
+}

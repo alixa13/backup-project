@@ -1,0 +1,15 @@
+{
+  "id": "Cdef456UVW",
+  "ts": 1786608010.0,
+  "id_orig_h": "10.0.0.5",
+  "id_orig_p": 53421,
+  "id_resp_h": "8.8.8.8",
+  "id_resp_p": 53,
+  "proto": "udp",
+  "service": "dns",
+  "conn_state": "SF",
+  "orig_bytes": 64,
+  "resp_bytes": 128,
+  "orig_pkts": 1,
+  "resp_pkts": 1
+}

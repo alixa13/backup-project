@@ -1,0 +1,29 @@
+{
+  "id": "conn-feature-v1",
+  "semanticVersion": "1.0.0",
+  "sourceContractVersion": "zeek-conn-source-v1",
+  "inputDtype": "float32",
+  "featureCount": 20,
+  "features": [
+    { "index": 0, "name": "duration_ms", "unit": "milliseconds", "missingPolicy": "DEFAULT_ZERO", "formula": "zeek duration seconds * 1000, non-negative" },
+    { "index": 1, "name": "origin_bytes", "unit": "bytes", "missingPolicy": "DEFAULT_ZERO", "formula": "orig_bytes, non-negative" },
+    { "index": 2, "name": "response_bytes", "unit": "bytes", "missingPolicy": "DEFAULT_ZERO", "formula": "resp_bytes, non-negative" },
+    { "index": 3, "name": "origin_packets", "unit": "count", "missingPolicy": "DEFAULT_ZERO", "formula": "orig_pkts, non-negative" },
+    { "index": 4, "name": "response_packets", "unit": "count", "missingPolicy": "DEFAULT_ZERO", "formula": "resp_pkts, non-negative" },
+    { "index": 5, "name": "total_bytes", "unit": "bytes", "missingPolicy": "DEFAULT_ZERO", "formula": "origin_bytes + response_bytes" },
+    { "index": 6, "name": "total_packets", "unit": "count", "missingPolicy": "DEFAULT_ZERO", "formula": "origin_packets + response_packets" },
+    { "index": 7, "name": "bytes_per_packet", "unit": "bytes", "missingPolicy": "DEFAULT_ZERO", "formula": "total_bytes / max(1, total_packets)" },
+    { "index": 8, "name": "response_origin_byte_ratio", "unit": "ratio", "missingPolicy": "DEFAULT_ZERO", "formula": "response_bytes / max(1, origin_bytes)" },
+    { "index": 9, "name": "destination_port", "unit": "port", "missingPolicy": "REQUIRED", "formula": "id_resp_p, exact integer as float32" },
+    { "index": 10, "name": "destination_is_well_known", "unit": "boolean", "missingPolicy": "REQUIRED", "formula": "1 if destination_port in [1,1023] else 0" },
+    { "index": 11, "name": "protocol_tcp", "unit": "boolean", "missingPolicy": "REQUIRED", "formula": "1 if proto == tcp else 0" },
+    { "index": 12, "name": "protocol_udp", "unit": "boolean", "missingPolicy": "REQUIRED", "formula": "1 if proto == udp else 0" },
+    { "index": 13, "name": "service_dns", "unit": "boolean", "missingPolicy": "REQUIRED", "formula": "1 if service == dns else 0" },
+    { "index": 14, "name": "service_http", "unit": "boolean", "missingPolicy": "REQUIRED", "formula": "1 if service == http else 0" },
+    { "index": 15, "name": "service_ssl", "unit": "boolean", "missingPolicy": "REQUIRED", "formula": "1 if service == ssl else 0" },
+    { "index": 16, "name": "connection_failed", "unit": "boolean", "missingPolicy": "REQUIRED", "formula": "1 if conn_state in [S0,REJ,RSTO,RSTR] else 0" },
+    { "index": 17, "name": "source_connections_5m", "unit": "count", "missingPolicy": "DEFAULT_ZERO", "formula": "count of prior connections for (sensor,sourceIp) in trailing 5 one-minute buckets" },
+    { "index": 18, "name": "source_bytes_5m", "unit": "bytes", "missingPolicy": "DEFAULT_ZERO", "formula": "total_bytes sum for (sensor,sourceIp) in trailing 5 one-minute buckets" },
+    { "index": 19, "name": "source_failed_connections_5m", "unit": "count", "missingPolicy": "DEFAULT_ZERO", "formula": "connection_failed count for (sensor,sourceIp) in trailing 5 one-minute buckets" }
+  ]
+}

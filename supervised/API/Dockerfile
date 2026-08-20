@@ -1,18 +1,23 @@
-# Use an official Python base image
+# Build context must be ./supervised (parent of API) so we can include final.py and models.
 FROM python:3.9
 
-# Set the working directory inside the container
 WORKDIR /app
 
-# Copy requirements and install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# API dependencies (upgrade pip so PyPI is reachable)
+COPY API/requirements.txt .
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir -r requirements.txt
 
-# Copy the entire project into the container
-COPY . .
+# API app and entrypoint
+COPY API/run.py .
+COPY API/app ./app
 
-# Expose the port that your Flask app listens on
+# final.py for IDSModel (7-class); must be on Python path so "from final import IDSModel" works
+COPY final.py .
+
+# Models: ids_best*.pkl (7-class) + legacy joblib from API/app/models
+COPY models/ /app/models/
+COPY API/app/models/ /app/models/
+
 EXPOSE 8000
-
-# Specify the command to run the Flask app with gunicorn
 CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--threads", "4", "--timeout", "120", "run:app"]

@@ -7,7 +7,7 @@ BOOTSTRAP=${BOOTSTRAP:-localhost:9092}
 TOPICS=(
   "zeek-conn" "zeek-dns" "zeek-http" "zeek-ssl"
   "malicious-conn" "malicious-dns" "malicious-http" "malicious-ssl"
-  "supervised-conn" "supervised-dns" "supervised-http" "supervised-ssl"
+  "supervised-unsw42"
 )
 
 echo "Purging records (not deleting topics) on $BOOTSTRAP via $KAFKA_CTN ..."

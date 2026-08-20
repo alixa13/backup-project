@@ -1,0 +1,3 @@
+# TaskManager workers for standalone cluster (read by start-cluster.sh).
+# Single container: one entry so one TaskManager runs in this container.
+localhost

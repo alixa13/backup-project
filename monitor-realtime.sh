@@ -19,6 +19,7 @@ POSTGRES_CONTAINER="postgres"
 FLINK_CONTAINER="flink"
 ZEEK_CONTAINER="zeek"
 LOG_TYPES=("conn" "dns" "http" "ssl")
+# Actual refresh time = data fetch (Kafka, API, Docker, Postgres) + 1s sleep
 
 # Create log file with timestamp
 LOG_FILE="monitor_log_$(date '+%Y%m%d_%H%M%S').txt"
@@ -45,6 +46,7 @@ for log_type in "${LOG_TYPES[@]}"; do
 done
 
 iteration=0
+loop_start=$(date +%s)
 while true; do
     iteration=$((iteration + 1))
     timestamp=$(date '+%H:%M:%S')
@@ -89,13 +91,11 @@ while true; do
     SELECT state, count(*) FROM pg_stat_activity WHERE datname = 'lstm_db' GROUP BY state;
     " 2>/dev/null | tr '\n' ' ')
     
-    # Clear screen (move cursor up)
+    # Clear screen so update header and data render as one frame (no overlap)
     if [ $iteration -gt 1 ]; then
-        for ((i=0; i<50; i++)); do
-            echo -en "\033[1A\033[2K"
-        done
+        clear
     fi
-    
+
     echo -e "${CYAN}╔══════════════════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${CYAN}║ Update #$iteration @ $timestamp                                                    ║${NC}"
     echo -e "${CYAN}╚══════════════════════════════════════════════════════════════════════════╝${NC}"
@@ -258,9 +258,13 @@ while true; do
     echo "   Connections: $pg_conn_states"
     echo "   Performance: $pg_stats"
     
+    # Show actual refresh time (data fetch takes several seconds)
+    loop_end=$(date +%s)
+    elapsed=$((loop_end - loop_start))
+    loop_start=$loop_end
     echo ""
-    echo -e "${YELLOW}Refreshing in 1 second... (Press Ctrl+C to stop)${NC}"
-    
+    printf "${YELLOW}Refresh %.1fs | Ctrl+C to stop                    ${NC}\n" "$elapsed"
+
     # === LOG TO FILE ===
     {
         echo ""
@@ -292,7 +296,7 @@ while true; do
         echo "Performance: $pg_stats"
         echo ""
     } >> "$LOG_FILE"
-    
+
     sleep 1
 done
 

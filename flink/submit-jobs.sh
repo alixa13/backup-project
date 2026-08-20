@@ -9,19 +9,9 @@ while [ $attempt -le $max_attempts ]; do
     if curl -s http://localhost:8081/jobs > /dev/null; then
         echo "Flink is ready. Submitting jobs..."
         
-        # Submit supervised jobs
-        echo "Submitting supervised jobs..."
-        echo "Submitting supervised conn job..."
-        /opt/flink/bin/flink run -d /opt/flink/jars/flink-1.0-SNAPSHOT-conn.jar
-        
-        echo "Submitting supervised dns job..."
-        /opt/flink/bin/flink run -d /opt/flink/jars/flink-1.0-SNAPSHOT-dns.jar
-        
-        echo "Submitting supervised http job..."
-        /opt/flink/bin/flink run -d /opt/flink/jars/flink-1.0-SNAPSHOT-http.jar
-        
-        echo "Submitting supervised ssl job..."
-        /opt/flink/bin/flink run -d /opt/flink/jars/flink-1.0-SNAPSHOT-ssl.jar
+        # Submit supervised job (session assembly -> UNSW 42 from all logs). 16 slots (8 + 8 unused).
+        echo "Submitting unified supervised job..."
+        /opt/flink/bin/flink run -p 16 -d /opt/flink/jars/flink-1.0-SNAPSHOT-unified-supervised.jar
         
         # Submit unsupervised jobs with higher parallelism
         echo "Submitting unsupervised jobs..."

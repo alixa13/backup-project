@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.stream.Collectors;
 
 /**
@@ -34,7 +35,7 @@ public class APIClient {
     private static final long HEALTH_CHECK_INTERVAL_MS = 60000; // 1 minute
     
     // Learning status cache (per log_type), to avoid calling the API on every packet
-    private static final long LEARNING_STATUS_CACHE_MS = 10_000L; // 10 seconds
+    private static final long LEARNING_STATUS_CACHE_MS = 30_000L; // 30 seconds (reduced API calls)
     private static final Map<String, Boolean> learningStatusCache = new ConcurrentHashMap<>();
     private static final Map<String, Long> learningStatusLastCheck = new ConcurrentHashMap<>();
     
@@ -308,6 +309,17 @@ public class APIClient {
     }
 
     /**
+     * Get prediction from supervised ML API for UNSW42 (unified session) model.
+     * Uses /predict_unsw42 endpoint with 42 UNSW features.
+     *
+     * @param jsonFeatures JSON array of 42 UNSW features
+     * @return The prediction result, or "unknown" if the request fails.
+     */
+    public static String getSessionPrediction(String jsonFeatures) {
+        return getPrediction("unsw42", jsonFeatures);
+    }
+
+    /**
      * Get learning status from unsupervised ML API.
      *
      * @param logType The log type (conn, http, dns, ssl)
@@ -432,8 +444,8 @@ public class APIClient {
 
             JsonNode response = sendRequest(endpoint, requestJson, APIConfig.getRetryCount());
 
-            if (response != null && response.has("anomaly_scores") && response.get("anomaly_scores").has("mse")) {
-                double score = response.get("anomaly_scores").get("mse").asDouble();
+            if (response != null && response.has("anomaly_scores") && response.get("anomaly_scores").has("mae")) {
+                double score = response.get("anomaly_scores").get("mae").asDouble();
                 LOG.info("[{}] SUCCESS - Received anomaly score: {} for logType: {}", 
                         FUNCTION_NAME, score, logType);
                 return score;
@@ -500,6 +512,70 @@ public class APIClient {
     }
 
     /**
+     * BATCH PREDICTION: Send multiple feature arrays and get anomaly scores in one API call.
+     * 10-100x more efficient than individual calls during detection mode.
+     *
+     * @param logType The log type (conn, http, dns, ssl)
+     * @param featureJsonList List of feature arrays serialized as JSON strings
+     * @return List of anomaly scores (same order as input), or null if failed
+     */
+    public static List<Double> getBatchAnomalyScores(String logType, List<String> featureJsonList) {
+        final String FUNCTION_NAME = "getBatchAnomalyScores";
+
+        if (featureJsonList == null || featureJsonList.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        checkApiHealth();
+        if (!unsupervisedApiHealthy) {
+            LOG.debug("[{}] Skipping batch prediction (API unhealthy)", FUNCTION_NAME);
+            return null;
+        }
+
+        String endpoint = APIConfig.getUnsupervisedPredictEndpoint(logType);
+
+        // Build JSON array
+        String dataArray = featureJsonList.stream()
+                .map(s -> s == null ? "[]" : s)
+                .collect(Collectors.joining(",", "[", "]"));
+        String requestJson = String.format("{\"data\": %s}", dataArray);
+
+        LOG.debug("[{}] Batch predict: {} records to {}", FUNCTION_NAME, featureJsonList.size(), endpoint);
+        JsonNode response = sendRequest(endpoint, requestJson, APIConfig.getRetryCount());
+
+        if (response == null) {
+            LOG.warn("[{}] Batch prediction failed for {}", FUNCTION_NAME, logType);
+            return null;
+        }
+
+        try {
+            // Handle batch response: {"status": "success", "results": [{"mae": 0.5, "is_anomaly": false}, ...]}
+            if (response.has("results") && response.get("results").isArray()) {
+                List<Double> scores = new ArrayList<>();
+                for (JsonNode result : response.get("results")) {
+                    double mae = result.get("mae").asDouble(0.0);
+                    scores.add(mae);
+                }
+                LOG.info("[{}] Batch prediction success: {} scores for {}", FUNCTION_NAME, scores.size(), logType);
+                resetCircuitBreaker();
+                return scores;
+            }
+            // Handle single response (backward compatible)
+            else if (response.has("anomaly_scores") && response.get("anomaly_scores").has("mae")) {
+                double score = response.get("anomaly_scores").get("mae").asDouble();
+                resetCircuitBreaker();
+                return List.of(score);
+            } else {
+                LOG.warn("[{}] Unexpected response format: {}", FUNCTION_NAME, response);
+                return null;
+            }
+        } catch (Exception e) {
+            LOG.warn("[{}] Error parsing batch response: {}", FUNCTION_NAME, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * Report current in-memory buffer size to the unsupervised API so external
      * tools (e.g., lstm-control.sh) can display it. Throttled to avoid chatter.
      */
@@ -529,4 +605,77 @@ public class APIClient {
             LOG.warn("[{}] Failed to report buffer size {} for {}", FUNCTION_NAME, size, logType);
         }
     }
+
+    /**
+     * Get the dynamic anomaly threshold for a specific log type from the unsupervised API.
+     * This threshold is calculated as the 95th percentile of reconstruction errors during training.
+     *
+     * @param logType The log type (conn, http, dns, ssl)
+     * @return The anomaly threshold, or null if not available
+     */
+    public static Double getUnsupervisedThreshold(String logType) {
+        final String FUNCTION_NAME = "getUnsupervisedThreshold";
+        
+        // Validate logType parameter
+        if (logType == null || logType.trim().isEmpty()) {
+            LOG.error("[{}] Invalid logType parameter: {}", FUNCTION_NAME, logType);
+            return null;
+        }
+        
+        String endpoint = APIConfig.getUnsupervisedThresholdEndpoint(logType);
+        LOG.info("[{}] Starting API call - Function: {}, LogType: {}, Endpoint: {}", 
+                FUNCTION_NAME, FUNCTION_NAME, logType, endpoint);
+        
+        try {
+            URL url = new URL(endpoint);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("Accept", "application/json");
+            conn.setRequestProperty("User-Agent", "Java/11");
+            conn.setConnectTimeout(5000);
+            conn.setReadTimeout(10000);
+
+            int responseCode = conn.getResponseCode();
+
+            if (responseCode == 200) {
+                try (InputStream is = conn.getInputStream()) {
+                    String responseText = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+                    LOG.debug("[{}] Response Body: {}", FUNCTION_NAME, responseText);
+                    
+                    JsonNode response = MAPPER.readTree(responseText);
+                    
+                    // Check if threshold is available
+                    if (response.has("has_threshold") && response.get("has_threshold").asBoolean()) {
+                        double threshold = response.get("threshold").asDouble();
+                        LOG.info("[{}] SUCCESS - Retrieved threshold: {} for logType: {}", 
+                                FUNCTION_NAME, threshold, logType);
+                        return threshold;
+                    } else {
+                        LOG.warn("[{}] No threshold available for logType: {} (model may not be trained yet)", 
+                                FUNCTION_NAME, logType);
+                        return null;
+                    }
+                }
+            } else {
+                // Log error response body
+                try (InputStream es = conn.getErrorStream()) {
+                    if (es != null) {
+                        String errorBody = new String(es.readAllBytes(), StandardCharsets.UTF_8);
+                        LOG.warn("[{}] Error Response Body: {}", FUNCTION_NAME, errorBody);
+                    }
+                }
+                
+                LOG.warn("[{}] ERROR - Threshold endpoint returned error: {} (Response code: {})", 
+                        FUNCTION_NAME, endpoint, responseCode);
+            }
+        } catch (Exception e) {
+            LOG.warn("[{}] EXCEPTION - Error calling threshold endpoint: {} - Exception: {}", 
+                    FUNCTION_NAME, endpoint, e.getMessage());
+            LOG.debug("[{}] Full exception details:", FUNCTION_NAME, e);
+        }
+        
+        LOG.info("[{}] Returning null (threshold not available) for logType: {}", FUNCTION_NAME, logType);
+        return null;
+    }
+    
 } 

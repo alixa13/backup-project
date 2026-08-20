@@ -8,12 +8,13 @@ services:
       context: ./flink
       dockerfile: Dockerfile
     container_name: flink
+    restart: unless-stopped
     ports:
       - "8081:8081"
     command: ["/bin/bash", "-c", "/opt/flink/start-flink.sh"]
     environment:
       - JOB_MANAGER_RPC_ADDRESS=flink
-      - taskmanager.numberOfTaskSlots=96
+      - FLINK_CONF_DIR=/opt/flink/config
       # - state.checkpoints.dir=file:///opt/flink/checkpoints  # Disabled checkpointing
     networks:
       - anomaly-detection-network
@@ -31,16 +32,15 @@ services:
     volumes:
       - ./flink/jars/.:/opt/flink/jars
       - ./flink/config:/opt/flink/config
-      - ./flink/config/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
       # - flink-checkpoints:/opt/flink/checkpoints  # Disabled checkpointing
+    # CPU: reservations only (soft sharing); can use idle cores, yields when others need CPU
     deploy:
       resources:
         limits:
-          cpus: '16'
-          memory: 32G
+          memory: 28G
         reservations:
-          cpus: '16'
-          memory: 16G
+          cpus: '8'
+          memory: 20G
 ##################################################
   zookeeper:
     image: wurstmeister/zookeeper
@@ -49,6 +49,13 @@ services:
       - "2181:2181"
     networks:
       - anomaly-detection-network
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 1G
 
   # Kafka
   kafka:
@@ -61,7 +68,7 @@ services:
       # Explicitly configure listeners so the container doesn't need to talk to the host Docker daemon
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_CREATE_TOPICS: "zeek-conn:16:1,zeek-http:16:1,zeek-dns:16:1,zeek-ssl:16:1,malicious-conn:16:1,malicious-http:16:1,malicious-dns:16:1,malicious-ssl:16:1"
+      KAFKA_CREATE_TOPICS: "zeek-conn:16:1,zeek-http:16:1,zeek-dns:16:1,zeek-ssl:16:1,malicious-conn:16:1,malicious-http:16:1,malicious-dns:16:1,malicious-ssl:16:1,supervised-unsw42:16:1"
     depends_on:
       - zookeeper
     networks:
@@ -72,8 +79,16 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+        reservations:
+          cpus: '2'
+          memory: 2G
 
   # Zeek network analyzer
+  # Note: Uses host network mode, resource limits may not apply properly
   zeek:
     build:
       context: ./zeek
@@ -83,7 +98,7 @@ services:
     volumes:
       - ./zeek/zeek-config/.:/usr/local/zeek/share/zeek/site/
       - ./zeek/zeek-etc/node.cfg:/usr/local/zeek/etc/node.cfg
-    command: bash -c "zeekctl deploy && zeek -C -i veth1 "
+    command: bash -c "zeekctl deploy && zeek -C -i veth1"
     depends_on:
       - kafka
     environment:
@@ -92,23 +107,32 @@ services:
       - "kafka:172.18.0.1"
 ##################################################
 
-  # Supervised ML API
+  # Supervised ML API (7-class ids_best + legacy joblib baked into image)
   supervised:
-    build: 
-      context: ./supervised/API
-      dockerfile: Dockerfile
+    build:
+      context: ./supervised
+      dockerfile: API/Dockerfile
     container_name: supervised
     ports:
       - "8000:8000"
     environment:
       MODEL_PATH: /app/models
+      TRUSTED_IPS_PATH: /app/models/trusted_ips.txt
       HOST: "0.0.0.0"
       PORT: 8000
       DEBUG: "False"
     volumes:
-      - supervised-models:/app/models
+      # Mount trusted IPs; ensure the file exists: touch flink/config/trusted_ips.txt
+      - ./flink/config/trusted_ips.txt:/app/models/trusted_ips.txt
     networks:
       - anomaly-detection-network
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          cpus: '2'
+          memory: 2G
 
   # PostgreSQL Database for LSTM Autoencoder
   postgres:
@@ -144,7 +168,7 @@ services:
       - "-c"
       - "maintenance_work_mem=256MB"
       - "-c"
-      - "max_connections=400"
+      - "max_connections=200"
       - "-c"
       - "wal_buffers=32MB"
       - "-c"
@@ -171,11 +195,10 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '8'
-          memory: 4G
+          memory: 6G
         reservations:
-          cpus: '4'
-          memory: 2G
+          cpus: '2'
+          memory: 4G
 
   # LSTM Autoencoder for Unsupervised ML
   # This service receives data through Flink jobs only
@@ -184,6 +207,7 @@ services:
       context: ./lstm-autoencoder
       dockerfile: Dockerfile
     container_name: lstm-autoencoder
+    restart: unless-stopped
     ports:
       - "5000:5000"
     environment:
@@ -197,8 +221,14 @@ services:
       DB_NAME: "lstm_db"
       DB_USER: "lstm_user"
       DB_PASSWORD: "lstm_password"
-      DB_POOL_SIZE: "60"
-      DB_MAX_OVERFLOW: "120"
+      # Connection pool: 80 connections (16 workers × 5 connections per worker)
+      DB_POOL_SIZE: "40"
+      DB_MAX_OVERFLOW: "80"
+      # CPU-only: no GPU in container (avoids cuInit / CUDA 303 errors in logs)
+      CUDA_VISIBLE_DEVICES: ""
+      TF_CPP_MIN_LOG_LEVEL: "3"
+      # Worker/thread counts: set by configure-resources.sh override (GUNICORN_WORKERS + TF_*).
+      GUNICORN_WORKERS: "16"
     volumes:
       - lstm-models:/app/models
       - lstm-data:/app/data
@@ -210,14 +240,14 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+    # CPU: reservations only (no hard limit). Uses idle cores when training, yields when others need CPU.
     deploy:
       resources:
         limits:
-          cpus: '12'
-          memory: 8G
+          memory: 16G
         reservations:
-          cpus: '8'
-          memory: 4G
+          cpus: '16'
+          memory: 12G
 
 networks:
   anomaly-detection-network:

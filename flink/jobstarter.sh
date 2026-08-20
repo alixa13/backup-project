@@ -4,11 +4,8 @@ set -e
 # Ensure the JAR files exist
 JAR_DIR="/opt/flink/jars"
 
-# Supervised job JARs
-SUPERVISED_CONN_JAR="$JAR_DIR/flink-1.0-SNAPSHOT-conn.jar"
-SUPERVISED_DNS_JAR="$JAR_DIR/flink-1.0-SNAPSHOT-dns.jar"
-SUPERVISED_SSL_JAR="$JAR_DIR/flink-1.0-SNAPSHOT-ssl.jar"
-SUPERVISED_HTTP_JAR="$JAR_DIR/flink-1.0-SNAPSHOT-http.jar"
+# Supervised job JAR (session assembly: conn+http+dns+ssl -> UNSW 42 features)
+SUPERVISED_UNIFIED_JAR="$JAR_DIR/flink-1.0-SNAPSHOT-unified-supervised.jar"
 
 # Unsupervised job JARs
 UNSUPERVISED_CONN_JAR="$JAR_DIR/flink-1.0-SNAPSHOT-unsupervised-conn.jar"
@@ -21,7 +18,7 @@ MAX_RETRY=20
 COUNT=0
 
 while [ $COUNT -lt $MAX_RETRY ]; do
-    if [ -f "$SUPERVISED_CONN_JAR" ] && [ -f "$SUPERVISED_DNS_JAR" ] && [ -f "$SUPERVISED_SSL_JAR" ] && [ -f "$SUPERVISED_HTTP_JAR" ] && \
+    if [ -f "$SUPERVISED_UNIFIED_JAR" ] && \
        [ -f "$UNSUPERVISED_CONN_JAR" ] && [ -f "$UNSUPERVISED_DNS_JAR" ] && [ -f "$UNSUPERVISED_SSL_JAR" ] && [ -f "$UNSUPERVISED_HTTP_JAR" ]; then
         echo "All JAR files are available."
         break
@@ -70,8 +67,8 @@ submit_job() {
         flink run -p "$parallelism" -d "$jar_path"
         if [ $? -eq 0 ]; then
             echo "$job_name job submitted successfully"
-            # Wait a bit between job submissions to avoid overwhelming the cluster
-            sleep 5
+            # Give Kafka consumer group time to fully initialize before next job starts
+            sleep 30
         else
             echo "ERROR: Failed to submit $job_name job"
         fi
@@ -80,13 +77,10 @@ submit_job() {
     fi
 }
 
-# Submit supervised jobs (moderate parallelism)
-echo "Submitting supervised jobs..."
-SUP_PAR=4
-submit_job "$SUPERVISED_CONN_JAR" "Supervised Connection" "$SUP_PAR"
-submit_job "$SUPERVISED_DNS_JAR" "Supervised DNS" "$SUP_PAR"
-submit_job "$SUPERVISED_SSL_JAR" "Supervised SSL" "$SUP_PAR"
-submit_job "$SUPERVISED_HTTP_JAR" "Supervised HTTP" "$SUP_PAR"
+# Submit supervised job (session assembly -> UNSW 42 from all logs). Use 16 slots (8 base + 8 unused).
+echo "Submitting unified supervised job (conn+http+dns+ssl -> UNSW42)..."
+SUP_PAR=16
+submit_job "$SUPERVISED_UNIFIED_JAR" "Unified Supervised (UNSW42)" "$SUP_PAR"
 
 # Wait a bit before submitting unsupervised jobs
 echo "Waiting before submitting unsupervised jobs..."

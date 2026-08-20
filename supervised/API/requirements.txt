@@ -3,7 +3,9 @@ scikit-learn
 pandas
 numpy
 joblib
-tensorflow
+xgboost
+lightgbm
+imbalanced-learn
 python-dotenv
 flask-cors
 gunicorn

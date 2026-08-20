@@ -1,22 +1,18 @@
 """
 app/config.py
 
-Holds application configuration constants, model paths, etc.
+UNSW-NB15 42-feature model configuration.
 """
 import os
 
-# Example environment variables (one model per log type)
-MODEL_PATH_CONN = os.getenv("MODEL_PATH_CONN", "./app/models/random_forest_cpu_model_conn.joblib")
-ENCODER_PATH_CONN = os.getenv("ENCODER_PATH_CONN", "./app/models/label_encoder_conn.joblib")
+# Default algorithm: xgboost (high performance), can also be rf or logistic
+MODEL_ALGORITHM = os.getenv("MODEL_ALGORITHM", "xgboost")
 
-MODEL_PATH_SSL = os.getenv("MODEL_PATH_SSL", "./app/models/random_forest_cpu_model_ssl.joblib")
-ENCODER_PATH_SSL = os.getenv("ENCODER_PATH_SSL", "./app/models/label_encoder_ssl.joblib")
-
-MODEL_PATH_DNS = os.getenv("MODEL_PATH_DNS", "./app/models/random_forest_cpu_model_dns.joblib")
-ENCODER_PATH_DNS = os.getenv("ENCODER_PATH_DNS", "./app/models/label_encoder_dns.joblib")
-
-MODEL_PATH_HTTP = os.getenv("MODEL_PATH_HTTP", "./app/models/random_forest_cpu_model_http.joblib")
-ENCODER_PATH_HTTP = os.getenv("ENCODER_PATH_HTTP", "./app/models/label_encoder_http.joblib")
+# UNSW-NB15 42-feature model: prefer final.py IDSModel (ids_best*.pkl), else train.py joblib
+IDS_BEST_MODEL_PATH = os.getenv("IDS_BEST_MODEL_PATH", "")  # path to .pkl or dir with ids_best*.pkl
+MODEL_PATH_UNSW42 = os.getenv("MODEL_PATH_UNSW42", "./app/models/xgboost_unsw42.joblib")
+ENCODER_PATH_UNSW42 = os.getenv("ENCODER_PATH_UNSW42", "./app/models/label_encoder_unsw42.joblib")
+PREPROCESSOR_PATH_UNSW42 = os.getenv("PREPROCESSOR_PATH_UNSW42", "./app/models/preprocessor_unsw42.joblib")
 
 # Flask app settings
 HOST = "0.0.0.0"

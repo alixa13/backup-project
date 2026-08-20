@@ -19,6 +19,14 @@ public class APIConfig {
     private static Properties properties = new Properties();
     private static boolean initialized = false;
 
+    /**
+     * Defensive cleanup for topic strings loaded from properties.
+     * Trailing whitespace can cause Kafka InvalidTopicException.
+     */
+    private static String sanitizeTopic(String topic) {
+        return topic == null ? null : topic.trim();
+    }
+
     // Initialize configuration on first access
     static {
         loadConfig();
@@ -114,6 +122,16 @@ public class APIConfig {
     }
 
     /**
+     * Get supervised API endpoint for UNSW42 (unified session model).
+     * @return The full URL for /predict_unsw42
+     */
+    public static String getSupervisedUnsw42Endpoint() {
+        String baseUrl = getSupervisedBaseUrl();
+        String endpoint = getProperty("supervised.api.unsw42.endpoint", "/predict_unsw42");
+        return baseUrl + endpoint;
+    }
+
+    /**
      * Get unsupervised API base URL
      * @return The base URL for unsupervised API
      */
@@ -166,6 +184,16 @@ public class APIConfig {
      */
     public static String getUnsupervisedBufferUpdateEndpoint(String logType) {
         return getUnsupervisedEndpoint(logType, "buffer.update");
+    }
+
+    /**
+     * Get unsupervised API threshold endpoint for a specific log type
+     * 
+     * @param logType The log type (conn, http, dns, ssl)
+     * @return The full URL for the threshold endpoint
+     */
+    public static String getUnsupervisedThresholdEndpoint(String logType) {
+        return getUnsupervisedEndpoint(logType, "threshold");
     }
 
     /**
@@ -230,11 +258,9 @@ public class APIConfig {
     public static boolean testAllApiEndpoints() {
         boolean allSuccessful = true;
         
-        // Test supervised endpoints
-        for (String logType : new String[]{"conn", "http", "dns", "ssl"}) {
-            if (!testApiConnectivity(getSupervisedEndpoint(logType))) {
-                allSuccessful = false;
-            }
+        // Test supervised endpoint (UNSW42 only)
+        if (!testApiConnectivity(getSupervisedEndpoint("unsw42"))) {
+            allSuccessful = false;
         }
         
         // Test unsupervised endpoints
@@ -270,7 +296,7 @@ public class APIConfig {
      * @return The topic name for the specified log type
      */
     public static String getKafkaTopic(String logType) {
-        return getProperty("kafka.topic." + logType, "zeek-" + logType);
+        return sanitizeTopic(getProperty("kafka.topic." + logType, "zeek-" + logType));
     }
 
     /**
@@ -296,7 +322,7 @@ public class APIConfig {
      * @return The malicious topic name for the specified log type
      */
     public static String getKafkaMaliciousTopic(String logType) {
-        return getProperty("kafka.topic.malicious." + logType, "malicious-" + logType);
+        return sanitizeTopic(getProperty("kafka.topic.malicious." + logType, "malicious-" + logType));
     }
     
     /**
@@ -322,7 +348,7 @@ public class APIConfig {
      * @return The supervised topic name for the specified log type
      */
     public static String getKafkaSupervisedTopic(String logType) {
-        return getProperty("kafka.topic.supervised." + logType, "supervised-" + logType);
+        return sanitizeTopic(getProperty("kafka.topic.supervised." + logType, "supervised-" + logType));
     }
 
     /**

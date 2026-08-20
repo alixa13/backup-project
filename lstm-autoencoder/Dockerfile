@@ -4,7 +4,10 @@ FROM python:3.9
 # Set the working directory inside the container
 WORKDIR /app
 
-# Insert a new ENV line (after the WORKDIR /app) to set PYTHONPATH
+# Force TensorFlow to CPU-only before any Python/TF import (avoids cuInit / CUDA error 303 logs)
+ENV CUDA_VISIBLE_DEVICES=""
+# 3 = log only FATAL (hides cuInit and oneDNN INFO); set to 2 if you need TF errors in logs
+ENV TF_CPP_MIN_LOG_LEVEL=3
 ENV PYTHONPATH=/app
 
 # Install PostgreSQL client for pg_isready command

@@ -1,5 +1,20 @@
 #!/bin/bash
 
+# If we're on a host that only has Docker (no curl/jq/bc/compose),
+# transparently re-run this script inside the helper ops image.
+if [ -z "${RUN_IN_OPS:-}" ]; then
+  OPS_IMAGE="${OPS_IMAGE:-project-ops:latest}"
+  if docker image inspect "$OPS_IMAGE" >/dev/null 2>&1; then
+    exec docker run --rm -it \
+      -e RUN_IN_OPS=1 \
+      -e OPS_IMAGE="$OPS_IMAGE" \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -v "$PWD":"$PWD" -w "$PWD" \
+      "$OPS_IMAGE" \
+      bash "$0" "$@"
+  fi
+fi
+
 # Color codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'

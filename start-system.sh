@@ -1,5 +1,20 @@
 #!/bin/bash
 
+# If we're on a host that only has Docker (no curl/jq/bc/compose),
+# transparently re-run this script inside the helper ops image.
+if [ -z "${RUN_IN_OPS:-}" ]; then
+  OPS_IMAGE="${OPS_IMAGE:-project-ops:latest}"
+  if docker image inspect "$OPS_IMAGE" >/dev/null 2>&1; then
+    exec docker run --rm -it \
+      -e RUN_IN_OPS=1 \
+      -e OPS_IMAGE="$OPS_IMAGE" \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -v "$PWD":"$PWD" -w "$PWD" \
+      "$OPS_IMAGE" \
+      bash "$0" "$@"
+  fi
+fi
+
 echo "════════════════════════════════════════════════════════"
 echo "  Starting Anomaly Detection System with PostgreSQL"
 echo "════════════════════════════════════════════════════════"
@@ -162,11 +177,8 @@ check_container_health "zookeeper" 30
 # check_container_health "kafka" 30
 
 echo -e "\nCreating supervised Kafka topics..."
-# Create supervised topics
-docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic supervised-conn --partitions 16 --replication-factor 1
-docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic supervised-http --partitions 16 --replication-factor 1
-docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic supervised-dns --partitions 16 --replication-factor 1
-docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic supervised-ssl --partitions 16 --replication-factor 1
+# Create supervised topic (UNSW-NB15 42-feature only)
+docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic supervised-unsw42 --partitions 16 --replication-factor 1
 
 # Verify topics were created
 echo "Verifying Kafka topics..."
@@ -187,24 +199,26 @@ echo "Flink: $FLINK_IP"
 # Wait for LSTM service to be ready
 check_container_health "lstm-autoencoder" 30
 
-echo -e "\nStarting Flink jobs..."
-# Start Flink cluster and jobs
-echo "Starting Flink cluster..."
-if ! docker exec flink bash -c "cd /opt/flink && ./bin/start-cluster.sh"; then
-    echo "Warning: Flink cluster startup reported an error, but checking if it's actually running..."
-    # Give it a moment to stabilize
-    sleep 5
-    # Check if Flink is actually running by checking the web UI
+echo -e "\nWaiting for Flink cluster to start..."
+# Note: Flink cluster is automatically started by the container's start-flink.sh script
+# We just need to wait for it to be ready
+echo "Checking if Flink cluster is ready..."
+max_attempts=30
+attempt=0
+while [ $attempt -lt $max_attempts ]; do
     if docker exec flink curl -s -f http://localhost:8081 >/dev/null 2>&1; then
-        echo "✅ Flink cluster is actually running (web UI is accessible)"
-    else
-        echo "❌ Error: Flink cluster failed to start and web UI is not accessible"
+        echo "✅ Flink cluster is ready (web UI is accessible)"
+        break
+    fi
+    attempt=$((attempt + 1))
+    if [ $attempt -eq $max_attempts ]; then
+        echo "❌ Error: Flink cluster failed to start within timeout"
         echo "Please check the Flink logs with: docker compose logs flink"
         exit 1
     fi
-else
-    echo "✅ Flink cluster started"
-fi
+    echo "Waiting for Flink... (attempt $attempt/$max_attempts)"
+    sleep 2
+done
 
 echo -e "\nVerifying system status..."
 
@@ -237,14 +251,18 @@ case "\$1" in
   lstm)
     docker exec lstm-autoencoder curl -X \$2 http://localhost:5000/\$3
     ;;
+  supervised)
+    docker exec supervised curl -s -X \$2 http://localhost:8000/\$3
+    ;;
   logs)
     docker compose logs -f \$2
     ;;
   *)
-    echo "Usage: ./access-services.sh [lstm|logs] [GET|POST|service_name] [endpoint]"
+    echo "Usage: ./access-services.sh [lstm|supervised|logs] [GET|POST|service_name] [endpoint]"
     echo "Examples:"
     echo "  ./access-services.sh lstm GET learning/status"
-    echo "  ./access-services.sh lstm POST kafka/start"
+    echo "  ./access-services.sh supervised GET health"
+    echo "  ./access-services.sh supervised GET health"
     echo "  ./access-services.sh logs lstm-autoencoder"
     ;;
 esac
@@ -260,9 +278,9 @@ echo "📊 System Components:"
 echo "  • PostgreSQL  - High-performance database (10,000+ writes/sec)"
 echo "  • Kafka       - Message broker"
 echo "  • Zeek        - Packet capture (eth2)"
-echo "  • Flink       - Stream processing (4 consumers)"
+echo "  • Flink       - Stream processing (unified supervised + 4 unsupervised)"
 echo "  • LSTM API    - Unsupervised ML (4 async workers)"
-echo "  • Supervised  - Supervised ML models"
+echo "  • Supervised  - UNSW42 ML (session: conn+http+dns+ssl)"
 echo ""
 echo "🎯 Quick Commands:"
 echo "  Enable learning:  ./lstm-control.sh enable-learn-all"

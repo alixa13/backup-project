@@ -135,6 +135,12 @@ class Database:
                         training_samples INTEGER NOT NULL,
                         validation_loss REAL NOT NULL,
                         training_loss REAL NOT NULL,
+                        anomaly_threshold REAL,
+                        accuracy REAL,
+                        precision REAL,
+                        recall REAL,
+                        f1_score REAL,
+                        false_positive_rate REAL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         PRIMARY KEY (log_type, model_path)
                     )
@@ -213,12 +219,13 @@ class Database:
         """
         try:
             # Get expected features for this log type
+            # UNIFIED FEATURE ENGINEERING - All log types use 33 features (NetworkAnomalyPreprocessor)
             expected_features = {
-                'http': 28,
-                'ssl': 19,
-                'dns': 24,
-                'conn': 20
-            }.get(log_type, 20)
+                'http': 33,  # Unified
+                'ssl': 33,   # Unified
+                'dns': 33,   # Unified
+                'conn': 33   # Unified
+            }.get(log_type, 33)
         
             # Ensure new data is 2D numpy array
             if isinstance(data, np.ndarray):
@@ -280,12 +287,13 @@ class Database:
         Reads individual rows and combines into numpy array.
         """
         try:
+            # UNIFIED FEATURE ENGINEERING - All log types use 33 features (NetworkAnomalyPreprocessor)
             expected_features = {
-                'http': 28,
-                'ssl': 19,
-                'dns': 24,
-                'conn': 20
-            }.get(log_type, 20)
+                'http': 33,  # Unified
+                'ssl': 33,   # Unified
+                'dns': 33,   # Unified
+                'conn': 33   # Unified
+            }.get(log_type, 33)
             
             with self.get_cursor(commit=False) as cursor:
                 # Query all rows for this log type (ordered by timestamp)
@@ -397,7 +405,8 @@ class Database:
             return None
     
     def save_model_info(self, log_type, model_path, input_dim, timesteps,
-                       training_samples, validation_loss, training_loss):
+                       training_samples, validation_loss, training_loss, anomaly_threshold=None,
+                       accuracy=None, precision=None, recall=None, f1_score=None, fpr=None):
         """Save model information to database."""
         try:
             with self.get_cursor() as cursor:
@@ -405,11 +414,13 @@ class Database:
                     INSERT INTO model_info (
                         log_type, model_path, input_dim, timesteps,
                         training_samples, validation_loss, training_loss,
-                        created_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                        anomaly_threshold, accuracy, precision, recall, f1_score,
+                        false_positive_rate, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                 ''', (
                     log_type, model_path, input_dim, timesteps,
-                    training_samples, validation_loss, training_loss
+                    training_samples, validation_loss, training_loss, anomaly_threshold,
+                    accuracy, precision, recall, f1_score, fpr
                 ))
                 return True
         except Exception as e:
@@ -421,7 +432,8 @@ class Database:
         with self.get_cursor(commit=False) as cursor:
             cursor.execute('''
                 SELECT model_path, input_dim, timesteps, created_at,
-                       training_samples, validation_loss, training_loss
+                       training_samples, validation_loss, training_loss, anomaly_threshold,
+                       accuracy, precision, recall, f1_score, false_positive_rate
                 FROM model_info
                 WHERE log_type = %s
                 ORDER BY created_at DESC
@@ -432,6 +444,38 @@ class Database:
                 return None
             # Convert DictRow to tuple for compatibility
             return tuple(result)
+    
+    def get_anomaly_threshold(self, log_type):
+        """Get the anomaly threshold for a specific log type."""
+        with self.get_cursor(commit=False) as cursor:
+            cursor.execute('''
+                SELECT anomaly_threshold
+                FROM model_info
+                WHERE log_type = %s
+                ORDER BY created_at DESC
+                LIMIT 1
+            ''', (log_type,))
+            result = cursor.fetchone()
+            if result is None or result['anomaly_threshold'] is None:
+                return None
+            return float(result['anomaly_threshold'])
+    
+    def update_threshold(self, log_type, threshold):
+        """Update the anomaly threshold for a specific log type."""
+        try:
+            with self.get_cursor() as cursor:
+                cursor.execute('''
+                    UPDATE model_info
+                    SET anomaly_threshold = %s
+                    WHERE log_type = %s
+                ''', (threshold, log_type))
+                if cursor.rowcount == 0:
+                    logger.warning(f"No model found to update threshold for {log_type}")
+                    return False
+                return True
+        except Exception as e:
+            logger.error(f"Error updating threshold for {log_type}: {e}")
+            return False
     
     def update_buffer_size(self, log_type, buffer_size):
         """Update buffer size for a specific log type."""

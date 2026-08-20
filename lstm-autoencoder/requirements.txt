@@ -1,13 +1,21 @@
-flask
-werkzeug
-numpy
-pandas
-scikit-learn
-tensorflow
-keras
-gunicorn
-gevent 
-# PostgreSQL dependencies
-psycopg2-binary>=2.9.0
-sqlalchemy>=1.4.0
-psycopg2-pool>=1.1 
+# Pinned deliberately. This service loads .keras models and pickled MinMaxScalers, so a
+# floating TensorFlow or scikit-learn turns any image rebuild into a silent model-
+# compatibility hazard. Versions below all publish cp39 wheels (base image is python:3.9)
+# and the code was exercised against TensorFlow 2.16.2.
+flask==3.0.3
+werkzeug==3.0.3
+gunicorn==22.0.0
+
+numpy==1.26.4
+pandas==2.2.3
+scikit-learn==1.5.2
+tensorflow==2.16.2
+keras==3.3.3
+
+# PostgreSQL
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.36
+psycopg2-pool==1.2
+
+# gevent was listed but never used: entrypoint.sh runs --worker-class sync, and gunicorn
+# switches that to gthread because --threads > 1. Removed.

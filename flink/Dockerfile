@@ -4,29 +4,22 @@ FROM flink:1.18.0-java11
 # Set working directory
 WORKDIR /opt/flink
 
-# Install supervisord and additional dependencies
 RUN apt-get update && \
-    apt-get install -y supervisor curl net-tools iputils-ping procps librdkafka-dev && \
+    apt-get install -y curl net-tools iputils-ping procps librdkafka-dev && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Create necessary directories with proper permissions
-RUN mkdir -p /opt/flink/jars /opt/flink/config /var/log/supervisor && \
-    chmod -R 777 /var/log/supervisor
+RUN mkdir -p /opt/flink/jars /opt/flink/config
 
-# Configure directories with proper permissions (checkpointing disabled)
-RUN mkdir -p /opt/flink/savepoints && \
-    chmod -R 777 /opt/flink/savepoints && \
-    chown -R flink:flink /opt/flink/savepoints
+# Configure checkpoint/savepoint directories with proper permissions
+RUN mkdir -p /opt/flink/savepoints /opt/flink/checkpoints && \
+    chmod -R 777 /opt/flink/savepoints /opt/flink/checkpoints && \
+    chown -R flink:flink /opt/flink/savepoints /opt/flink/checkpoints
 
-# Copy configuration files
-COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY start-flink.sh /opt/flink/start-flink.sh
 COPY jobstarter.sh /opt/flink/jobstarter.sh
-COPY submit-jobs.sh /opt/flink/submit-jobs.sh
 
-# Make all scripts executable
-RUN chmod +x /opt/flink/start-flink.sh /opt/flink/jobstarter.sh /opt/flink/submit-jobs.sh && \
+RUN chmod +x /opt/flink/start-flink.sh /opt/flink/jobstarter.sh && \
     chmod +x /opt/flink/bin/jobmanager.sh /opt/flink/bin/taskmanager.sh && \
     chmod +x /opt/flink/bin/*.sh
 
@@ -34,15 +27,16 @@ RUN chmod +x /opt/flink/start-flink.sh /opt/flink/jobstarter.sh /opt/flink/submi
 ENV FLINK_HOME=/opt/flink
 ENV PATH=$PATH:$FLINK_HOME/bin
 
-# Configure directories (checkpointing disabled)
-# ENV FLINK_CHECKPOINTS_DIR=/opt/flink/checkpoints
+ENV FLINK_CHECKPOINTS_DIR=/opt/flink/checkpoints
 ENV FLINK_SAVEPOINTS_DIR=/opt/flink/savepoints
 
 # Expose Flink's web UI port
 EXPOSE 8081
 
 # Set Flink Volumes
-VOLUME ["/opt/flink/jars", "/opt/flink/config", "/opt/flink/savepoints"]
+VOLUME ["/opt/flink/jars", "/opt/flink/config", "/opt/flink/savepoints", "/opt/flink/checkpoints"]
 
-# Start supervisord, which will handle both processes
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+# supervisord was configured to run /opt/flink/bin/start-flink.sh, a path that does not
+# exist (the script lives at /opt/flink/start-flink.sh), and compose overrode the command
+# anyway - so it never ran. Start the cluster directly.
+CMD ["/bin/bash", "-c", "/opt/flink/start-flink.sh"]

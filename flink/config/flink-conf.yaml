@@ -29,16 +29,27 @@ taskmanager.memory.network.max: 8g
 taskmanager.memory.framework.heap.size: 1024m
 taskmanager.memory.framework.off-heap.size: 2g
 
-# Checkpointing (DISABLED - was causing job failures due to checkpoint timeout)
-# Re-enable if you need exactly-once semantics or job recovery
-# state.backend: hashmap
-# state.checkpoints.dir: file:///tmp/flink-checkpoints
-# execution.checkpointing.interval: 15000
-# execution.checkpointing.mode: AT_LEAST_ONCE
-# execution.checkpointing.timeout: 60000
-# execution.checkpointing.max-concurrent-checkpoints: 1
-# execution.checkpointing.min-pause: 5000
-# execution.checkpointing.unaligned: true
+# Checkpointing
+#
+# This was disabled because checkpoints timed out. The cause was blocking HTTP inside
+# the operator: api.retry.count was 10 with an uncapped 2^n backoff, so one record could
+# hold a task thread for ~17 minutes and no 60s checkpoint could ever complete. That is
+# now bounded (3 retries, 30s read timeout, 4s backoff cap => ~92s worst case), so the
+# timeout below is set above it with room to spare.
+#
+# Without checkpoints the KafkaSource never committed offsets (enable.auto.commit=false)
+# and every job restart replayed the whole topic from the earliest offset, re-alerting on
+# the entire backlog. The keyed state in the supervised job was also lost on every restart.
+state.backend: hashmap
+state.checkpoints.dir: file:///opt/flink/checkpoints
+state.checkpoints.num-retained: 3
+execution.checkpointing.interval: 60000
+execution.checkpointing.mode: AT_LEAST_ONCE
+execution.checkpointing.timeout: 180000
+execution.checkpointing.max-concurrent-checkpoints: 1
+execution.checkpointing.min-pause: 30000
+execution.checkpointing.unaligned: true
+execution.checkpointing.tolerable-failed-checkpoints: 3
 
 # Restart
 restart-strategy: fixed-delay

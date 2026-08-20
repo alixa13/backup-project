@@ -15,7 +15,6 @@ services:
     environment:
       - JOB_MANAGER_RPC_ADDRESS=flink
       - FLINK_CONF_DIR=/opt/flink/config
-      # - state.checkpoints.dir=file:///opt/flink/checkpoints  # Disabled checkpointing
     networks:
       - anomaly-detection-network
     depends_on:
@@ -32,7 +31,9 @@ services:
     volumes:
       - ./flink/jars/.:/opt/flink/jars
       - ./flink/config:/opt/flink/config
-      # - flink-checkpoints:/opt/flink/checkpoints  # Disabled checkpointing
+      # Checkpoints must outlive the container: without them the KafkaSource never
+      # commits offsets and every restart replays the topic from the beginning.
+      - flink-checkpoints:/opt/flink/checkpoints
     # CPU: reservations only (soft sharing); can use idle cores, yields when others need CPU
     deploy:
       resources:
@@ -227,8 +228,15 @@ services:
       # CPU-only: no GPU in container (avoids cuInit / CUDA 303 errors in logs)
       CUDA_VISIBLE_DEVICES: ""
       TF_CPP_MIN_LOG_LEVEL: "3"
+      # Anomaly threshold = mean + N*std of held-out reconstruction error.
+      # 3 detects ~22% of anomalies at ~0% false positives; 2 detects ~57% at ~1.4%.
+      ANOMALY_THRESHOLD_SIGMA: "3.0"
+      # How far live traffic may pull the adaptive threshold from that baseline.
+      ADAPTIVE_MAX_DRIFT_FACTOR: "2.0"
       # Worker/thread counts: set by configure-resources.sh override (GUNICORN_WORKERS + TF_*).
-      GUNICORN_WORKERS: "16"
+      # Must stay 1: the API holds per-process state (adaptive threshold window, training
+      # queue, buffer status). See configure-resources.sh for the full reasoning.
+      GUNICORN_WORKERS: "1"
     volumes:
       - lstm-models:/app/models
       - lstm-data:/app/data
@@ -262,5 +270,5 @@ volumes:
     driver: local
   postgres-data:
     driver: local
-  # flink-checkpoints:  # Disabled checkpointing
-  #   driver: local
+  flink-checkpoints:
+    driver: local

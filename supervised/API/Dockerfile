@@ -1,5 +1,7 @@
 # Build context must be ./supervised (parent of API) so we can include final.py and models.
-FROM python:3.9
+# python:3.12, not 3.9: the shipped model needs scikit-learn 1.8.0, which requires
+# Python >=3.11. See API/requirements.txt for the full reasoning.
+FROM python:3.12
 
 WORKDIR /app
 

@@ -1,22 +1,17 @@
 package com.example.util;
 
-import org.nd4j.linalg.api.ndarray.INDArray;
-import org.nd4j.linalg.factory.Nd4j;
-import org.nd4j.linalg.ops.transforms.Transforms;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.ZoneOffset;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Logger;
 
 /**
  * Network Anomaly Preprocessor using Java ML Libraries
  * 
  * Equivalent to Python's anomaly_preprocessor_01.py but using:
- * - ND4J (NumPy for Java) for array operations
  * - Apache Commons Math for statistics
  * - Standard Java collections for state management
  * 
@@ -33,12 +28,9 @@ public class NetworkAnomalyPreprocessor {
     private final int unknownPortIdx;
     
     // Scaler state (min/max values learned from training data)
-    private INDArray scaleMin;
-    private INDArray scaleMax;
     private boolean isFitted = false;
     
     // Runtime state (LRU cache for session tracking)
-    private final Map<String, Deque<INDArray>> sessionBuffer;
     private final Map<String, InteractionState> interactionState;
     
     // Thread-safe state management
@@ -110,17 +102,23 @@ public class NetworkAnomalyPreprocessor {
         }
         this.unknownPortIdx = idx;
         
-        // Initialize state (using LinkedHashMap for LRU)
-        this.sessionBuffer = Collections.synchronizedMap(new LinkedHashMap<String, Deque<INDArray>>(maxActiveSessions, 0.75f, true) {
-            @Override
-            protected boolean removeEldestEntry(Map.Entry<String, Deque<INDArray>> eldest) {
-                return size() > maxActiveSessions;
-            }
-        });
+        // Bounded LRU. This was an unbounded
+        // ConcurrentHashMap: one entry per source IP, never evicted, so a long-running
+        // job accumulated every IP it had ever seen.
+        //
+        // Threading contract: the map itself is synchronized, but the InteractionState
+        // values are mutated in place by updateInteractionState() and are NOT thread
+        // safe. Callers must give one source IP to one thread at a time - the jobs do
+        // this by keyBy(source ip) and holding a preprocessor per subtask.
+        this.interactionState = Collections.synchronizedMap(
+                new LinkedHashMap<String, InteractionState>(maxActiveSessions, 0.75f, true) {
+                    @Override
+                    protected boolean removeEldestEntry(Map.Entry<String, InteractionState> eldest) {
+                        return size() > maxActiveSessions;
+                    }
+                });
         
-        this.interactionState = new ConcurrentHashMap<>();
-        
-        LOGGER.info("NetworkAnomalyPreprocessor initialized (ND4J-based) - Window: " + windowSize + ", Features: 33");
+        LOGGER.info("NetworkAnomalyPreprocessor initialized - Window: " + windowSize + ", Features: 33");
     }
     
     /**
@@ -442,137 +440,5 @@ public class NetworkAnomalyPreprocessor {
         }
     }
     
-    /**
-     * Fit the scaler on training data using ND4J
-     * This learns the min/max values for normalization
-     */
-    public void fit(List<double[]> trainingData) {
-        if (trainingData == null || trainingData.isEmpty()) {
-            throw new IllegalArgumentException("Training data cannot be empty");
-        }
-        
-        synchronized (scalerLock) {
-            // Convert training data to ND4J matrix
-            int numSamples = trainingData.size();
-            INDArray dataMatrix = Nd4j.create(numSamples, 33);
-            
-            for (int i = 0; i < numSamples; i++) {
-                dataMatrix.putRow(i, Nd4j.create(trainingData.get(i)));
-            }
-            
-            // Calculate min and max for each feature using ND4J operations
-            scaleMin = dataMatrix.min(0); // Min along axis 0 (columns)
-            scaleMax = dataMatrix.max(0); // Max along axis 0 (columns)
-            
-            isFitted = true;
-            LOGGER.info("Scaler fitted on " + numSamples + " training samples using ND4J");
-        }
-    }
-    
-    /**
-     * Transform (normalize) features using fitted scaler - ND4J vectorized operations
-     */
-    public double[] transform(double[] rawFeatures) {
-        if (!isFitted) {
-            throw new IllegalStateException("Scaler not fitted! Call fit() first or load scaler.");
-        }
-        
-        synchronized (scalerLock) {
-            // Convert to ND4J array for vectorized operations
-            INDArray features = Nd4j.create(rawFeatures);
-            
-            // MinMax normalization: (x - min) / (max - min)
-            // Using ND4J vectorized operations (like NumPy)
-            INDArray range = scaleMax.sub(scaleMin);
-            range = Transforms.max(range, 1e-8); // Prevent division by zero
-            
-            INDArray normalized = features.sub(scaleMin).div(range);
-            
-            // Clip to [0, 1] range
-            normalized = Transforms.max(normalized, 0.0);
-            normalized = Transforms.min(normalized, 1.0);
-            
-            return normalized.toDoubleVector();
-        }
-    }
-    
-    /**
-     * Process live record and return sequence for LSTM
-     * Returns: (1, window_size, 33) shaped array or null if not ready
-     */
-    public INDArray processLiveRecord(JsonNode record) {
-        if (!isFitted) {
-            LOGGER.warning("Scaler not fitted! Cannot process live record.");
-            return null;
-        }
-        
-        try {
-            // 1. Extract raw features
-            double[] rawVec = buildRawVector(record);
-            
-            // 2. Normalize
-            double[] scaledVec = transform(rawVec);
-            INDArray scaledArray = Nd4j.create(scaledVec);
-            
-            // 3. Update session buffer (LRU)
-            String srcIp = record.has("id.orig_h") ? record.get("id.orig_h").asText("unknown") : "unknown";
-            
-            Deque<INDArray> history = sessionBuffer.computeIfAbsent(srcIp, k -> new LinkedList<>());
-            history.addLast(scaledArray);
-            
-            // Keep only last 'windowSize' entries
-            while (history.size() > windowSize) {
-                history.removeFirst();
-            }
-            
-            // 4. Build sequence (cold start padding if needed)
-            int seqLen = history.size();
-            INDArray sequence = Nd4j.create(1, windowSize, 33);
-            
-            if (seqLen == windowSize) {
-                // Full window available
-                int idx = 0;
-                for (INDArray vec : history) {
-                    sequence.put(new int[]{0, idx, 0}, vec);
-                    idx++;
-                }
-            } else {
-                // Pad with zeros at the beginning
-                int padNeeded = windowSize - seqLen;
-                int idx = padNeeded;
-                for (INDArray vec : history) {
-                    sequence.put(new int[]{0, idx, 0}, vec);
-                    idx++;
-                }
-            }
-            
-            return sequence;
-            
-        } catch (Exception e) {
-            LOGGER.severe("Error processing record: " + e.getMessage());
-            return null;
-        }
-    }
-    
-    /**
-     * Get current state info
-     */
-    public Map<String, Object> getStateInfo() {
-        Map<String, Object> info = new HashMap<>();
-        info.put("window_size", windowSize);
-        info.put("max_sessions", maxActiveSessions);
-        info.put("active_sessions", sessionBuffer.size());
-        info.put("tracked_ips", interactionState.size());
-        info.put("is_fitted", isFitted);
-        return info;
-    }
-    
-    /**
-     * Clear runtime state (reset buffers)
-     */
-    public void clearState() {
-        sessionBuffer.clear();
-        interactionState.clear();
-        LOGGER.info("Runtime state cleared");
-    }
+
 }

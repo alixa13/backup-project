@@ -21,11 +21,11 @@ services:
 
   lstm-autoencoder:
     environment:
-      GUNICORN_WORKERS: '11'
+      GUNICORN_WORKERS: '1'
       TF_NUM_INTEROP_THREADS: '4'
-      TF_NUM_INTRAOP_THREADS: '4'
-      OMP_NUM_THREADS: '4'
-      MKL_NUM_THREADS: '4'
+      TF_NUM_INTRAOP_THREADS: '8'
+      OMP_NUM_THREADS: '8'
+      MKL_NUM_THREADS: '8'
       LSTM_TRAINING_CPUS: '96'
     deploy:
       resources:

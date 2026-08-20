@@ -44,21 +44,35 @@ def save_trusted_ips():
 
 
 def add_trusted_ip(ip):
-    TRUSTED_IPS.add(ip)
+    # Rebind rather than mutate in place: readers on the prediction path hold a
+    # reference to the set and must never observe it mid-mutation.
+    global TRUSTED_IPS
+    TRUSTED_IPS = TRUSTED_IPS | {ip}
     save_trusted_ips()
     return True
 
 
 def remove_trusted_ip(ip):
+    global TRUSTED_IPS
     if ip in TRUSTED_IPS:
-        TRUSTED_IPS.remove(ip)
+        TRUSTED_IPS = TRUSTED_IPS - {ip}
         save_trusted_ips()
         return True
     return False
 
 
 def get_trusted_ips():
-    return sorted(list(TRUSTED_IPS))
+    """Sorted list, for API responses. Do not use on the prediction path."""
+    return sorted(TRUSTED_IPS)
+
+
+def get_trusted_ip_set():
+    """
+    The live set, for membership tests on the prediction path: O(1) and no copy.
+    get_trusted_ips() built a fresh sorted list on every request and then did an
+    O(n) scan of it. Treat the result as read-only.
+    """
+    return TRUSTED_IPS
 
 
 load_trusted_ips()

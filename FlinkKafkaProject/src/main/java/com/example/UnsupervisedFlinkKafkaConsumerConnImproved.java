@@ -1,102 +1,59 @@
 package com.example;
 
+import com.example.util.BufferedAnomalyProcessFunction;
 import com.example.util.LogDeserializationSchema;
-import com.example.util.NetworkAnomalyPreprocessor;
-import com.example.util.TrustedIps;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
-import org.apache.flink.connector.kafka.source.KafkaSource;
-import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
+import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
-import org.apache.flink.api.common.serialization.SimpleStringSchema;
+import org.apache.flink.connector.kafka.source.KafkaSource;
+import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
-import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.ProcessFunction;
-import org.apache.flink.util.Collector;
 
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.List;
 import java.util.Properties;
-import java.util.logging.Level;
 import java.util.logging.Logger;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.io.FileWriter;
-import java.io.IOException;
-
-
 /**
- * Unsupervised Flink Kafka Consumer for Connection logs
- * Uses NetworkAnomalyPreprocessor (ND4J-based) for unified 33-feature extraction
- * 
- * All log types (HTTP, DNS, SSL, CONN) now use the SAME 33 features:
- * - 4 temporal (sin/cos encoding)
- * - 8 IP octets (source + dest)
- * - 2 port embeddings
- * - 3 interaction features (stateful)
- * - 11 flow dynamics (log-scaled)
- * - 5 TCP flags
- * Total: 33 features
+ * Unsupervised Flink Kafka consumer for CONN logs.
+ *
+ * <p>Extracts the unified 33-feature vector with NetworkAnomalyPreprocessor, scores
+ * batches against the LSTM autoencoder API, and republishes anomalous records to the
+ * malicious topic.
+ *
+ * <p>The stream is keyed on the source IP before processing. That is required for the
+ * processing-time timer that flushes a partly filled buffer when traffic goes quiet, and
+ * it keeps each host's preprocessor state on a single thread - the preprocessor mutates
+ * per-IP interaction state in place and used to be a static instance shared by every
+ * subtask. All buffering now lives in BufferedAnomalyProcessFunction, one instance per
+ * subtask, instead of static fields shared across the JVM.
  */
 public class UnsupervisedFlinkKafkaConsumerConnImproved {
-    private static final Logger LOGGER = Logger.getLogger(UnsupervisedFlinkKafkaConsumerConnImproved.class.getName());
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final Logger LOGGER =
+            Logger.getLogger(UnsupervisedFlinkKafkaConsumerConnImproved.class.getName());
+
     private static final String LOG_TYPE = "conn";
-    private static final double DEFAULT_ANOMALY_THRESHOLD = 0.5; // Fallback if dynamic threshold not available
-    private static final int MAX_BUFFER_SIZE = 10000;
-    private static final long MAX_BUFFER_AGE_MS = 5_000L;
-    private static final List<String> LEARNING_BUFFER = new ArrayList<>();
-    private static long lastBufferFlushTime = System.currentTimeMillis();
-    
-    // BATCH PREDICTION BUFFER (for detection mode - reduces API calls by 100x)
-    // ADAPTIVE: Small batches during low traffic, large during high traffic
-    private static final int PREDICTION_BATCH_SIZE = 50;  // Smaller batch = faster response
-    private static final long PREDICTION_BATCH_TIMEOUT_MS = 200L;  // 200ms timeout (max 200ms delay)
-    private static final List<String> PREDICTION_BUFFER = new ArrayList<>();
-    private static final List<String> PREDICTION_BUFFER_LOGS = new ArrayList<>();
-    private static long lastPredictionBatchTime = System.currentTimeMillis();
-    
-    // Dynamic threshold fetched once at startup (or after training)
-    private static volatile double currentThreshold = DEFAULT_ANOMALY_THRESHOLD;
-    private static volatile boolean thresholdInitialized = false;
+    private static final String NESTED_KEY = "zeek-conn";
 
-    // NEW: Unified preprocessor for all log types (33 features)
+    /** Unified feature count across all log types. */
     public static final int FEATURE_COUNT = 33;
-    private static final NetworkAnomalyPreprocessor PREPROCESSOR = new NetworkAnomalyPreprocessor(
-        10,     // window_size
-        5000,   // max_active_sessions
-        Arrays.asList(21, 22, 53, 80, 443, 8080, 3306, 445)  // known_ports
-    );
 
-    static {
-        MAPPER.configure(
-            org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES,
-            false
-        );
-    }
+    /** Fallback when the API has no trained threshold yet. */
+    private static final double DEFAULT_ANOMALY_THRESHOLD = 0.5;
 
-    // parseTimestamp removed - NetworkAnomalyPreprocessor handles timestamp parsing
+    private static final int PREDICTION_BATCH_SIZE = 50;
+    private static final long PREDICTION_BATCH_TIMEOUT_MS = 200L;
+    private static final int LEARNING_BATCH_SIZE = 10_000;
+    private static final long LEARNING_BATCH_TIMEOUT_MS = 5_000L;
 
-    /**
-     * Fetch and update threshold from API (called when transitioning from learning to detection mode)
-     */
-    private static void updateThreshold() {
-        synchronized (UnsupervisedFlinkKafkaConsumerConnImproved.class) {
-            LOGGER.info("Fetching dynamic threshold for " + LOG_TYPE + "...");
-            Double threshold = APIClient.getUnsupervisedThreshold(LOG_TYPE);
-            if (threshold != null) {
-                currentThreshold = threshold;
-                thresholdInitialized = true;
-                LOGGER.info("Updated dynamic threshold for " + LOG_TYPE + ": " + currentThreshold);
-            } else {
-                LOGGER.info("No dynamic threshold available for " + LOG_TYPE + ", using default: " + DEFAULT_ANOMALY_THRESHOLD);
-            }
-        }
-    }
+    /** Re-fetch the threshold periodically so a retrained model is picked up. */
+    private static final long THRESHOLD_REFRESH_MS = 300_000L;
+
+    /** Preprocessor settings; window size matches the model's timesteps. */
+    private static final int WINDOW_SIZE = 10;
+    private static final int MAX_ACTIVE_SESSIONS = 5000;
 
     public static void main(String[] args) throws Exception {
         final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -126,73 +83,30 @@ public class UnsupervisedFlinkKafkaConsumerConnImproved {
                 .setProperties(consumerProps)
                 .build();
 
-        DataStream<String> anomalousData = env.fromSource(source, WatermarkStrategy.noWatermarks(), "Kafka Source " + LOG_TYPE)
-                .process(new ProcessFunction<JsonNode, String>() {
-                    @Override
-                    public void processElement(JsonNode logEntry, Context ctx, Collector<String> out) throws Exception {
-                        if (logEntry == null || logEntry.isNull()) return;
-                        try {
-                            // Handle nested structure: {"zeek-conn": {...}}
-                            JsonNode connData = logEntry.has("zeek-conn") ? logEntry.get("zeek-conn") : logEntry;
-                            if (connData == null || connData.isNull()) return;
-
-                            // Skip anomaly check for trusted IPs (null-safe: missing id.orig_h)
-                            JsonNode orig = connData.get("id.orig_h");
-                            String srcIp = (orig != null && !orig.isNull()) ? orig.asText("") : "";
-                            if (TrustedIps.isTrusted(srcIp)) return;
-
-                            // ==================== UNIFIED PREPROCESSING (33 FEATURES) ====================
-                            // Uses NetworkAnomalyPreprocessor with ND4J library
-                            
-                            double[] features = PREPROCESSOR.buildRawVector(connData);
-
-                            // Validate feature count
-                            if (features.length != FEATURE_COUNT) {
-                                LOGGER.warning(String.format(
-                                    "Feature count mismatch! Expected %d, got %d",
-                                    FEATURE_COUNT, features.length
-                                ));
-                                return;
-                            }
-
-                            String jsonData = MAPPER.writeValueAsString(features);
-
-                            // Check if learning is enabled (cached, ~10s resolution)
-                            boolean isLearningEnabled = APIClient.getUnsupervisedLearningStatusCached(LOG_TYPE);
-
-                            if (isLearningEnabled) {
-                                addToLearningBuffer(jsonData);
-                                APIClient.updateBufferSize(LOG_TYPE, LEARNING_BUFFER.size());
-                                return;
-                            }
-
-                            // Just transitioned from learning to detection mode - fetch threshold
-                            if (!thresholdInitialized) {
-                                updateThreshold();
-                            }
-
-                            // Flush any buffered data if we just left learning mode
-                            flushLearningBufferIfNeeded(true);
-
-                            // OPTIMIZED: Use batch prediction (100 logs per API call instead of 1)
-                            addToPredictionBuffer(jsonData, logEntry.toString(), out);
-
-                        } catch (Exception e) {
-                            String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                            LOGGER.log(Level.WARNING, "Error processing CONN log entry: " + msg, e);
-                        }
-                    }
-                })
+        DataStream<String> anomalousData = env
+                .fromSource(source, WatermarkStrategy.noWatermarks(), "Kafka Source " + LOG_TYPE)
+                .keyBy(new BufferedAnomalyProcessFunction.SourceIpKeySelector(NESTED_KEY))
+                .process(new BufferedAnomalyProcessFunction(
+                        LOG_TYPE,
+                        NESTED_KEY,
+                        FEATURE_COUNT,
+                        PREDICTION_BATCH_SIZE,
+                        PREDICTION_BATCH_TIMEOUT_MS,
+                        LEARNING_BATCH_SIZE,
+                        LEARNING_BATCH_TIMEOUT_MS,
+                        DEFAULT_ANOMALY_THRESHOLD,
+                        THRESHOLD_REFRESH_MS,
+                        WINDOW_SIZE,
+                        MAX_ACTIVE_SESSIONS,
+                        Arrays.asList(21, 22, 53, 80, 443, 8080, 3306, 445)))
                 .name("Unsupervised " + LOG_TYPE.toUpperCase() + " Log Processing (Improved)");
 
-        // Create Kafka sink for malicious topic
         KafkaSink<String> maliciousSink = KafkaSink.<String>builder()
                 .setBootstrapServers(APIConfig.getKafkaBootstrapServers())
                 .setRecordSerializer(KafkaRecordSerializationSchema.builder()
                         .setTopic(APIConfig.getKafkaMaliciousTopic(LOG_TYPE))
                         .setValueSerializationSchema(new SimpleStringSchema())
-                        .build()
-                )
+                        .build())
                 .build();
 
         anomalousData.sinkTo(maliciousSink);
@@ -200,90 +114,5 @@ public class UnsupervisedFlinkKafkaConsumerConnImproved {
         LOGGER.info("Starting Improved Flink Job for Unsupervised " + LOG_TYPE.toUpperCase() + " Logs");
         LOGGER.info("Feature count: " + FEATURE_COUNT);
         env.execute("Unsupervised Flink Kafka Consumer for " + LOG_TYPE.toUpperCase() + " Logs (Improved)");
-    }
-
-    private static void addToLearningBuffer(String jsonData) {
-        synchronized (LEARNING_BUFFER) {
-            LEARNING_BUFFER.add(jsonData);
-            boolean sizeLimitReached = LEARNING_BUFFER.size() >= MAX_BUFFER_SIZE;
-            boolean ageLimitReached = System.currentTimeMillis() - lastBufferFlushTime >= MAX_BUFFER_AGE_MS;
-
-            if (sizeLimitReached || ageLimitReached) {
-                flushLearningBufferIfNeeded(false);
-            }
-        }
-    }
-
-    private static void flushLearningBufferIfNeeded(boolean forceFlush) {
-        synchronized (LEARNING_BUFFER) {
-            if (LEARNING_BUFFER.isEmpty()) return;
-
-            boolean sizeLimitReached = LEARNING_BUFFER.size() >= MAX_BUFFER_SIZE;
-            boolean ageLimitReached = System.currentTimeMillis() - lastBufferFlushTime >= MAX_BUFFER_AGE_MS;
-
-            if (!(forceFlush || sizeLimitReached || ageLimitReached)) return;
-
-            List<String> batch = new ArrayList<>(LEARNING_BUFFER);
-            LEARNING_BUFFER.clear();
-            lastBufferFlushTime = System.currentTimeMillis();
-
-            boolean success = APIClient.sendUnsupervisedBatch(LOG_TYPE, batch);
-            if (!success) {
-                LEARNING_BUFFER.addAll(batch);
-                LOGGER.warning("Failed to flush learning buffer; data re-queued (" + LEARNING_BUFFER.size() + " records)");
-                APIClient.updateBufferSize(LOG_TYPE, LEARNING_BUFFER.size());
-            } else {
-                LOGGER.info("Flushed learning buffer to API (" + batch.size() + " records)");
-                APIClient.updateBufferSize(LOG_TYPE, 0);
-            }
-        }
-    }
-
-    /**
-     * BATCH PREDICTION: Add to prediction buffer and flush when batch is ready
-     * Reduces API calls by 100x (from 1 per log to 1 per 100 logs)
-     */
-    private static void addToPredictionBuffer(String jsonData, String logJson, Collector<String> out) {
-        synchronized (PREDICTION_BUFFER) {
-            PREDICTION_BUFFER.add(jsonData);
-            PREDICTION_BUFFER_LOGS.add(logJson);
-            
-            boolean sizeLimitReached = PREDICTION_BUFFER.size() >= PREDICTION_BATCH_SIZE;
-            boolean ageLimitReached = System.currentTimeMillis() - lastPredictionBatchTime >= PREDICTION_BATCH_TIMEOUT_MS;
-            
-            if (sizeLimitReached || ageLimitReached) {
-                flushPredictionBuffer(out);
-            }
-        }
-    }
-
-    private static void flushPredictionBuffer(Collector<String> out) {
-        synchronized (PREDICTION_BUFFER) {
-            if (PREDICTION_BUFFER.isEmpty()) return;
-
-            List<String> batch = new ArrayList<>(PREDICTION_BUFFER);
-            List<String> logs = new ArrayList<>(PREDICTION_BUFFER_LOGS);
-            PREDICTION_BUFFER.clear();
-            PREDICTION_BUFFER_LOGS.clear();
-            lastPredictionBatchTime = System.currentTimeMillis();
-
-            // Make batch API call
-            List<Double> scores = APIClient.getBatchAnomalyScores(LOG_TYPE, batch);
-            
-            if (scores != null && scores.size() == batch.size()) {
-                // Process results
-                for (int i = 0; i < scores.size(); i++) {
-                    double anomalyScore = scores.get(i);
-                    if (anomalyScore >= currentThreshold) {
-                        LOGGER.warning("Anomaly detected for " + LOG_TYPE + " (Score: " + anomalyScore + 
-                            ", Threshold: " + currentThreshold + ")");
-                        out.collect(logs.get(i));
-                    }
-                }
-                LOGGER.info("Batch prediction processed: " + batch.size() + " records for " + LOG_TYPE);
-            } else {
-                LOGGER.warning("Batch prediction failed for " + LOG_TYPE + " (API returned null or size mismatch; expected " + batch.size() + " scores, got " + (scores != null ? scores.size() : 0) + "; ensure LSTM model is loaded for " + LOG_TYPE + ", or API is healthy)");
-            }
-        }
     }
 }

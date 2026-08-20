@@ -136,17 +136,22 @@ class AdaptiveThreshold:
     """
     
     def __init__(self, log_type, window_size=1000, percentile=95, 
-                 min_threshold=None, max_threshold=None, drift_sensitivity=0.1):
+                 min_threshold=None, max_threshold=None, drift_sensitivity=0.1,
+                 max_drift_factor=2.0):
         self.log_type = log_type
         self.window_size = window_size
         self.percentile = percentile
         self.min_threshold = min_threshold  # Floor threshold
         self.max_threshold = max_threshold   # Ceiling threshold
         self.drift_sensitivity = drift_sensitivity
+        # How far the rolling statistic may move the threshold away from the
+        # training baseline, as a multiplicative factor in either direction.
+        self.max_drift_factor = max_drift_factor
+        self.drift_clamped = False
         
         # Rolling window of MAE scores
         self.mae_history = deque(maxlen=window_size)
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         
         # Initial threshold from training (baseline)
         self.training_threshold = None
@@ -164,30 +169,48 @@ class AdaptiveThreshold:
         
     def add_mae(self, mae_score):
         """Add a new MAE score to the history."""
-        with self.lock:
-            self.mae_history.append(mae_score)
-            self.total_predictions += 1
-            if mae_score >= self.get_threshold():
-                self.anomalies_detected += 1
-                
+        self.add_mae_batch((mae_score,))
+
     def add_mae_batch(self, mae_scores):
-        """Add multiple MAE scores at once."""
-        for mae in mae_scores:
-            self.add_mae(mae)
+        """
+        Add MAE scores to the history.
+
+        The threshold is read once, before the lock is taken, for two reasons:
+        get_threshold() acquires self.lock itself (calling it from inside the
+        locked block deadlocked the worker), and it runs np.percentile over the
+        whole window, which must not run once per score.
+        """
+        threshold = self.get_threshold()
+        with self.lock:
+            for mae in mae_scores:
+                self.mae_history.append(mae)
+                self.total_predictions += 1
+                if mae >= threshold:
+                    self.anomalies_detected += 1
     
     def get_threshold(self):
         """
-        Get adaptive threshold based on rolling statistics.
-        
-        Strategy:
-        - If we have enough history: use rolling percentile
-        - Otherwise: use training threshold
-        - Apply min/max bounds
+        Adaptive threshold, anchored to the training baseline.
+
+        The rolling percentile on its own is not a usable IDS threshold. At a full
+        window it *is* the p95 of live traffic, which pins the alert rate at 5%
+        regardless of whether anything is wrong; and during a sustained attack the
+        attack's own MAE scores raise the percentile until the attack stops looking
+        anomalous. So the rolling value is only allowed to move the threshold within
+        [baseline / max_drift_factor, baseline * max_drift_factor], where the
+        baseline came from known-clean training data. That keeps adaptation to real
+        concept drift while denying live traffic the ability to redefine normal.
         """
         with self.lock:
+            baseline = self.training_threshold
+            clamped = False
+
             if len(self.mae_history) < 100:
                 # Not enough data - use training threshold
-                threshold = self.training_threshold
+                threshold = baseline
+            elif baseline is None:
+                # No clean baseline to anchor to (model loaded without one).
+                threshold = float(np.percentile(list(self.mae_history), self.percentile))
             else:
                 # Use rolling percentile of recent predictions
                 recent_maes = list(self.mae_history)
@@ -195,15 +218,33 @@ class AdaptiveThreshold:
                 
                 # Blend with training threshold (more weight to rolling as we get more data)
                 blend_factor = min(len(self.mae_history) / self.window_size, 1.0)
-                threshold = (1 - blend_factor) * self.training_threshold + blend_factor * rolling_threshold
-            
+                threshold = (1 - blend_factor) * baseline + blend_factor * rolling_threshold
+
+                # Anchor: bound the drift away from the clean baseline.
+                if self.max_drift_factor and self.max_drift_factor > 0 and baseline > 0:
+                    low = baseline / self.max_drift_factor
+                    high = baseline * self.max_drift_factor
+                    if threshold < low:
+                        threshold, clamped = low, True
+                    elif threshold > high:
+                        threshold, clamped = high, True
+
+            self.drift_clamped = clamped
+
+            # No baseline and not enough history yet. This guard has to come before
+            # the bounds below: comparing None against min_threshold raised TypeError,
+            # which broke get_threshold() for the first 100 predictions after loading
+            # any model saved without a threshold.
+            if threshold is None:
+                return 0.1
+
             # Apply bounds
             if self.min_threshold is not None and threshold < self.min_threshold:
                 threshold = self.min_threshold
             if self.max_threshold is not None and threshold > self.max_threshold:
                 threshold = self.max_threshold
                 
-            return float(threshold) if threshold is not None else 0.1
+            return float(threshold)
     
     def is_anomaly(self, mae_score):
         """Check if MAE score is anomalous."""
@@ -220,6 +261,11 @@ class AdaptiveThreshold:
                 'history_size': len(self.mae_history),
                 'training_threshold': self.training_threshold,
                 'current_threshold': self.get_threshold(),
+                'max_drift_factor': self.max_drift_factor,
+                # True when live traffic is trying to pull the threshold further from
+                # the clean baseline than max_drift_factor allows - i.e. either real
+                # drift that warrants retraining, or an ongoing flood.
+                'drift_clamped': self.drift_clamped,
                 'method': self.threshold_method
             }
             if len(self.mae_history) > 0:
@@ -270,7 +316,8 @@ class LSTMAutoencoder:
                 window_size=threshold_window,
                 percentile=threshold_percentile,
                 min_threshold=0.001,  # Floor: don't go below 0.1%
-                max_threshold=1.0     # Ceiling: don't exceed 100%
+                max_threshold=1.0,    # Ceiling: don't exceed 100%
+                max_drift_factor=float(os.environ.get('ADAPTIVE_MAX_DRIFT_FACTOR', 2.0))
             )
         else:
             self.adaptive = None
@@ -370,42 +417,42 @@ class LSTMAutoencoder:
     # =========================================================
 
     def train(self, data, epochs=100, batch_size=32,
-              validation_split=0.2, progress_callback=None):
+              validation_split=0.2, progress_callback=None,
+              early_stopping_patience=10, reduce_lr_patience=5,
+              threshold_sigma=None):
 
         try:
+            n_sequences = int(data.shape[0])
 
+            # train_worker builds sequences as stride-1 sliding windows, so consecutive
+            # sequences overlap by timesteps-1 rows. A plain tail split would therefore
+            # share rows across the boundary; drop a gap so validation is disjoint.
+            n_val = int(n_sequences * validation_split)
+            gap = self.timesteps if n_val > 0 else 0
+            n_train = n_sequences - n_val - gap
+
+            if n_val < 1 or n_train < 1:
+                logger.warning(
+                    "Only %d sequences: too few for a held-out split. Training on all of "
+                    "them and deriving the threshold from training error, which is "
+                    "optimistic and will over-alert in production.", n_sequences)
+                train_raw, val_raw = data, None
+                n_train, n_val, gap = n_sequences, 0, 0
+            else:
+                train_raw = data[:n_train]
+                val_raw = data[n_train + gap:]
+
+            logger.info("Training on %d sequences, validating on %d (disjoint gap: %d)",
+                        n_train, n_val, gap)
+
+            # Fit the scaler on the training split only. It was previously fit on the
+            # whole array including the validation tail, which leaked the global
+            # min/max into val_loss and made it optimistic.
             logger.info("Scaling training data")
-
-            data_scaled = self._scale_fit_transform(data)
+            train_scaled = self._scale_fit_transform(train_raw)
+            val_scaled = self._scale_transform(val_raw) if val_raw is not None else None
 
             self.model = self._build_model()
-
-            history = self.model.fit(
-                data_scaled,
-                data_scaled,
-                epochs=epochs,
-                batch_size=batch_size,
-                validation_split=validation_split,
-                verbose=1,
-                shuffle=False
-            )
-
-            preds = self.model.predict(data_scaled)
-
-            mae = np.mean(
-                np.abs(data_scaled - preds),
-                axis=(1, 2)
-            )
-
-            # Use a reasonable threshold from training (mean + 3 std is conservative)
-            self.threshold = float(np.mean(mae) + 3 * np.std(mae))
-            self.threshold_method = "TRAINING_MEAN_3STD"
-
-            logger.info(f"Training threshold (baseline): {self.threshold:.6f}")
-
-            # Set this as baseline for adaptive threshold
-            if self.adaptive is not None:
-                self.adaptive.set_training_threshold(self.threshold, self.threshold_method)
 
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
@@ -424,7 +471,91 @@ class LSTMAutoencoder:
                 f'threshold_{self.log_type}_{timestamp}.json'
             )
 
-            self.model.save(model_path)
+            # EarlyStopping, ModelCheckpoint and ReduceLROnPlateau were imported at the
+            # top of this module but never passed to fit(). The consequences were that
+            # training always ran the full epoch budget, and that model.save() persisted
+            # the *last* epoch while the returned validation_loss was np.min(val_loss)
+            # from the *best* epoch - a number describing a model that was never saved.
+            callbacks = []
+            if progress_callback is not None:
+                callbacks.append(progress_callback)
+            if val_scaled is not None:
+                callbacks.append(EarlyStopping(
+                    monitor='val_loss',
+                    patience=early_stopping_patience,
+                    restore_best_weights=True,
+                    verbose=1))
+                callbacks.append(ReduceLROnPlateau(
+                    monitor='val_loss',
+                    factor=0.5,
+                    patience=reduce_lr_patience,
+                    min_lr=1e-5,
+                    verbose=1))
+                callbacks.append(ModelCheckpoint(
+                    filepath=model_path,
+                    monitor='val_loss',
+                    save_best_only=True,
+                    verbose=0))
+
+            fit_kwargs = {
+                'epochs': epochs,
+                'batch_size': batch_size,
+                'verbose': 1,
+                'shuffle': False,
+                'callbacks': callbacks,
+            }
+            if val_scaled is not None:
+                fit_kwargs['validation_data'] = (val_scaled, val_scaled)
+
+            history = self.model.fit(train_scaled, train_scaled, **fit_kwargs)
+
+            # Reload from the checkpoint so the in-memory model is exactly what was
+            # persisted; the threshold below is then derived from the saved weights.
+            if val_scaled is not None and os.path.exists(model_path):
+                self.model = tf.keras.models.load_model(model_path)
+            else:
+                self.model.save(model_path)
+
+            # Threshold from held-out data. Reconstruction error on data the model was
+            # fit on is systematically lower than on unseen traffic, so a threshold
+            # derived from the training set sits below the real operating distribution.
+            if val_scaled is not None:
+                score_data = val_scaled
+                basis = "VALIDATION"
+            else:
+                score_data = train_scaled
+                basis = "TRAINING"
+
+            preds = self.model.predict(score_data, verbose=0)
+
+            mae = np.mean(
+                np.abs(score_data - preds),
+                axis=(1, 2)
+            )
+
+            # How many standard deviations above the mean reconstruction error counts as
+            # an anomaly. This was hardcoded at 3, which buys a very low false-positive
+            # rate at a heavy cost in recall. Measured on synthetic traffic with three
+            # seeds (see the Tier 3 notes), sweeping the multiplier gave:
+            #
+            #     mean + 1*std -> 89.0% detected, 16.2% false positives
+            #     mean + 2*std -> 56.9% detected,  1.4% false positives
+            #     mean + 3*std -> 22.4% detected,  0.0% false positives
+            #
+            # 3 is kept as the default so existing deployments do not change behaviour
+            # on an upgrade. Set ANOMALY_THRESHOLD_SIGMA to trade recall for precision;
+            # 2 is a more usual operating point for an IDS.
+            sigma = (threshold_sigma if threshold_sigma is not None
+                     else float(os.environ.get('ANOMALY_THRESHOLD_SIGMA', 3.0)))
+            self.threshold_method = f"{basis}_MEAN_{sigma:g}STD"
+
+            self.threshold = float(np.mean(mae) + sigma * np.std(mae))
+
+            logger.info(f"Anomaly threshold ({self.threshold_method}): {self.threshold:.6f}")
+
+            # Set this as baseline for adaptive threshold
+            if self.adaptive is not None:
+                self.adaptive.set_training_threshold(self.threshold, self.threshold_method)
 
             with open(scaler_path, 'wb') as f:
                 pickle.dump(self.scaler, f)
@@ -437,23 +568,26 @@ class LSTMAutoencoder:
 
             self.model_path = model_path
 
+            val_losses = history.history.get('val_loss')
+
             return {
                 'status': 'success',
                 'model_path': model_path,
                 'timestamp': timestamp,
-                'validation_loss': float(
-                    np.min(history.history['val_loss'])
-                ),
+                'validation_loss': float(np.min(val_losses)) if val_losses else None,
                 'training_loss': float(
                     np.min(history.history['loss'])
                 ),
                 'epochs_trained': len(history.history['loss']),
-                'anomaly_threshold': self.threshold
+                'anomaly_threshold': self.threshold,
+                'threshold_method': self.threshold_method,
+                'training_sequences': int(n_train),
+                'validation_sequences': int(n_val),
             }
 
         except Exception as e:
 
-            logger.error(str(e))
+            logger.exception("Training failed for %s", self.log_type)
 
             return {
                 'status': 'error',

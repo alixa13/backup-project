@@ -18,7 +18,7 @@
 #     → data-plane workloads; large, burst, CPU-bound
 #
 # Within COMPUTE, Flink and LSTM split the pool.
-# Flink has a hard-cap because its actual parallelism is fixed (submit-jobs.sh -p 16 supervised, -p 16 unsupervised).
+# Flink has a hard-cap because its actual parallelism is fixed (jobstarter.sh: -p 16 per job).
 # LSTM scales freely because training uses all its allocated cores (model.py dynamic threads).
 #
 # LSTM Gunicorn workers
@@ -208,7 +208,7 @@ PG_WORK_MEM=$(( POSTGRES_MEM * 1024 / 50 ))       # MB (small, many parallel que
 # ══════════════════════════════════════════════════════════════════════════════
 # 5. COMPUTE ALLOCATION  (Flink / LSTM)
 # ══════════════════════════════════════════════════════════════════════════════
-# Flink: fixed parallelism (submit-jobs.sh: max -p 16). Cap at 28 CPUs.
+# Flink: fixed parallelism (jobstarter.sh: max -p 16). Cap at 28 CPUs.
 #   More CPUs don't help beyond the job parallelism ceiling.
 # LSTM: gets the rest — benefits from extra CPUs during training.
 
@@ -244,9 +244,15 @@ LSTM_MEM_RES=$(( LSTM_MEM * 6 / 10 ));  [ "$LSTM_MEM_RES"  -lt 4 ] && LSTM_MEM_R
 #
 # inter_op: 4 is enough for all cases.
 
-LSTM_WORKERS=$(( AVAIL_PHYS / 4 ))
-[ "$LSTM_WORKERS" -lt 4  ] && LSTM_WORKERS=4
-[ "$LSTM_WORKERS" -gt 20 ] && LSTM_WORKERS=20
+# Single gunicorn worker, on purpose. The API keeps per-process state: the adaptive
+# threshold's rolling MAE window, training status/progress/queue, and the Flink buffer
+# status. With N workers each process held its own copy, so the same traffic was scored
+# against N different thresholds, "one training at a time" was only enforced per worker,
+# and /training/status answered from whichever worker the request happened to reach.
+# Concurrency comes from gunicorn --threads instead: TensorFlow releases the GIL inside
+# its kernels, so batch inference still spreads across cores. Raising this again requires
+# moving that state out of process first.
+LSTM_WORKERS=1
 
 TF_INTRAOP_INFERENCE=$(( LSTM_CPU / LSTM_WORKERS ))
 [ "$TF_INTRAOP_INFERENCE" -lt 2 ] && TF_INTRAOP_INFERENCE=2

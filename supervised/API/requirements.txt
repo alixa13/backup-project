@@ -1,11 +1,25 @@
-Flask
-scikit-learn
-pandas
-numpy
-joblib
-xgboost
-lightgbm
-imbalanced-learn
-python-dotenv
-flask-cors
-gunicorn
+# Pinned deliberately, and the base image is python:3.12 rather than 3.9.
+#
+# supervised/models/ids_best_*.pkl was pickled with scikit-learn 1.8.0 and numpy 2.x
+# (training ran under Python 3.12 - see the cpython-312 bytecode in supervised/).
+# scikit-learn 1.8.0 requires Python >=3.11 and publishes no cp39 wheel, so a python:3.9
+# image physically cannot install the version that produced the model; it silently
+# unpickled the artifact under a different scikit-learn, which is unsupported and can
+# change predictions without erroring.
+Flask==3.0.3
+flask-cors==5.0.0
+gunicorn==22.0.0
+python-dotenv==1.0.1
+
+joblib==1.4.2
+numpy==2.0.2
+pandas==2.2.3
+scikit-learn==1.8.0
+
+# final.py's IDSModel is LightGBM. xgboost is only needed for the legacy
+# xgboost_unsw42.joblib fallback path in app/logs/unsw42.py.
+lightgbm==4.5.0
+xgboost==2.1.4
+
+# imbalanced-learn was listed but nothing imports it. catboost is not used either -
+# supervised/catboost_info/ is leftover training exhaust, not a runtime dependency.

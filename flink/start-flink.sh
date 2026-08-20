@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 
-# Create and set permissions for savepoint directories (checkpointing disabled)
-echo "Setting up savepoint directories..."
-mkdir -p /opt/flink/savepoints
-chmod -R 777 /opt/flink/savepoints
+# Create and set permissions for checkpoint/savepoint directories
+echo "Setting up checkpoint and savepoint directories..."
+mkdir -p /opt/flink/savepoints /opt/flink/checkpoints
+chmod -R 777 /opt/flink/savepoints /opt/flink/checkpoints
 
 echo "Starting Flink cluster..."
 

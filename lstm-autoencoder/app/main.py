@@ -74,6 +74,38 @@ LOG_TYPES = {
 # In-memory buffer metrics reported by Flink (per log type)
 BUFFER_STATUS = {lt: {'buffer_size': 0, 'updated_at': None} for lt in LOG_TYPES.keys()}
 
+def build_sliding_windows(scaled_batch, timesteps):
+    """
+    Build one window per input record, each window ending at that record.
+
+    Returns shape (n_records, timesteps, n_features), so predict() yields exactly
+    one reconstruction error per record.
+
+    The previous implementation reshaped the batch into non-overlapping sequences
+    and then copied each sequence's score onto all `timesteps` records inside it.
+    That meant a single anomalous flow dragged its nine neighbours over the
+    threshold, and conversely one attack averaged with nine normal flows could be
+    diluted under it.
+
+    The first timesteps-1 records have no predecessors inside the batch, so the
+    front is edge-padded by repeating the first record. Those leading windows are
+    partly synthetic; at the batch sizes Flink sends (50 records, 10 timesteps)
+    they are a small fraction of each batch.
+    """
+    n_records = scaled_batch.shape[0]
+    n_features = scaled_batch.shape[1]
+    if n_records == 0:
+        return np.empty((0, timesteps, n_features), dtype=np.float32)
+    if timesteps > 1:
+        pad = np.repeat(scaled_batch[:1], timesteps - 1, axis=0)
+        padded = np.concatenate([pad, scaled_batch], axis=0)
+    else:
+        padded = scaled_batch
+    # sliding_window_view gives (n_records, n_features, timesteps)
+    windows = np.lib.stride_tricks.sliding_window_view(padded, timesteps, axis=0)
+    return np.ascontiguousarray(windows.transpose(0, 2, 1), dtype=np.float32)
+
+
 def create_app():
     app = Flask(__name__)
     
@@ -90,10 +122,11 @@ def create_app():
             encoding_dim=config['encoding_dim']
         )
     
-    # Sliding window buffers for each log type (for proper time-series prediction)
-    time_windows = {log_type: deque(maxlen=config['timesteps']) 
-                    for log_type, config in LOG_TYPES.items()}
-    
+    # No cross-request sliding-window buffer: it was per gunicorn worker, so with
+    # 11 workers each held roughly 1/11 of the stream and the "time sequence" fed to
+    # the model was whatever that worker happened to see. Windows are now built
+    # per request in build_sliding_windows().
+
     logger.info("LSTM API application starting up")
     
     @app.route('/health', methods=['GET'])
@@ -748,113 +781,42 @@ def create_app():
                 logger.warning(f"No scaler available for {log_type}, using raw data")
                 scaled_batch = input_array
             
-            # ULTRA-OPTIMIZED: Stateless batch prediction
-            # Use NON-OVERLAPPING windows for real-time detection (not sliding window training approach)
-            if batch_size >= config['timesteps']:
-                # Split batch into non-overlapping sequences
-                # Example: 100 samples, 10 timesteps = 10 sequences (not 91!)
-                num_complete_sequences = batch_size // config['timesteps']
-                usable_samples = num_complete_sequences * config['timesteps']
-                
-                if num_complete_sequences == 0:
-                    # Fall back to sliding window for small batches
-                    num_complete_sequences = 1
-                    usable_samples = config['timesteps']
-                
-                # Reshape into non-overlapping sequences: (num_sequences, timesteps, features)
-                sequences = scaled_batch[:usable_samples].reshape(
-                    num_complete_sequences, 
-                    config['timesteps'], 
-                    config['input_dim']
-                ).astype(np.float32)
-                
-                # FAST: Single TensorFlow call for entire batch
-                reconstructions = models[log_type].model.predict(
-                    sequences, 
-                    verbose=0, 
-                    batch_size=num_complete_sequences  # Predict all at once
-                )
-                
-                # Calculate MAE for each sequence
-                mae_scores = np.mean(np.abs(sequences - reconstructions), axis=(1, 2))
-                
-                # Feed MAE scores to adaptive threshold
-                if model_obj.adaptive is not None:
-                    model_obj.adaptive.add_mae_batch(mae_scores.tolist())
-                
-                # Expand scores to match input batch size (each sequence covers 'timesteps' samples)
-                expanded_scores = []
-                for mae in mae_scores:
-                    # Each sequence's score applies to all samples in that sequence
-                    expanded_scores.extend([mae] * config['timesteps'])
-                
-                # Pad if needed (unused samples at end)
-                while len(expanded_scores) < batch_size:
-                    expanded_scores.append(mae_scores[-1] if len(mae_scores) > 0 else 0.0)
-                
-                # Trim to exact batch size
-                expanded_scores = expanded_scores[:batch_size]
-                
-                # Return results
-                results = [
-                    {
-                        "mae": float(score),
-                        "is_anomaly": bool(score >= current_threshold)
-                    }
-                    for score in expanded_scores
-                ]
-                
-                return jsonify({
-                    "status": "success",
-                    "batch_size": len(results),
-                    "num_sequences": num_complete_sequences,
-                    "threshold": float(current_threshold),
-                    "threshold_method": threshold_method,
-                    "results": results
-                }), 200
-            
-            else:
-                # batch_size < timesteps: use sliding window, return 1 score per sample (Flink expects batch_size scores)
-                for row in scaled_batch:
-                    time_windows[log_type].append(row)
-                
-                if len(time_windows[log_type]) < config['timesteps']:
-                    # Buffering: replicate 0.0 so Flink gets batch_size scores
-                    results = [{"mae": 0.0, "is_anomaly": False} for _ in range(batch_size)]
-                    return jsonify({
-                        "prediction": "buffering",
-                        "batch_size": batch_size,
-                        "threshold": float(current_threshold),
-                        "threshold_method": threshold_method,
-                        "status": "success",
-                        "message": f"Buffering: {len(time_windows[log_type])}/{config['timesteps']}",
-                        "results": results
-                    }), 200
-                
-                # Create sequence from window, get one score, replicate for each sample in batch
-                time_window = np.array(list(time_windows[log_type])[-config['timesteps']:], dtype=np.float32)
-                time_window = time_window.reshape(1, config['timesteps'], config['input_dim'])
-                
-                reconstruction = models[log_type].model.predict(time_window, verbose=0)
-                mae = float(np.mean(np.abs(time_window - reconstruction)))
-                
-                # Feed MAE to adaptive threshold
-                if model_obj.adaptive is not None:
-                    model_obj.adaptive.add_mae(mae)
-                
-                # Return batch_size scores (Flink expects 1 per input sample)
-                results = [
-                    {"mae": mae, "is_anomaly": bool(mae >= current_threshold)}
-                    for _ in range(batch_size)
-                ]
-                return jsonify({
-                    "prediction": "anomaly" if mae >= current_threshold else "normal",
-                    "batch_size": batch_size,
-                    "threshold": float(current_threshold),
-                    "threshold_method": threshold_method,
-                    "status": "success",
-                    "results": results
-                }), 200
+            # One window per record, each ending at that record, so every record gets
+            # its own reconstruction error. Uniform for every batch size: no
+            # cross-request sliding-window state, and no fabricated 0.0 scores
+            # emitted while a buffer fills.
+            windows = build_sliding_windows(scaled_batch, config['timesteps'])
+
+            reconstructions = models[log_type].model.predict(
+                windows,
+                verbose=0,
+                batch_size=len(windows)
+            )
+
+            # One MAE per input record
+            mae_scores = np.mean(np.abs(windows - reconstructions), axis=(1, 2))
+
+            # Feed MAE scores to adaptive threshold
+            if model_obj.adaptive is not None:
+                model_obj.adaptive.add_mae_batch(mae_scores.tolist())
+
+            results = [
+                {
+                    "mae": float(score),
+                    "is_anomaly": bool(score >= current_threshold)
+                }
+                for score in mae_scores
+            ]
+
+            return jsonify({
+                "status": "success",
+                "batch_size": len(results),
+                "num_sequences": len(windows),
+                "scoring": "sliding_window",
+                "threshold": float(current_threshold),
+                "threshold_method": threshold_method,
+                "results": results
+            }), 200
             
         except Exception as e:
             import traceback
@@ -1203,7 +1165,17 @@ def create_app():
             with training_lock:
                 progress = training_progress.get(log_type)
                 status = training_status.get(log_type)
-            
+
+            # Training runs in a subprocess, so the authoritative progress is the file
+            # it writes; the in-memory dict only covers the unused in-process path.
+            progress_file = os.path.join(TRAINING_RESULT_DIR, f'training_progress_{log_type}.json')
+            try:
+                if os.path.exists(progress_file):
+                    with open(progress_file) as f:
+                        progress = json.load(f)
+            except (OSError, ValueError) as e:
+                logger.warning("Could not read training progress for %s: %s", log_type, e)
+
             if progress is None:
                 return jsonify({
                     "status": "success",

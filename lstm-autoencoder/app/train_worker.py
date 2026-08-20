@@ -23,6 +23,68 @@ LOG_TYPES = {
 RESULT_DIR = '/app/data'
 
 
+def progress_path(log_type):
+    return os.path.join(RESULT_DIR, f'training_progress_{log_type}.json')
+
+
+class FileProgressCallback:
+    """
+    Writes per-epoch progress where the API can read it.
+
+    Training runs in this subprocess, so the API's in-memory training_progress dict is
+    never updated by it - /training/progress used to report 'initializing' for the whole
+    run. Keras Callback is imported lazily so importing this module stays cheap.
+    """
+
+    def __new__(cls, log_type, total_epochs):
+        from tensorflow.keras.callbacks import Callback
+
+        class _Cb(Callback):
+            def __init__(self):
+                super().__init__()
+                self.log_type = log_type
+                self.total_epochs = total_epochs
+                self.started = None
+
+            def _write(self, payload):
+                try:
+                    tmp = progress_path(self.log_type) + '.tmp'
+                    with open(tmp, 'w') as f:
+                        json.dump(payload, f)
+                    os.replace(tmp, progress_path(self.log_type))
+                except OSError as e:
+                    logging.getLogger('train_worker').warning("progress write failed: %s", e)
+
+            def on_train_begin(self, logs=None):
+                self.started = datetime.now()
+                self._write({'status': 'training', 'current_epoch': 0,
+                             'total_epochs': self.total_epochs, 'progress_pct': 0,
+                             'started_at': self.started.isoformat()})
+
+            def on_epoch_end(self, epoch, logs=None):
+                logs = logs or {}
+                elapsed = (datetime.now() - self.started).total_seconds()
+                done = epoch + 1
+                eta = (elapsed / done) * (self.total_epochs - done)
+                self._write({
+                    'status': 'training',
+                    'current_epoch': done,
+                    'total_epochs': self.total_epochs,
+                    'loss': float(logs.get('loss', 0.0)),
+                    'val_loss': float(logs.get('val_loss', 0.0)),
+                    'progress_pct': int(done / max(self.total_epochs, 1) * 100),
+                    'elapsed_seconds': int(elapsed),
+                    'eta_seconds': int(eta),
+                    'started_at': self.started.isoformat(),
+                })
+
+            def on_train_end(self, logs=None):
+                self._write({'status': 'completed', 'total_epochs': self.total_epochs,
+                             'progress_pct': 100})
+
+        return _Cb()
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python -m app.train_worker <log_type>", file=sys.stderr)
@@ -95,12 +157,13 @@ def main():
         timesteps=config['timesteps'],
         encoding_dim=config['encoding_dim'],
     )
+    EPOCHS = 100
     training_result = model.train(
         data=X,
-        epochs=100,
+        epochs=EPOCHS,
         batch_size=64,
         validation_split=0.2,
-        progress_callback=None,
+        progress_callback=FileProgressCallback(log_type, EPOCHS),
     )
 
     if training_result.get('status') != 'success':

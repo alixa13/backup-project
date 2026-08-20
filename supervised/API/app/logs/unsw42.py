@@ -20,7 +20,7 @@ from app.config import (
     ENCODER_PATH_UNSW42,
     PREPROCESSOR_PATH_UNSW42,
 )
-from app.model_manager import get_trusted_ips
+from app.model_manager import get_trusted_ip_set
 
 logger = logging.getLogger("unsw42")
 
@@ -176,7 +176,7 @@ def predict_unsw42():
     data = request.get_json(force=True)
     # If source IP is in trusted list, skip anomaly check and return normal
     source_ip = data.get("id_orig_h") or data.get("source_ip")
-    if source_ip and source_ip in get_trusted_ips():
+    if source_ip and source_ip in get_trusted_ip_set():
         return jsonify({
             "ts": datetime.utcnow().isoformat() + "Z",
             "log_type": "unsw42",
@@ -208,13 +208,25 @@ def predict_unsw42():
     try:
         # Prefer final.py IDSModel (7-class attack type)
         if IDS_BEST_MODEL is not None:
-            predicted_label = IDS_BEST_MODEL.predict_from_42([float(x) for x in features])
-            anomaly_score = 0.1  # IDSModel returns class only; optional: add proba later
+            vec = [float(x) for x in features]
+            if hasattr(IDS_BEST_MODEL, "predict_from_42_with_proba"):
+                predicted_label, confidence = IDS_BEST_MODEL.predict_from_42_with_proba(vec)
+                # Same definition as the legacy path below: uncertainty in the call.
+                anomaly_score = 1.0 - confidence
+            else:
+                # Image built against an older final.py that lacks the proba method.
+                # Degrade to a class-only answer rather than 500 on every request.
+                logger.warning("final.py has no predict_from_42_with_proba; "
+                               "rebuild the supervised image to get real confidence")
+                predicted_label = IDS_BEST_MODEL.predict_from_42(vec)
+                confidence = None
+                anomaly_score = None
             return jsonify({
                 "ts": datetime.utcnow().isoformat() + "Z",
                 "log_type": "unsw42",
                 "prediction": str(predicted_label),
                 "anomaly_score": anomaly_score,
+                "confidence": confidence,
             }), 200
 
         # Legacy joblib path

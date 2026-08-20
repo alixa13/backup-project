@@ -422,10 +422,10 @@ class IDSModel:
 
     # ── PUBLIC: predict from 42-feature vector (Flink / API) ───────────────────
 
-    def predict_from_42(self, features: list) -> str:
+    def _x_from_42(self, features: list) -> np.ndarray:
         """
-        Predict attack type from a single 42-feature vector (f1..f42 order from
-        UNSW42FeatureEncoder / NUSW-NB15). Used by the supervised API when
+        Build the model input matrix from a single 42-feature vector (f1..f42 order
+        from UNSW42FeatureEncoder / NUSW-NB15). Used by the supervised API when
         Flink sends 42 features.
 
         Parameters
@@ -440,7 +440,7 @@ class IDSModel:
 
         Returns
         -------
-        str — predicted attack class (e.g. 'Exploits', 'Generic').
+        np.ndarray — shape (1, n_features), ready for _predict_arr / predict_proba.
         """
         if len(features) != 42:
             raise ValueError(f"Expected 42 features, got {len(features)}")
@@ -486,9 +486,39 @@ class IDSModel:
             if col not in df.columns:
                 df[col] = 0.0
         # Proto, service, state already encoded; do not run encode_categoricals
-        X = self._transform(df)
-        pred_idx = self._predict_arr(X)[0]
-        return str(self.label_encoder.inverse_transform([pred_idx])[0])
+        return self._transform(df)
+
+    def predict_from_42(self, features: list) -> str:
+        """
+        Predict attack type from a single 42-feature vector.
+        See _x_from_42 for the expected feature order.
+
+        Returns
+        -------
+        str — predicted attack class (e.g. 'Exploits', 'Generic').
+        """
+        return self.predict_from_42_with_proba(features)[0]
+
+    def predict_from_42_with_proba(self, features: list) -> tuple:
+        """
+        As predict_from_42, but also returns the 7-class model's probability for the
+        class that was finally chosen.
+
+        The Worms and Shellcode overrides in _predict_arr can select a class the main
+        model did not rank first. When that happens the confidence returned here is
+        low by design: it reports what the main model thought, and a specialist
+        detector overrode it.
+
+        Returns
+        -------
+        (label, confidence) : (str, float)
+        """
+        X = self._x_from_42(features)
+        pred_idx = int(self._predict_arr(X)[0])
+        label = str(self.label_encoder.inverse_transform([pred_idx])[0])
+        proba = self.main_model.predict_proba(X)[0]
+        confidence = float(proba[pred_idx]) if 0 <= pred_idx < len(proba) else float(np.max(proba))
+        return label, confidence
 
     # ── PUBLIC: evaluate ──────────────────────────────────────────────────────
 

@@ -15,7 +15,7 @@ import java.util.logging.Logger;
  */
 public class APIConfig {
     private static final Logger LOGGER = Logger.getLogger(APIConfig.class.getName());
-    private static final String CONFIG_FILE_PATH = "/opt/flink/config/api-config.properties";
+    private static final String DEFAULT_CONFIG_FILE_PATH = "/opt/flink/config/api-config.properties";
     private static Properties properties = new Properties();
     private static boolean initialized = false;
 
@@ -35,13 +35,33 @@ public class APIConfig {
     /**
      * Load configuration from properties file
      */
+    /**
+     * Resolve the properties file: system property "api.config.file", env
+     * API_CONFIG_FILE, else the packaged default. The path used to be a hardcoded
+     * constant, which is why the copy in src/main/resources was never read and why the
+     * class could not be exercised outside a container.
+     */
+    public static String getConfigFilePath() {
+        String path = System.getProperty("api.config.file");
+        if (path != null && !path.isEmpty()) return path;
+        path = System.getenv("API_CONFIG_FILE");
+        if (path != null && !path.isEmpty()) return path;
+        return DEFAULT_CONFIG_FILE_PATH;
+    }
+
     public static void loadConfig() {
-        try (InputStream input = new FileInputStream(CONFIG_FILE_PATH)) {
+        String configPath = getConfigFilePath();
+        try (InputStream input = new FileInputStream(configPath)) {
             properties.load(input);
             initialized = true;
-            LOGGER.info("Successfully loaded API configuration from: " + CONFIG_FILE_PATH);
+            LOGGER.info("Successfully loaded API configuration from: " + configPath);
         } catch (IOException ex) {
-            LOGGER.log(Level.SEVERE, "Failed to load API configuration file", ex);
+            // Mark initialized regardless: getProperty() re-invoked loadConfig() on every
+            // call while this stayed false, so a missing file meant re-opening it and
+            // logging a full stack trace for every single property read.
+            initialized = true;
+            LOGGER.log(Level.SEVERE,
+                    "Failed to load API configuration from " + configPath + "; using defaults", ex);
         }
     }
 
@@ -218,6 +238,24 @@ public class APIConfig {
      */
     public static int getRetryCount() {
         return getIntProperty("api.retry.count", 3);
+    }
+
+    /**
+     * Base delay for the retry backoff, in ms. The delay doubles per attempt and is
+     * capped by {@link #getRetryBackoffMaxMs()}.
+     * @return Base retry delay in ms
+     */
+    public static int getRetryDelayMs() {
+        return getIntProperty("api.retry.delay", 500);
+    }
+
+    /**
+     * Upper bound on a single retry sleep, in ms. This sleep happens on a Flink task
+     * thread, so it must stay small enough that a stalled API cannot block the pipeline.
+     * @return Max retry backoff in ms
+     */
+    public static int getRetryBackoffMaxMs() {
+        return getIntProperty("api.retry.backoff.max.ms", 4000);
     }
 
     /**

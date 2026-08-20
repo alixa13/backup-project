@@ -39,3 +39,27 @@ pcap/
 
 # Misc
 .DS_Store
+
+# ── Added: things that were one `git add -A` away from being committed ──────────
+# backups/ is 1.6GB and contains a full Python venv (backups/supervised/supervised/ai).
+# It is a second copy of the project, not a backup strategy - move it outside the repo.
+backups/
+
+# Kafka topic dumps (210MB) and training datasets (46MB)
+topic-exports/
+supervised/data/
+NUSW-NB15_features.csv
+
+# Trained model artifacts and training exhaust
+supervised/models/
+supervised/catboost_info/
+*.pkl
+*.joblib
+
+# Runtime state
+*.pid
+training-signals/
+.clear-data-on-next-start
+
+# Vendored jars: build them with `mvn package` instead
+flink/*.jar

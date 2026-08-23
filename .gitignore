@@ -63,3 +63,5 @@ training-signals/
 
 # Vendored jars: build them with `mvn package` instead
 flink/*.jar
+backups/supervised/supervised/ai/
+topic-exports/

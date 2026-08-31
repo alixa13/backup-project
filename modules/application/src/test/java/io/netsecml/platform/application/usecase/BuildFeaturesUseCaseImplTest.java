@@ -4,7 +4,10 @@ import io.netsecml.platform.domain.event.*;
 import io.netsecml.platform.domain.feature.FeatureBuildResult;
 import io.netsecml.platform.domain.feature.SourceWindowState;
 import org.junit.jupiter.api.Test;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import static org.junit.jupiter.api.Assertions.*;
 
 class BuildFeaturesUseCaseImplTest {
@@ -45,5 +48,34 @@ class BuildFeaturesUseCaseImplTest {
         assertEquals(2f, r2.vector().values()[17], "source_connections_5m after second event, same minute bucket");
         assertEquals(400f, r2.vector().values()[18], "300 + total_bytes(50+50)=100 = 400");
         assertEquals(1f, r2.vector().values()[19], "second event was failed (S0)");
+    }
+
+    // An injected Clock is what makes producedAt assertable. Without it the field
+    // would only ever be testable as "not null", which asserts nothing useful.
+    @Test
+    void stampsProducedAtFromTheInjectedClock() {
+        Instant fixed = Instant.parse("2026-08-27T10:03:11.402Z");
+        BuildFeaturesUseCaseImpl fixedClockUseCase =
+            new BuildFeaturesUseCaseImpl(Clock.fixed(fixed, ZoneOffset.UTC));
+
+        NetworkEvent e = event(Instant.ofEpochSecond(60_000), 100, 200, false);
+        FeatureBuildResult result = fixedClockUseCase.build(e, SourceWindowState.empty());
+
+        assertEquals(fixed, result.vector().producedAt());
+        assertEquals(e.sensor(), result.vector().sensor(), "sensor must propagate from the event");
+    }
+
+    // producedAt becomes a DateTime64(3) row_version. Sub-millisecond precision
+    // would not survive the round trip, so it is truncated at the source.
+    @Test
+    void truncatesProducedAtToMilliseconds() {
+        Instant subMilli = Instant.parse("2026-08-27T10:03:11.402987654Z");
+        BuildFeaturesUseCaseImpl fixedClockUseCase =
+            new BuildFeaturesUseCaseImpl(Clock.fixed(subMilli, ZoneOffset.UTC));
+
+        FeatureBuildResult result = fixedClockUseCase.build(
+            event(Instant.ofEpochSecond(60_000), 100, 200, false), SourceWindowState.empty());
+
+        assertEquals(subMilli.truncatedTo(ChronoUnit.MILLIS), result.vector().producedAt());
     }
 }

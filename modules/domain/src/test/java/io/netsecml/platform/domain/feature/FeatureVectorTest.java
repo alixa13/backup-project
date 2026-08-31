@@ -44,6 +44,8 @@ class FeatureVectorTest {
             "sensor-eu-1:abc", EVENT_TIME, SENSOR, "conn-feature-v1", "hash123", null, 0, PRODUCED_AT));
     }
 
+    // Sensor and producedAt use different null-check idioms upstream
+    // (IllegalArgumentException vs NPE); this verifies both independently.
     @Test
     void rejectsNullSensorAndNullProducedAt() {
         assertThrows(NullPointerException.class, () -> new FeatureVector(

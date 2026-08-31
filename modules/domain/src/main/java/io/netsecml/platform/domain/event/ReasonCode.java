@@ -17,12 +17,15 @@ public enum ReasonCode {
     // The two points in the pipeline where a record can be rejected.
     public enum Stage { PARSE, MAP }
 
+    // Immutable per constant — set once by the constructor below.
     private final Stage stage;
 
+    // Enum constructor: each constant above supplies its own stage.
     ReasonCode(Stage stage) {
         this.stage = stage;
     }
 
+    // Exposes the stage assigned by the constructor above.
     public Stage stage() {
         return stage;
     }

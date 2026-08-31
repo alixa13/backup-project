@@ -25,6 +25,8 @@ public final class BuildFeaturesUseCaseImpl implements BuildFeaturesUseCase {
         this(Clock.systemUTC());
     }
 
+    // Overload used by callers (tests, and later tasks) that need a fixed or
+    // fake Clock.
     public BuildFeaturesUseCaseImpl(Clock clock) {
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }

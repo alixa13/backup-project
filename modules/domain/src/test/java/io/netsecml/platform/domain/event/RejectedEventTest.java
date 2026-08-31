@@ -41,6 +41,8 @@ class RejectedEventTest {
             "", "tooshort", ReasonCode.MALFORMED_JSON, "", Instant.now()));
     }
 
+    // reason and receivedAt are structural (see RejectedEvent's compact
+    // constructor); this verifies both are independently null-checked.
     @Test
     void rejectsNullReasonAndNullReceivedAt() {
         assertThrows(NullPointerException.class, () -> new RejectedEvent(

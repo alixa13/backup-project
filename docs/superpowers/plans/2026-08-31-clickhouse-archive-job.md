@@ -161,7 +161,7 @@ class ReasonCodeTest {
     @Test
     void parseFailuresAreParseStage() {
         assertEquals(ReasonCode.Stage.PARSE, ReasonCode.MALFORMED_JSON.stage());
-        assertEquals(ReasonCode.Stage.PARSE, ReasonCode.MISSING_REQUIRED_FIELD.stage());
+        assertEquals(ReasonCode.Stage.MAP, ReasonCode.MISSING_REQUIRED_FIELD.stage());
     }
 
     // Map-stage codes are raised by domain validation after a successful parse.
@@ -249,7 +249,7 @@ public enum ReasonCode {
     // PARSE: raised before a ZeekConnEvent exists — the bytes are not a usable
     // source record at all.
     MALFORMED_JSON(Stage.PARSE),
-    MISSING_REQUIRED_FIELD(Stage.PARSE),
+    MISSING_REQUIRED_FIELD(Stage.MAP),
 
     // MAP: the DTO parsed cleanly, but domain validation refused a value.
     INVALID_TIMESTAMP(Stage.MAP),
@@ -1212,6 +1212,8 @@ The drift tests are the point of this task. A contract nobody checks rots the fi
     { "name": "eventId", "type": "string", "required": true, "description": "Composite <sensor>:<upstreamId> identity, matching feature_vectors.event_id" },
     { "name": "eventTime", "type": "string", "format": "date-time", "required": true, "description": "Zeek event timestamp, ISO-8601 UTC, millisecond precision" },
     { "name": "sensor", "type": "string", "required": true, "description": "Sensor that observed the connection; archived as its own column so training never splits eventId" },
+    { "name": "logType", "type": "string", "required": true, "description": "Which Zeek log produced this event. Vocabulary: conn, ssh, dns, http, modbus, s7comm. Only conn is implemented today; the field exists so the contract never needs a v2 when the others land" },
+    { "name": "connectionUid", "type": "string", "required": true, "description": "Zeek uid, the cross-protocol correlation key for one connection. Empty string when a log type carries none. NOT a record id — several dns/http records share one uid" },
     { "name": "schemaId", "type": "string", "required": true, "description": "Feature schema id, always conn-feature-v1 for this contract version" },
     { "name": "schemaHash", "type": "string", "required": true, "description": "SHA-256 of the canonical feature schema, 64 lowercase hex characters" },
     { "name": "values", "type": "array<float32>", "required": true, "description": "Exactly 20 values ordered per contracts/features/conn-feature-schema-v1.json" },
@@ -1249,6 +1251,7 @@ package io.netsecml.platform.adapter.kafka.sink;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.netsecml.platform.domain.event.LogType;
 import io.netsecml.platform.domain.event.ReasonCode;
 import io.netsecml.platform.domain.event.RejectedEvent;
 import io.netsecml.platform.domain.event.SensorId;
@@ -1292,7 +1295,8 @@ class StreamContractDriftTest {
 
     private FeatureVector vector() {
         return new FeatureVector("sensor-eu-1:abc", Instant.parse("2026-08-13T10:00:00Z"),
-            new SensorId("sensor-eu-1"), ConnFeatureSchemaV1.SCHEMA.id(), ConnFeatureSchemaV1.CONTENT_HASH,
+            new SensorId("sensor-eu-1"), LogType.CONN, "Cabc123XYZ",
+            ConnFeatureSchemaV1.SCHEMA.id(), ConnFeatureSchemaV1.CONTENT_HASH,
             new float[]{1f, 2f, 3f}, 7, Instant.parse("2026-08-13T10:00:00.402Z"));
     }
 
@@ -1332,6 +1336,8 @@ class StreamContractDriftTest {
         assertEquals(original.eventId(), restored.eventId());
         assertEquals(original.eventTime(), restored.eventTime());
         assertEquals(original.sensor(), restored.sensor());
+        assertEquals(original.logType(), restored.logType());
+        assertEquals(original.connectionUid(), restored.connectionUid());
         assertEquals(original.schemaId(), restored.schemaId());
         assertEquals(original.schemaHash(), restored.schemaHash());
         assertArrayEquals(original.values(), restored.values(), 0.0f);
@@ -1368,6 +1374,7 @@ package io.netsecml.platform.adapter.kafka.sink;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.netsecml.platform.domain.event.LogType;
 import io.netsecml.platform.domain.event.SensorId;
 import io.netsecml.platform.domain.feature.FeatureVector;
 import org.apache.kafka.common.serialization.Deserializer;
@@ -1398,6 +1405,8 @@ public final class FeatureVectorDeserializer implements Deserializer<FeatureVect
                 node.get("eventId").asText(),
                 Instant.parse(node.get("eventTime").asText()),
                 new SensorId(node.get("sensor").asText()),
+                LogType.valueOf(node.get("logType").asText().toUpperCase()),
+                node.get("connectionUid").asText(),
                 node.get("schemaId").asText(),
                 node.get("schemaHash").asText(),
                 values,
@@ -1518,7 +1527,7 @@ Applying the file against a real server is what verifies it. The tests mount **t
 - Consumes: nothing from earlier tasks.
 - Produces:
   - Tables `network_events`, `feature_vectors`, `predictions`, `invalid_events`, `model_releases`.
-  - `feature_vectors` columns: `event_id String`, `event_time DateTime64(3,'UTC')`, `sensor LowCardinality(String)`, `schema_id LowCardinality(String)`, `schema_hash FixedString(64)`, `` `values` Array(Float32) ``, `quality_flags UInt32`, `archived_at` (server DEFAULT), `row_version DateTime64(3,'UTC')`.
+  - `feature_vectors` columns: `event_id String`, `event_time DateTime64(3,'UTC')`, `sensor LowCardinality(String)`, `log_type LowCardinality(String)`, `connection_uid String`, `schema_id LowCardinality(String)`, `schema_hash FixedString(64)`, `` `values` Array(Float32) ``, `quality_flags UInt32`, `archived_at` (server DEFAULT), `row_version DateTime64(3,'UTC')`.
   - `invalid_events` columns: `event_id String`, `event_time Nullable(DateTime64(3,'UTC'))`, `received_at DateTime64(3,'UTC')`, `stage LowCardinality(String)`, `reason_code LowCardinality(String)`, `detail String`, `source_version LowCardinality(String)`, `raw_payload_hash FixedString(64)`, `created_at` (server DEFAULT).
   - `scripts/database/apply-ddl.sh` reading `CLICKHOUSE_HOST`, `CLICKHOUSE_PORT`, `CLICKHOUSE_DATABASE`, `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`.
 
@@ -1614,6 +1623,8 @@ CREATE TABLE IF NOT EXISTS feature_vectors (
   event_id      String,
   event_time    DateTime64(3, 'UTC'),
   sensor        LowCardinality(String),
+  log_type      LowCardinality(String),
+  connection_uid String,
   schema_id     LowCardinality(String),
   schema_hash   FixedString(64),
   `values`      Array(Float32),
@@ -1983,7 +1994,7 @@ The rows are the boundary between domain values and ClickHouse columns. Their `@
 **Interfaces:**
 - Consumes: `FeatureVector` (Task 2), `RejectedEvent` and `ReasonCode.stage()` (Task 1).
 - Produces:
-  - `FeatureVectorRow(String eventId, String eventTime, String sensor, String schemaId, String schemaHash, float[] values, int qualityFlags, String rowVersion)` — JSON keys `event_id`, `event_time`, `sensor`, `schema_id`, `schema_hash`, `values`, `quality_flags`, `row_version`.
+  - `FeatureVectorRow(String eventId, String eventTime, String sensor, String logType, String connectionUid, String schemaId, String schemaHash, float[] values, int qualityFlags, String rowVersion)` — JSON keys `event_id`, `event_time`, `sensor`, `log_type`, `connection_uid`, `schema_id`, `schema_hash`, `values`, `quality_flags`, `row_version`.
   - `InvalidEventRow(String eventId, String eventTime, String receivedAt, String stage, String reasonCode, String detail, String sourceVersion, String rawPayloadHash)` — JSON keys `event_id`, `event_time`, `received_at`, `stage`, `reason_code`, `detail`, `source_version`, `raw_payload_hash`.
   - `FeatureVectorRowMapper.toRow(FeatureVector): FeatureVectorRow`
   - `InvalidEventRowMapper.toRow(RejectedEvent): InvalidEventRow`
@@ -2013,7 +2024,7 @@ class FeatureVectorRowMapperTest {
 
     private FeatureVector vector() {
         return new FeatureVector("sensor-eu-1:abc", Instant.parse("2026-08-27T10:03:11.250Z"),
-            new SensorId("sensor-eu-1"), "conn-feature-v1", "f".repeat(64),
+            new SensorId("sensor-eu-1"), LogType.CONN, "Cabc123XYZ", "conn-feature-v1", "f".repeat(64),
             new float[]{1f, 2f, 3f}, 7, Instant.parse("2026-08-27T10:03:11.402Z"));
     }
 
@@ -2043,7 +2054,7 @@ class FeatureVectorRowMapperTest {
     @Test
     void usesProducedAtAsRowVersion() {
         FeatureVector later = new FeatureVector("sensor-eu-1:abc", Instant.parse("2026-08-27T10:03:11.250Z"),
-            new SensorId("sensor-eu-1"), "conn-feature-v1", "f".repeat(64),
+            new SensorId("sensor-eu-1"), LogType.CONN, "Cabc123XYZ", "conn-feature-v1", "f".repeat(64),
             new float[]{1f}, 0, Instant.parse("2026-08-27T11:00:00.000Z"));
 
         assertEquals("2026-08-27 11:00:00.000", mapper.toRow(later).rowVersion());
@@ -2060,8 +2071,8 @@ class FeatureVectorRowMapperTest {
         new ObjectMapper().readTree(json).fieldNames().forEachRemaining(emitted::add);
 
         assertEquals(new LinkedHashSet<>(List.of(
-            "event_id", "event_time", "sensor", "schema_id", "schema_hash",
-            "values", "quality_flags", "row_version")), emitted);
+            "event_id", "event_time", "sensor", "log_type", "connection_uid",
+            "schema_id", "schema_hash", "values", "quality_flags", "row_version")), emitted);
     }
 
     // The row is handed to a serializer on another thread's flush; it must not
@@ -2069,7 +2080,7 @@ class FeatureVectorRowMapperTest {
     @Test
     void defensivelyCopiesValues() {
         float[] values = new float[]{1f, 2f, 3f};
-        FeatureVectorRow row = new FeatureVectorRow("id", "t", "s", "sid", "h", values, 0, "v");
+        FeatureVectorRow row = new FeatureVectorRow("id", "t", "s", "conn", "Cuid", "sid", "h", values, 0, "v");
 
         values[0] = -1f;
         assertEquals(1f, row.values()[0]);
@@ -2188,6 +2199,8 @@ public record FeatureVectorRow(
     @JsonProperty("event_id") String eventId,
     @JsonProperty("event_time") String eventTime,
     @JsonProperty("sensor") String sensor,
+    @JsonProperty("log_type") String logType,
+    @JsonProperty("connection_uid") String connectionUid,
     @JsonProperty("schema_id") String schemaId,
     @JsonProperty("schema_hash") String schemaHash,
     @JsonProperty("values") float[] values,
@@ -2282,6 +2295,8 @@ public final class FeatureVectorRowMapper implements Serializable {
             vector.eventId(),
             ClickHouseTimestamps.format(vector.eventTime()),
             vector.sensor().value(),
+            vector.logType().wireName(),
+            vector.connectionUid(),
             vector.schemaId(),
             vector.schemaHash(),
             vector.values(),

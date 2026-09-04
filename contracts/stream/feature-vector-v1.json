@@ -1,0 +1,19 @@
+{
+  "id": "feature-vector-v1",
+  "semanticVersion": "1.0.0",
+  "topic": "netsec.conn.feature-vector.v1",
+  "encoding": "application/json",
+  "featureSchemaVersion": "conn-feature-v1",
+  "fields": [
+    { "name": "eventId", "type": "string", "required": true, "description": "Composite <sensor>:<upstreamId> identity, matching feature_vectors.event_id" },
+    { "name": "eventTime", "type": "string", "format": "date-time", "required": true, "description": "Zeek event timestamp, ISO-8601 UTC, millisecond precision" },
+    { "name": "sensor", "type": "string", "required": true, "description": "Sensor that observed the connection; archived as its own column so training never splits eventId" },
+    { "name": "logType", "type": "string", "required": true, "description": "Which Zeek log produced this event. Vocabulary: conn, ssh, dns, http, modbus, s7comm. Only conn is implemented today; the field exists so the contract never needs a v2 when the others land" },
+    { "name": "connectionUid", "type": "string", "required": true, "description": "Zeek uid, the cross-protocol correlation key for one connection. Empty string when a log type carries none. NOT a record id — several dns/http records share one uid" },
+    { "name": "schemaId", "type": "string", "required": true, "description": "Feature schema id, always conn-feature-v1 for this contract version" },
+    { "name": "schemaHash", "type": "string", "required": true, "description": "SHA-256 of the canonical feature schema, 64 lowercase hex characters" },
+    { "name": "values", "type": "array<float32>", "required": true, "description": "Exactly 20 values ordered per contracts/features/conn-feature-schema-v1.json" },
+    { "name": "qualityFlags", "type": "int32", "required": true, "description": "Bitfield reserved for per-vector quality signals; 0 today" },
+    { "name": "producedAt", "type": "string", "format": "date-time", "required": true, "description": "Emission time, ISO-8601 UTC. Archived as row_version, so the latest emission wins deduplication" }
+  ]
+}

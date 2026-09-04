@@ -1,0 +1,14 @@
+{
+  "id": "dlq-v1",
+  "semanticVersion": "1.0.0",
+  "topic": "netsec.conn.dlq.v1",
+  "encoding": "application/json",
+  "fields": [
+    { "name": "eventId", "type": "string", "required": true, "description": "Composite <sensor>:<upstreamId> identity for MAP-stage rejections; empty string for PARSE-stage, where no DTO existed" },
+    { "name": "stage", "type": "string", "required": true, "description": "PARSE when the bytes never became a valid source DTO, MAP when domain validation refused a parsed value" },
+    { "name": "reasonCode", "type": "string", "required": true, "description": "Domain ReasonCode name: MALFORMED_JSON, MISSING_REQUIRED_FIELD, INVALID_TIMESTAMP, INVALID_PORT, INVALID_COUNTER" },
+    { "name": "detail", "type": "string", "required": true, "description": "Human-readable reason detail; empty string when absent" },
+    { "name": "rawPayloadHash", "type": "string", "required": true, "description": "SHA-256 of the rejected bytes, 64 lowercase hex characters. The bytes themselves are never published" },
+    { "name": "receivedAt", "type": "string", "format": "date-time", "required": true, "description": "When the pipeline rejected the record, ISO-8601 UTC, stamped at the point of rejection" }
+  ]
+}

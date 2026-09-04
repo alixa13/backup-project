@@ -15,6 +15,9 @@ import java.util.Objects;
 public record RejectedRecord(byte[] rawPayload, ReasonCode reason, String detail,
                               Instant receivedAt, String eventId) {
     public RejectedRecord {
+        // Unlike eventId two lines below, reason and receivedAt have no sensible
+        // default — both are structurally required, so a null fails fast here
+        // instead of producing an unusable DLQ row.
         Objects.requireNonNull(reason, "reason must not be null");
         Objects.requireNonNull(receivedAt, "receivedAt must not be null");
 

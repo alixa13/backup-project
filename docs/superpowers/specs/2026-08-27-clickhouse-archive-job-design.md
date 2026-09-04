@@ -229,7 +229,7 @@ public record FeatureVector(String eventId, Instant eventTime, SensorId sensor,
 // ReasonCode — each code declares which pipeline stage produced it.
 public enum ReasonCode {
     MALFORMED_JSON(Stage.PARSE),
-    MISSING_REQUIRED_FIELD(Stage.PARSE),
+    MISSING_REQUIRED_FIELD(Stage.MAP),
     INVALID_TIMESTAMP(Stage.MAP),
     INVALID_PORT(Stage.MAP),
     INVALID_COUNTER(Stage.MAP);

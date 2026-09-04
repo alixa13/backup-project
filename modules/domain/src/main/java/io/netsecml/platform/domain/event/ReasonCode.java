@@ -4,12 +4,19 @@ package io.netsecml.platform.domain.event;
 // The archive job writes stage() into invalid_events.stage, so the mapping is
 // domain knowledge rather than something an adapter re-derives from the name.
 public enum ReasonCode {
-    // PARSE: raised before a ZeekConnEvent exists — the bytes are not a usable
-    // source record at all.
+    // PARSE: JsonZeekConnParser is the only PARSE-stage producer, and
+    // MALFORMED_JSON is the only reason it ever returns — a structurally
+    // invalid payload and one missing a Jackson-required field both surface as
+    // the same Jackson exception, so no ZeekConnEvent was produced either way.
     MALFORMED_JSON(Stage.PARSE),
-    MISSING_REQUIRED_FIELD(Stage.PARSE),
 
-    // MAP: the DTO parsed cleanly, but domain validation refused a value.
+    // MAP: the DTO parsed cleanly, so everything below is raised by domain
+    // validation (EventMapper) after that point. MISSING_REQUIRED_FIELD is
+    // EventMapper's own required-field check — id, id_orig_h/id_resp_h,
+    // conn_state — for fields Jackson's required=true cannot enforce
+    // structurally; it is MAP, never PARSE, because the parser itself never
+    // raises it.
+    MISSING_REQUIRED_FIELD(Stage.MAP),
     INVALID_TIMESTAMP(Stage.MAP),
     INVALID_PORT(Stage.MAP),
     INVALID_COUNTER(Stage.MAP);

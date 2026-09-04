@@ -1,6 +1,5 @@
 package io.netsecml.platform.adapter.clickhouse.mapper;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netsecml.platform.adapter.clickhouse.row.FeatureVectorRow;
 import io.netsecml.platform.domain.event.LogType;
@@ -36,6 +35,14 @@ class FeatureVectorRowMapperTest {
         assertEquals("f".repeat(64), row.schemaHash());
         assertArrayEquals(new float[]{1f, 2f, 3f}, row.values(), 0.0f);
         assertEquals(7, row.qualityFlags());
+        // log_type must be the lowercase wire form ("conn"), never the enum's
+        // name() ("CONN") — ClickHouse's LowCardinality(String) column accepts
+        // either with no server-side error, so a regression from wireName() to
+        // name() would silently corrupt every archived row unless caught here.
+        assertEquals("conn", row.logType());
+        // connection_uid is Zeek's cross-protocol correlation key; confirm it
+        // passes through unchanged rather than being dropped or renamed.
+        assertEquals("Cabc123XYZ", row.connectionUid());
     }
 
     // ClickHouse parses DateTime64(3) from 'yyyy-MM-dd HH:mm:ss.SSS'. ISO-8601

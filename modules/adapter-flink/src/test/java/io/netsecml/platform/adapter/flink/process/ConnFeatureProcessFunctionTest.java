@@ -17,8 +17,11 @@ class ConnFeatureProcessFunctionTest {
         ConnectionTuple tuple = new ConnectionTuple(sourceIp, 51820, "93.184.216.34", 443,
             Protocol.TCP, ServiceCode.SSL, ConnectionState.SF);
         ConnectionMeasurements measurements = new ConnectionMeasurements(1000, originBytes, 0, 1, 1, 0);
+        // LogType.CONN and a non-blank uid are required positional components now;
+        // this harness test only exercises per-key windowing, so a fixed constant
+        // and the same composite string used to derive eventId are enough.
         return new NetworkEvent(EventId.derive(sensor, eventTime.toString() + sourceIp), eventTime, sensor,
-            tuple, measurements, new ConnectionLocality(null, null));
+            LogType.CONN, eventTime.toString() + sourceIp, tuple, measurements, new ConnectionLocality(null, null));
     }
 
     @Test

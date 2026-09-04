@@ -35,6 +35,18 @@ class EventMapperTest {
         assertEquals(2048L, event.measurements().originBytes());
     }
 
+    // EventMapper handles conn.log exclusively, so LogType.CONN should show up as
+    // a constant on every mapped event, and connectionUid must be the fixture's
+    // raw "id" (Zeek's uid), not something re-derived or altered.
+    @Test
+    void mapsLogTypeAndConnectionUidFromTheFixture() throws IOException {
+        MappingResult<NetworkEvent> result = mapper.map(fixture("valid-tcp-ssl.json"), sensor);
+        assertTrue(result.isValid());
+        NetworkEvent event = result.value();
+        assertEquals(LogType.CONN, event.logType());
+        assertEquals("Cabc123XYZ", event.connectionUid());
+    }
+
     @Test
     void defaultsMissingOptionalNumericFieldsToZero() throws IOException {
         MappingResult<NetworkEvent> result = mapper.map(fixture("valid-udp-dns.json"), sensor);

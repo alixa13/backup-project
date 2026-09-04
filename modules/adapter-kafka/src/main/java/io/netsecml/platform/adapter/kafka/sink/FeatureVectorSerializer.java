@@ -18,6 +18,16 @@ public final class FeatureVectorSerializer implements Serializer<FeatureVector> 
             node.put("eventId", vector.eventId());
             node.put("eventTime", vector.eventTime().toString());
             node.put("sensor", vector.sensor().value());
+
+            // Which Zeek log produced this. Lowercase wire form so it matches
+            // Zeek's log naming and ClickHouse's log_type column directly.
+            node.put("logType", vector.logType().wireName());
+
+            // Zeek's uid: the cross-protocol correlation key for one connection.
+            // A correlation key only — several dns/http records share one uid, so
+            // it is never an identity.
+            node.put("connectionUid", vector.connectionUid());
+
             node.put("schemaId", vector.schemaId());
             node.put("schemaHash", vector.schemaHash());
 

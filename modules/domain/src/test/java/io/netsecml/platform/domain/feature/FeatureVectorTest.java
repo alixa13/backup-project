@@ -1,5 +1,6 @@
 package io.netsecml.platform.domain.feature;
 
+import io.netsecml.platform.domain.event.LogType;
 import io.netsecml.platform.domain.event.SensorId;
 import org.junit.jupiter.api.Test;
 import java.time.Instant;
@@ -15,8 +16,8 @@ class FeatureVectorTest {
     @Test
     void storesValuesAndReturnsDefensiveCopy() {
         float[] values = new float[]{1f, 2f, 3f};
-        FeatureVector vector = new FeatureVector("sensor-eu-1:abc", EVENT_TIME, SENSOR,
-            "conn-feature-v1", "hash123", values, 0, PRODUCED_AT);
+        FeatureVector vector = new FeatureVector("sensor-eu-1:abc", EVENT_TIME, SENSOR, LogType.CONN,
+            "Cabc123XYZ", "conn-feature-v1", "hash123", values, 0, PRODUCED_AT);
 
         values[0] = -1f;
         assertEquals(1f, vector.values()[0], "mutating the array passed to the constructor must not affect internal state");
@@ -31,17 +32,29 @@ class FeatureVectorTest {
     // for training, so they are structural, not optional.
     @Test
     void exposesSensorAndProducedAt() {
-        FeatureVector vector = new FeatureVector("sensor-eu-1:abc", EVENT_TIME, SENSOR,
-            "conn-feature-v1", "hash123", new float[]{1f}, 0, PRODUCED_AT);
+        FeatureVector vector = new FeatureVector("sensor-eu-1:abc", EVENT_TIME, SENSOR, LogType.CONN,
+            "Cabc123XYZ", "conn-feature-v1", "hash123", new float[]{1f}, 0, PRODUCED_AT);
 
         assertEquals(SENSOR, vector.sensor());
         assertEquals(PRODUCED_AT, vector.producedAt());
     }
 
+    // logType and connectionUid are this task's two additions; this confirms
+    // both survive construction and come back unchanged, same as sensor/producedAt above.
+    @Test
+    void exposesLogTypeAndConnectionUid() {
+        FeatureVector vector = new FeatureVector("sensor-eu-1:abc", EVENT_TIME, SENSOR, LogType.CONN,
+            "Cabc123XYZ", "conn-feature-v1", "hash123", new float[]{1f}, 0, PRODUCED_AT);
+
+        assertEquals(LogType.CONN, vector.logType());
+        assertEquals("Cabc123XYZ", vector.connectionUid());
+    }
+
     @Test
     void rejectsNullValues() {
         assertThrows(IllegalArgumentException.class, () -> new FeatureVector(
-            "sensor-eu-1:abc", EVENT_TIME, SENSOR, "conn-feature-v1", "hash123", null, 0, PRODUCED_AT));
+            "sensor-eu-1:abc", EVENT_TIME, SENSOR, LogType.CONN, "Cabc123XYZ", "conn-feature-v1", "hash123",
+            null, 0, PRODUCED_AT));
     }
 
     // Sensor and producedAt use different null-check idioms upstream
@@ -49,8 +62,24 @@ class FeatureVectorTest {
     @Test
     void rejectsNullSensorAndNullProducedAt() {
         assertThrows(NullPointerException.class, () -> new FeatureVector(
-            "sensor-eu-1:abc", EVENT_TIME, null, "conn-feature-v1", "hash123", new float[]{1f}, 0, PRODUCED_AT));
+            "sensor-eu-1:abc", EVENT_TIME, null, LogType.CONN, "Cabc123XYZ", "conn-feature-v1", "hash123",
+            new float[]{1f}, 0, PRODUCED_AT));
         assertThrows(NullPointerException.class, () -> new FeatureVector(
-            "sensor-eu-1:abc", EVENT_TIME, SENSOR, "conn-feature-v1", "hash123", new float[]{1f}, 0, null));
+            "sensor-eu-1:abc", EVENT_TIME, SENSOR, LogType.CONN, "Cabc123XYZ", "conn-feature-v1", "hash123",
+            new float[]{1f}, 0, null));
+    }
+
+    // logType mirrors NetworkEvent: structural, so a null is rejected. A null
+    // connectionUid is not always avoidable upstream (Modbus/S7comm may carry no
+    // uid), so it normalizes to "" instead, matching RejectedEvent.eventId's convention.
+    @Test
+    void rejectsNullLogTypeButNormalizesNullConnectionUidToEmpty() {
+        assertThrows(NullPointerException.class, () -> new FeatureVector(
+            "sensor-eu-1:abc", EVENT_TIME, SENSOR, null, "Cabc123XYZ", "conn-feature-v1", "hash123",
+            new float[]{1f}, 0, PRODUCED_AT));
+
+        FeatureVector vector = new FeatureVector("sensor-eu-1:abc", EVENT_TIME, SENSOR, LogType.CONN,
+            null, "conn-feature-v1", "hash123", new float[]{1f}, 0, PRODUCED_AT);
+        assertEquals("", vector.connectionUid());
     }
 }

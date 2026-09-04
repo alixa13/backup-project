@@ -23,6 +23,17 @@ public final class EventMapper {
         EventId eventId = EventId.derive(sensor, dto.id());
         Instant eventTime = Instant.ofEpochMilli(Math.round(dto.ts() * 1000.0));
 
+        // This mapper handles conn.log exclusively, so LogType.CONN is a fixed
+        // constant here rather than something derived per event.
+        LogType logType = LogType.CONN;
+
+        // dto.id() is Zeek's uid: the source contract's upstream record id and the
+        // cross-protocol correlation key. eventId above already derives from this
+        // same value, and that derivation is unchanged — one conn record exists per
+        // connection, so sensor:uid remains a safe identity for eventId even though
+        // connectionUid itself is never anything more than a correlation key.
+        String connectionUid = dto.id();
+
         ConnectionTuple tuple;
         try {
             tuple = new ConnectionTuple(
@@ -51,7 +62,7 @@ public final class EventMapper {
 
         ConnectionLocality locality = new ConnectionLocality(dto.localOrig(), dto.localResp());
 
-        NetworkEvent event = new NetworkEvent(eventId, eventTime, sensor, tuple, measurements, locality);
+        NetworkEvent event = new NetworkEvent(eventId, eventTime, sensor, logType, connectionUid, tuple, measurements, locality);
         return MappingResult.valid(event);
     }
 }

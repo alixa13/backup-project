@@ -19,8 +19,11 @@ class BuildFeaturesUseCaseImplTest {
         ConnectionTuple tuple = new ConnectionTuple("10.0.0.5", 51820, "93.184.216.34", 443,
             Protocol.TCP, ServiceCode.SSL, state);
         ConnectionMeasurements measurements = new ConnectionMeasurements(1000, originBytes, responseBytes, 5, 5, 0);
-        return new NetworkEvent(EventId.derive(sensor, eventTime.toString()), eventTime, sensor, tuple, measurements,
-            new ConnectionLocality(null, null));
+        // LogType.CONN and a non-blank uid are required positional components now;
+        // this use case test only exercises feature-building math, so a fixed
+        // constant and the same timestamp-derived id used for eventId are enough.
+        return new NetworkEvent(EventId.derive(sensor, eventTime.toString()), eventTime, sensor, LogType.CONN,
+            eventTime.toString(), tuple, measurements, new ConnectionLocality(null, null));
     }
 
     @Test

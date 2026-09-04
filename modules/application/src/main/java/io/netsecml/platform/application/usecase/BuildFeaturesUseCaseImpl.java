@@ -50,12 +50,15 @@ public final class BuildFeaturesUseCaseImpl implements BuildFeaturesUseCase {
         values[18] = newState.byteSum5m();
         values[19] = newState.failedCount5m();
 
+        // logType and connectionUid pass straight through from the event, unchanged.
         // producedAt is truncated to milliseconds because it lands in a
         // DateTime64(3) row_version; finer precision would not round-trip.
         FeatureVector vector = new FeatureVector(
             event.eventId().value(),
             event.eventTime(),
             event.sensor(),
+            event.logType(),
+            event.connectionUid(),
             ConnFeatureSchemaV1.SCHEMA.id(),
             ConnFeatureSchemaV1.CONTENT_HASH,
             values,

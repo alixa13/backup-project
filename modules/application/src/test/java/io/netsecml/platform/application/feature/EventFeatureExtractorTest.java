@@ -16,8 +16,11 @@ class EventFeatureExtractorTest {
             proto, service, state);
         ConnectionMeasurements measurements = new ConnectionMeasurements(
             durationMillis, originBytes, responseBytes, originPackets, responsePackets, 0);
-        return new NetworkEvent(EventId.derive(sensor, "abc"), Instant.now(), sensor, tuple, measurements,
-            new ConnectionLocality(null, null));
+        // LogType.CONN and a non-blank uid are required positional components now;
+        // this extractor only cares about event-level feature math, not log type or
+        // correlation, so a fixed constant and the same "abc" id used above are enough.
+        return new NetworkEvent(EventId.derive(sensor, "abc"), Instant.now(), sensor, LogType.CONN, "abc",
+            tuple, measurements, new ConnectionLocality(null, null));
     }
 
     @Test

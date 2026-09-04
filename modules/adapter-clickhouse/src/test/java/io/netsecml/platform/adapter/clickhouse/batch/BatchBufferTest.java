@@ -9,6 +9,7 @@ class BatchBufferTest {
     // to reason about below.
     private static final String TEN_BYTE_LINE = "0123456789";
 
+    // Locks down that a fresh buffer has no rows, is not full, and reports zero bytes.
     @Test
     void startsEmpty() {
         BatchBuffer buffer = new BatchBuffer(5, 1000);
@@ -54,6 +55,7 @@ class BatchBufferTest {
         assertEquals(7, buffer.byteSize());
     }
 
+    // Locks down that drain returns all buffered rows and resets both line and byte counts.
     @Test
     void drainReturnsEverythingAndEmptiesTheBuffer() {
         BatchBuffer buffer = new BatchBuffer(10, 1_000_000);
@@ -67,6 +69,7 @@ class BatchBufferTest {
         assertFalse(buffer.isFull());
     }
 
+    // Locks down that drain on a never-filled buffer returns an empty list, not null.
     @Test
     void drainOnAnEmptyBufferReturnsAnEmptyList() {
         assertEquals(List.of(), new BatchBuffer(10, 1000).drain());
@@ -85,6 +88,8 @@ class BatchBufferTest {
         assertEquals(List.of("a"), drained);
     }
 
+    // Locks down that a maxRows of 0 would make isFull() always true, causing every
+    // row to flush immediately and defeat the purpose of batching; likewise for maxBytes.
     @Test
     void rejectsNonPositiveLimits() {
         assertThrows(IllegalArgumentException.class, () -> new BatchBuffer(0, 1000));

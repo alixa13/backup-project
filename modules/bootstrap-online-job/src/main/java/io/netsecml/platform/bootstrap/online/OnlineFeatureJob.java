@@ -81,7 +81,10 @@ public final class OnlineFeatureJob {
             .setRecordSerializer(KafkaRecordSerializationSchema.<RejectedRecord>builder()
                 .setTopic(dlqTopic)
                 .setValueSerializationSchema(r -> rejectedSerializer.serialize(dlqTopic,
-                    new RejectedRecordPayload(r.rawPayload(), r.reason().name(), r.detail())))
+                    // stage comes from the domain's ReasonCode, so the archive
+                    // adapter never has to re-derive it from the reason name.
+                    new RejectedRecordPayload(r.rawPayload(), r.eventId(), r.reason().stage().name(),
+                        r.reason().name(), r.detail(), r.receivedAt())))
                 .build())
             .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
             .build();

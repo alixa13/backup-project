@@ -99,6 +99,11 @@
         <version>1.21.4</version>
         <scope>test</scope>
       </dependency>
+      <dependency>
+        <groupId>com.clickhouse</groupId>
+        <artifactId>client-v2</artifactId>
+        <version>0.9.0</version>
+      </dependency>
     </dependencies>
   </dependencyManagement>
 

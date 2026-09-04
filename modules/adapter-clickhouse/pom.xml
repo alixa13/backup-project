@@ -18,23 +18,49 @@
   <description>ClickHouse archive writer adapter only. Never on the online scoring path.</description>
 
   <dependencies>
+    <!--
+      domain only. This adapter maps domain values (FeatureVector, RejectedEvent)
+      to ClickHouse rows; it needs neither ports nor application, and it must
+      never import adapter-kafka or adapter-flink. The unused ports/application
+      dependencies from the Step 1 skeleton are removed so the narrow boundary
+      this module claims is enforced by its own classpath.
+    -->
     <dependency>
       <groupId>io.netsecml.platform</groupId>
       <artifactId>domain</artifactId>
       <version>${project.version}</version>
     </dependency>
+
+    <!-- Rows are serialized to JSONEachRow lines; the @JsonProperty names on the
+         row records ARE the ClickHouse column names. -->
     <dependency>
-      <groupId>io.netsecml.platform</groupId>
-      <artifactId>ports</artifactId>
-      <version>${project.version}</version>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.17.1</version>
     </dependency>
+
+    <!-- The official ClickHouse client. Pulls httpclient5 and clickhouse-data. -->
     <dependency>
-      <groupId>io.netsecml.platform</groupId>
-      <artifactId>application</artifactId>
-      <version>${project.version}</version>
+      <groupId>com.clickhouse</groupId>
+      <artifactId>client-v2</artifactId>
     </dependency>
+
+    <!-- Sink V2 interfaces (org.apache.flink.api.connector.sink2). No Kafka
+         connector types are used here — the sink is transport-agnostic. -->
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-streaming-java</artifactId>
+    </dependency>
+
     <dependency>
       <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Brings testcontainers core (GenericContainer) transitively. -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
     </dependency>

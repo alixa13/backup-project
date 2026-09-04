@@ -23,6 +23,9 @@ class FeatureVectorSerializerTest {
             Instant.parse("2026-08-13T10:00:00.402Z"));
     }
 
+    // Baseline smoke test for the fields that predate this task. sensor and
+    // producedAt get their own dedicated tests below, so this one deliberately
+    // stays focused on what was already on the wire.
     @Test
     void serializesAllFieldsAsJson() throws Exception {
         byte[] bytes = new FeatureVectorSerializer().serialize("netsec.conn.feature-vector.v1", vector());

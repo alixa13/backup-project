@@ -77,6 +77,14 @@ class OnlineFeatureJobE2ETest {
             assertTrue(collected.size() >= 1, "expected at least one feature vector published within 60s");
             assertTrue(collected.get(0).contains("\"schemaId\":\"conn-feature-v1\""));
             assertTrue(collected.get(0).contains("sensor-eu-1:Cabc123XYZ"));
+
+            // The two envelope fields the archive job depends on. Without these
+            // assertions the wire contract could lose them and this test would
+            // still pass, since every check above is a substring match.
+            assertTrue(collected.get(0).contains("\"sensor\":\"sensor-eu-1\""),
+                "the published record must carry the sensor as its own field");
+            assertTrue(collected.get(0).contains("\"producedAt\":"),
+                "the published record must carry an emission timestamp for row_version");
         }
     }
 }

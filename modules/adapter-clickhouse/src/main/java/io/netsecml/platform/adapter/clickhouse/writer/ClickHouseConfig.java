@@ -23,4 +23,15 @@ public record ClickHouseConfig(String endpoint, String database, String username
     public static ClickHouseConfig of(String host, int port, String database, String username, String password) {
         return new ClickHouseConfig("http://" + host + ":" + port, database, username, password);
     }
+
+    // A record's generated toString() would print password in clear -- and this
+    // config crosses the job graph into every subtask's logs and exceptions, so
+    // that generated form is a real leak, not a theoretical one. Redact the
+    // password while keeping every other field, which is what makes this config
+    // identifiable in a log line, useful for debugging a bad connection.
+    @Override
+    public String toString() {
+        return "ClickHouseConfig[endpoint=" + endpoint + ", database=" + database
+            + ", username=" + username + ", password=REDACTED]";
+    }
 }

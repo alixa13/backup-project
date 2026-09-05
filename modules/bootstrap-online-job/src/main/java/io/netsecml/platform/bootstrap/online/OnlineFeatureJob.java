@@ -37,16 +37,29 @@ public final class OnlineFeatureJob {
             .setValueOnlyDeserializer(new RawBytesDeserializationSchema())
             .build();
 
-        DataStream<byte[]> rawStream = env.fromSource(source, WatermarkStrategy.noWatermarks(), "conn-raw-source");
+        // Every operator and sink below gets an explicit, stable .uid(). Without one
+        // Flink derives the operator ID from the topology hash, so ANY future edit to
+        // this graph silently discards state on restore-from-checkpoint instead of
+        // failing loudly -- and THIS job is the one where that risk is real:
+        // ConnFeatureProcessFunction holds keyed rolling-window state per
+        // (sensor, sourceIp). Assigning uids now is a one-time cost -- it changes
+        // operator identity, so an existing checkpoint/savepoint will not restore
+        // across this change -- but that cost is bounded (the keyed state carries a
+        // 30-minute TTL, so the worst case is a cold window, not a correctness bug)
+        // and strictly cheaper to pay now than after more state has accumulated.
+        DataStream<byte[]> rawStream = env.fromSource(source, WatermarkStrategy.noWatermarks(), "conn-raw-source")
+            .uid("conn-raw-source");
 
         SingleOutputStreamOperator<NetworkEvent> parsed = rawStream
             .process(new ParseMapValidateFunction(sensor))
-            .name("parse-map-validate");
+            .name("parse-map-validate")
+            .uid("parse-map-validate");
 
         DataStream<FeatureVector> featureVectors = parsed
             .keyBy(new SourceKeySelector())
             .process(new ConnFeatureProcessFunction())
-            .name("conn-feature-extraction");
+            .name("conn-feature-extraction")
+            .uid("conn-feature-extraction");
 
         FeatureVectorSerializer featureSerializer = new FeatureVectorSerializer();
         RejectedRecordSerializer rejectedSerializer = new RejectedRecordSerializer();
@@ -59,7 +72,7 @@ public final class OnlineFeatureJob {
                 .build())
             .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
             .build();
-        featureVectors.sinkTo(featureSink).name("feature-vector-sink");
+        featureVectors.sinkTo(featureSink).name("feature-vector-sink").uid("feature-vector-sink");
 
         DataStream<RejectedRecord> rejected = parsed.getSideOutput(ParseMapValidateFunction.REJECTED_TAG);
         KafkaSink<RejectedRecord> dlqSink = KafkaSink.<RejectedRecord>builder()
@@ -74,7 +87,7 @@ public final class OnlineFeatureJob {
                 .build())
             .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
             .build();
-        rejected.sinkTo(dlqSink).name("dlq-sink");
+        rejected.sinkTo(dlqSink).name("dlq-sink").uid("dlq-sink");
     }
 
     public static void main(String[] args) throws Exception {

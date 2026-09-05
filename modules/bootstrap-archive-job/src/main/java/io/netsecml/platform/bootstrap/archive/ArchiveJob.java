@@ -43,23 +43,40 @@ public final class ArchiveJob {
     public static void build(StreamExecutionEnvironment env, String bootstrapServers,
                              String featureVectorTopic, String dlqTopic, ClickHouseConfig clickHouse) {
 
+        // Every operator and sink below gets an explicit, stable .uid(). Without
+        // one Flink derives the operator ID from the topology hash, so ANY future
+        // edit to this graph (adding/removing/reordering an operator) silently
+        // discards state on restore-from-checkpoint instead of failing loudly.
+        // Assigning uids now is a one-time cost: it changes operator identity, so
+        // an existing checkpoint/savepoint will not restore across this change.
+        // That cost is bounded -- this job carries no keyed state, only the
+        // source's committed-offset position and the sink's in-flight batch, both
+        // of which replay safely from Kafka -- and it is strictly cheaper to pay
+        // now than after this job has run longer in production.
+
         // Chain 1 — feature vectors. The required Day 6 path: a versioned vector
         // observable in Kafka must become queryable in ClickHouse.
         env.fromSource(source(bootstrapServers, featureVectorTopic),
                 WatermarkStrategy.noWatermarks(), "feature-vector-source")
+            .uid("feature-vector-source")
             .map(new FeatureVectorRowMapFunction(featureVectorTopic))
             .name("feature-vector-row")
+            .uid("feature-vector-row")
             .sinkTo(new ClickHouseBatchSink<FeatureVectorRow>("feature_vectors", clickHouse))
-            .name("feature-vectors-clickhouse-sink");
+            .name("feature-vectors-clickhouse-sink")
+            .uid("feature-vectors-clickhouse-sink");
 
         // Chain 2 — rejected records. Low volume, and duplicates after a replay
         // are expected rather than prevented.
         env.fromSource(source(bootstrapServers, dlqTopic),
                 WatermarkStrategy.noWatermarks(), "dlq-source")
+            .uid("dlq-source")
             .map(new InvalidEventRowMapFunction(dlqTopic))
             .name("invalid-event-row")
+            .uid("invalid-event-row")
             .sinkTo(new ClickHouseBatchSink<InvalidEventRow>("invalid_events", clickHouse))
-            .name("invalid-events-clickhouse-sink");
+            .name("invalid-events-clickhouse-sink")
+            .uid("invalid-events-clickhouse-sink");
     }
 
     // No watermarks: nothing downstream is event-time windowed. The archive job

@@ -165,6 +165,33 @@ It is a Testcontainers test; Docker is unavailable in this repository's current
 working environment, so it currently skips. It has been written but not executed
 here — this document does not claim it has passed.
 
+## Poison records (known limitation)
+
+`FeatureVectorRowMapFunction.map` and `InvalidEventRowMapFunction.map` let
+`IllegalArgumentException` escape on any message that fails to deserialize.
+There is no DLQ or side output for the archive job's own input topics, unlike
+the online job's `ParseMapValidateFunction`, which routes bad input to a DLQ
+side output.
+
+The practical effect: one undeserializable message on `featureVectorTopic` or
+`dlqTopic` fails the map, which fails the checkpoint, so the offset in front of
+it never advances. The job retries the same message on restart. Under the
+failure-rate restart strategy (3 failures / 10 min) that eventually trips the
+limit and the job terminates rather than looping forever — and it stays down,
+since nothing removes the poison message from the front of the topic.
+
+The exposure is narrower than it sounds: only the online job ever produces to
+these internal topics, so a malformed message here means a serializer bug or a
+bad deploy, not untrusted external input the way the raw `conn` topic is. That
+lowers the likelihood; it does not remove it — a partial write, a schema
+mismatch between a redeployed online job and this archive job, or a hand-edited
+message could all still produce one.
+
+The follow-up fix is a DLQ side output for both map functions, mirroring the
+online job's `ParseMapValidateFunction` pattern, so a poison record is
+quarantined instead of stalling the job. That is new feature work and is out of
+scope for this branch.
+
 ## Metrics
 
 Per table, on the sink writer's metric group:

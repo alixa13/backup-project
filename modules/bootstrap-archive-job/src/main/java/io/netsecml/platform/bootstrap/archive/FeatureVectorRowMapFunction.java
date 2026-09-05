@@ -34,6 +34,17 @@ public final class FeatureVectorRowMapFunction extends RichMapFunction<byte[], F
         mapper = new FeatureVectorRowMapper();
     }
 
+    // KNOWN LIMITATION: an undeserializable message makes deserializer.deserialize
+    // throw IllegalArgumentException, which escapes this map with no DLQ or side
+    // output to catch it. Combined with the archive job's failure-rate restart
+    // strategy (3 failures / 10 min), one poison message on this internal topic
+    // retries until the rate limit trips and then permanently stalls the job --
+    // the offset in front of it never advances. The exposure is narrow: only the
+    // online job ever writes to featureVectorTopic, so a malformed message here
+    // means a serializer bug or a bad deploy, not untrusted external input -- but
+    // that is lower likelihood, not zero. A side output mirroring the online
+    // job's DLQ path is the follow-up fix; it is out of scope for this branch.
+    // See docs/clickhouse.md's "Poison records" section.
     @Override
     public FeatureVectorRow map(byte[] message) {
         return mapper.toRow(deserializer.deserialize(topic, message));

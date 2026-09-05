@@ -30,6 +30,13 @@ public final class InvalidEventRowMapFunction extends RichMapFunction<byte[], In
         mapper = new InvalidEventRowMapper();
     }
 
+    // KNOWN LIMITATION: same as FeatureVectorRowMapFunction.map -- an
+    // undeserializable message here throws IllegalArgumentException with no DLQ or
+    // side output, and one poison message on the DLQ topic can permanently stall
+    // this job under the failure-rate restart strategy. Only the online job writes
+    // to dlqTopic, so this means a serializer bug or bad deploy rather than
+    // untrusted input, but that lowers the likelihood without removing it. See
+    // docs/clickhouse.md's "Poison records" section for the follow-up fix.
     @Override
     public InvalidEventRow map(byte[] message) {
         return mapper.toRow(deserializer.deserialize(topic, message));

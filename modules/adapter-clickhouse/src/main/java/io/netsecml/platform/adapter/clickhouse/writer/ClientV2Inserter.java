@@ -25,6 +25,14 @@ public final class ClientV2Inserter implements ClickHouseInserter {
             // Compressing the request is worthwhile: batches are up to 4 MiB of
             // highly repetitive JSON.
             .compressClientRequest(true)
+            // input_format_skip_unknown_fields defaults to 1 (skip) on the server,
+            // which would let a JSONEachRow key matching no column vanish silently
+            // instead of failing the insert -- exactly the case (a renamed
+            // @JsonProperty, or a DDL column drift) this adapter most needs to
+            // surface loudly. Forcing it to 0 turns that into a thrown exception
+            // here, which is what makes throwsWhenTheServerRejectsTheBatch's
+            // assertion true.
+            .serverSetting("input_format_skip_unknown_fields", "0")
             .build();
     }
 

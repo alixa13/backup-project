@@ -20,7 +20,7 @@ written today.
 
 `DateTime64(3, 'UTC')` throughout. `IPv6` for IP columns, so IPv4 is consistently
 mapped. `LowCardinality(String)` only for bounded values — sensor, log type,
-protocol, service, state, stage, reason code.
+protocol, service, connection state, stage, reason code.
 
 The `values` column is backtick-quoted in every statement, because `VALUES` is
 INSERT syntax and an unquoted identifier invites ambiguity.

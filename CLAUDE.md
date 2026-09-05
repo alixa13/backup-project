@@ -53,8 +53,9 @@ domain → ports → application → adapters → bootstrap
 
 ## Implementation state
 
-The conn foundation pipeline (Steps 2-7) and the ClickHouse archive job (Step 8)
-are implemented and merged. Implementation order is tracked in
+The conn foundation pipeline (Steps 2-7) is implemented and merged to `main`.
+The ClickHouse archive job (Step 8) is complete on `feat/clickhouse-archive-job`
+but not yet merged to `main`. Implementation order is tracked in
 `Repository_Structure.md` Section E (18 steps).
 
 Working today, end to end: external `conn` topic → parse/validate → bounded keyed

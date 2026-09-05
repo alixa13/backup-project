@@ -67,6 +67,14 @@
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- Supplies org.apache.commons.codec.Charsets, which Testcontainers needs
+         via commons-compress when it copies files into a container. Version is
+         managed in the root pom. -->
+    <dependency>
+      <groupId>commons-codec</groupId>
+      <artifactId>commons-codec</artifactId>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.testcontainers</groupId>
       <artifactId>kafka</artifactId>

@@ -44,7 +44,12 @@ class ClickHouseOutageTest {
 
     @Container
     private static final ConfluentKafkaContainer KAFKA =
-        new ConfluentKafkaContainer("confluentinc/cp-kafka:7.6.1");
+        new ConfluentKafkaContainer("confluentinc/cp-kafka:7.6.1")
+            // Testcontainers waits 60 s by default for the broker to log its
+            // transition to RUNNING. On a slow machine this image needs longer
+            // than that just to reach SharedServer startup, so the container is
+            // killed mid-boot and the test fails for no reason of its own.
+            .withStartupTimeout(Duration.ofMinutes(3));
 
     @Container
     private static final GenericContainer<?> CLICKHOUSE = ClickHouseTestSupport.newContainer();

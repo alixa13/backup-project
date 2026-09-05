@@ -12,6 +12,7 @@ import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.event.SensorId;
 import io.netsecml.platform.domain.feature.FeatureVector;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.connector.base.DeliveryGuarantee;
@@ -68,7 +69,15 @@ public final class OnlineFeatureJob {
             .setBootstrapServers(bootstrapServers)
             .setRecordSerializer(KafkaRecordSerializationSchema.<FeatureVector>builder()
                 .setTopic(featureVectorTopic)
-                .setValueSerializationSchema(vector -> featureSerializer.serialize(featureVectorTopic, vector))
+                // An explicit SerializationSchema, not a lambda: Flink extracts the
+                // record type by reflecting over this interface's generic parameter,
+                // and a lambda erases it -- InvalidTypesException at job submission.
+                .setValueSerializationSchema(new SerializationSchema<FeatureVector>() {
+                    @Override
+                    public byte[] serialize(FeatureVector vector) {
+                        return featureSerializer.serialize(featureVectorTopic, vector);
+                    }
+                })
                 .build())
             .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
             .build();
@@ -79,11 +88,17 @@ public final class OnlineFeatureJob {
             .setBootstrapServers(bootstrapServers)
             .setRecordSerializer(KafkaRecordSerializationSchema.<RejectedRecord>builder()
                 .setTopic(dlqTopic)
-                .setValueSerializationSchema(r -> rejectedSerializer.serialize(dlqTopic,
-                    // stage comes from the domain's ReasonCode, so the archive
-                    // adapter never has to re-derive it from the reason name.
-                    new RejectedRecordPayload(r.rawPayload(), r.eventId(), r.reason().stage().name(),
-                        r.reason().name(), r.detail(), r.receivedAt())))
+                // Explicit for the same reason as the feature sink above.
+                .setValueSerializationSchema(new SerializationSchema<RejectedRecord>() {
+                    @Override
+                    public byte[] serialize(RejectedRecord r) {
+                        // stage comes from the domain's ReasonCode, so the archive
+                        // adapter never has to re-derive it from the reason name.
+                        return rejectedSerializer.serialize(dlqTopic,
+                            new RejectedRecordPayload(r.rawPayload(), r.eventId(), r.reason().stage().name(),
+                                r.reason().name(), r.detail(), r.receivedAt()));
+                    }
+                })
                 .build())
             .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
             .build();

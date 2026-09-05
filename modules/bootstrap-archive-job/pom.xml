@@ -23,34 +23,68 @@
       <artifactId>domain</artifactId>
       <version>${project.version}</version>
     </dependency>
-    <dependency>
-      <groupId>io.netsecml.platform</groupId>
-      <artifactId>ports</artifactId>
-      <version>${project.version}</version>
-    </dependency>
-    <dependency>
-      <groupId>io.netsecml.platform</groupId>
-      <artifactId>application</artifactId>
-      <version>${project.version}</version>
-    </dependency>
+
+    <!-- Deserializes both internal topics into domain values. -->
     <dependency>
       <groupId>io.netsecml.platform</groupId>
       <artifactId>adapter-kafka</artifactId>
       <version>${project.version}</version>
     </dependency>
+
+    <!-- Maps domain values to rows and owns the batch sink. -->
     <dependency>
       <groupId>io.netsecml.platform</groupId>
       <artifactId>adapter-clickhouse</artifactId>
       <version>${project.version}</version>
     </dependency>
+
+    <!-- RawBytesDeserializationSchema, shared with the online job. -->
     <dependency>
       <groupId>io.netsecml.platform</groupId>
-      <artifactId>adapter-monitoring</artifactId>
+      <artifactId>adapter-flink</artifactId>
       <version>${project.version}</version>
     </dependency>
+
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-streaming-java</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-clients</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-connector-base</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-connector-kafka</artifactId>
+    </dependency>
+
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>kafka</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- ClickHouseTestSupport: container, database and DDL plumbing, shared
+         rather than copied. -->
+    <dependency>
+      <groupId>io.netsecml.platform</groupId>
+      <artifactId>adapter-clickhouse</artifactId>
+      <version>${project.version}</version>
+      <type>test-jar</type>
       <scope>test</scope>
     </dependency>
   </dependencies>

@@ -4,6 +4,7 @@ import io.netsecml.platform.adapter.flink.process.ConnFeatureProcessFunction;
 import io.netsecml.platform.adapter.flink.process.ParseMapValidateFunction;
 import io.netsecml.platform.adapter.flink.process.RejectedRecord;
 import io.netsecml.platform.adapter.flink.process.SourceKeySelector;
+import io.netsecml.platform.adapter.flink.source.RawBytesDeserializationSchema;
 import io.netsecml.platform.adapter.kafka.sink.FeatureVectorSerializer;
 import io.netsecml.platform.adapter.kafka.sink.RejectedRecordPayload;
 import io.netsecml.platform.adapter.kafka.sink.RejectedRecordSerializer;
@@ -11,8 +12,6 @@ import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.event.SensorId;
 import io.netsecml.platform.domain.feature.FeatureVector;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
-import org.apache.flink.api.common.serialization.DeserializationSchema;
-import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.connector.base.DeliveryGuarantee;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
@@ -24,23 +23,6 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 
 public final class OnlineFeatureJob {
 
-    private static final DeserializationSchema<byte[]> RAW_BYTES = new DeserializationSchema<>() {
-        @Override
-        public byte[] deserialize(byte[] message) {
-            return message;
-        }
-
-        @Override
-        public boolean isEndOfStream(byte[] nextElement) {
-            return false;
-        }
-
-        @Override
-        public TypeInformation<byte[]> getProducedType() {
-            return TypeInformation.of(byte[].class);
-        }
-    };
-
     public static void build(StreamExecutionEnvironment env, String bootstrapServers, String inputTopic,
                               String featureVectorTopic, String dlqTopic, SensorId sensor) {
         KafkaSource<byte[]> source = KafkaSource.<byte[]>builder()
@@ -48,7 +30,7 @@ public final class OnlineFeatureJob {
             .setTopics(inputTopic)
             .setGroupId("conn-online-job")
             .setStartingOffsets(OffsetsInitializer.earliest())
-            .setValueOnlyDeserializer(RAW_BYTES)
+            .setValueOnlyDeserializer(new RawBytesDeserializationSchema())
             .build();
 
         DataStream<byte[]> rawStream = env.fromSource(source, WatermarkStrategy.noWatermarks(), "conn-raw-source");

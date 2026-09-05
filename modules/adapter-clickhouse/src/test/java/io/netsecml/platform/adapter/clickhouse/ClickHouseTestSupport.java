@@ -20,6 +20,14 @@ import java.util.stream.Collectors;
 // package-private access does not extend to subpackages, so every member a
 // second-package test needs to call has to be public. Only the constructor
 // stays private, since this is a non-instantiable static utility class.
+//
+// This class is also published as this module's test-jar (see pom.xml) so
+// bootstrap-archive-job's container tests reuse it instead of keeping a second
+// copy of the container, database and DDL plumbing. repoPath()'s "../.."
+// resolves correctly from there too: Maven runs a module's tests with that
+// module's own directory as the working directory, and every module lives at
+// the same modules/<name> depth, so the repo root is always two levels up
+// regardless of which module's tests are running.
 public final class ClickHouseTestSupport {
     public static final int HTTP_PORT = 8123;
 

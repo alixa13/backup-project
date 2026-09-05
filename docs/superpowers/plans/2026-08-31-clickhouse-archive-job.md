@@ -625,6 +625,7 @@ package io.netsecml.platform.adapter.kafka.sink;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.netsecml.platform.domain.event.LogType;
 import io.netsecml.platform.domain.event.SensorId;
 import io.netsecml.platform.domain.feature.ConnFeatureSchemaV1;
 import io.netsecml.platform.domain.feature.FeatureVector;
@@ -3617,7 +3618,7 @@ Add to `modules/adapter-clickhouse/pom.xml`, after `</dependencies>`:
   </build>
 ```
 
-Then change `ClickHouseTestSupport` from package-private to public: `public final class ClickHouseTestSupport`, and make `newContainer`, `repoPath`, `clientFor`, `createDatabase`, `applyDdl`, `freshDatabase`, `tableNames` and `HTTP_PORT` all `public static`.
+`ClickHouseTestSupport` and its members are **already `public`** — task 9 made them so when it created the class, because the new `ClientV2InserterTest` lives in the `.writer` subpackage and a package-private helper could not reach it. Verify that is still the case and move on; there is nothing to change here.
 
 One caveat to note in the class comment: `repoPath` resolves `../..`, which is correct from any module directory at `modules/<name>`, so it works unchanged from `bootstrap-archive-job`.
 
@@ -3763,7 +3764,8 @@ class ArchiveJobE2ETest {
         values[0] = 42.5f;
         values[19] = 7f;
         return new FeatureVector("sensor-eu-1:Cabc123XYZ", Instant.parse("2026-08-27T10:03:11.250Z"),
-            new SensorId("sensor-eu-1"), ConnFeatureSchemaV1.SCHEMA.id(), ConnFeatureSchemaV1.CONTENT_HASH,
+            new SensorId("sensor-eu-1"), LogType.CONN, "Cabc123XYZ",
+            ConnFeatureSchemaV1.SCHEMA.id(), ConnFeatureSchemaV1.CONTENT_HASH,
             values, 0, Instant.parse("2026-08-27T10:03:11.402Z"));
     }
 
@@ -3817,7 +3819,8 @@ class ArchiveJobE2ETest {
             JobClient job = env.executeAsync("archive-job-e2e-test");
             try {
                 List<GenericRecord> features = awaitRows(query,
-                    "SELECT event_id, sensor, schema_hash, length(`values`) AS n, `values`[1] AS first, "
+                    "SELECT event_id, sensor, log_type, connection_uid, schema_hash, "
+                        + "length(`values`) AS n, `values`[1] AS first, "
                         + "toUnixTimestamp64Milli(row_version) AS version FROM feature_vectors");
 
                 assertEquals(1, features.size(), "one feature vector must reach feature_vectors");
@@ -3825,6 +3828,11 @@ class ArchiveJobE2ETest {
                 assertEquals("sensor-eu-1", features.get(0).getString("sensor"));
                 assertEquals(ConnFeatureSchemaV1.CONTENT_HASH, features.get(0).getString("schema_hash"));
                 assertEquals(20, features.get(0).getInteger("n"), "all 20 values must survive the round trip");
+                // The multi-protocol envelope columns. Without these the round trip
+                // would pass while silently dropping both, and every archived row
+                // would be unjoinable across log types.
+                assertEquals("conn", features.get(0).getString("log_type"));
+                assertEquals("Cabc123XYZ", features.get(0).getString("connection_uid"));
                 assertEquals(42.5f, features.get(0).getFloat("first"), 0.0001f);
                 assertEquals(Instant.parse("2026-08-27T10:03:11.402Z").toEpochMilli(),
                     features.get(0).getLong("version"), "row_version is the producer's producedAt");

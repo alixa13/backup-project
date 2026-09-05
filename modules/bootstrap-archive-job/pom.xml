@@ -87,5 +87,15 @@
       <type>test-jar</type>
       <scope>test</scope>
     </dependency>
+
+    <!-- Test scope only: ClickHouseOutageTest runs both jobs to prove an archive
+         failure cannot reach the online job. No cycle — bootstrap-online-job does
+         not depend on this module. -->
+    <dependency>
+      <groupId>io.netsecml.platform</groupId>
+      <artifactId>bootstrap-online-job</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 </project>

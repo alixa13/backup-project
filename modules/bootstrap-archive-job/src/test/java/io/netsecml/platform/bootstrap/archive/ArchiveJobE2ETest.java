@@ -95,7 +95,7 @@ class ArchiveJobE2ETest {
 
         try (Client query = ClickHouseTestSupport.freshDatabase(CLICKHOUSE, DATABASE)) {
             ClickHouseConfig config = ClickHouseConfig.of(CLICKHOUSE.getHost(),
-                CLICKHOUSE.getMappedPort(ClickHouseTestSupport.HTTP_PORT), DATABASE, "default", "");
+                CLICKHOUSE.getMappedPort(ClickHouseTestSupport.HTTP_PORT), DATABASE, "default", ClickHouseTestSupport.PASSWORD);
 
             StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
             env.setParallelism(1);

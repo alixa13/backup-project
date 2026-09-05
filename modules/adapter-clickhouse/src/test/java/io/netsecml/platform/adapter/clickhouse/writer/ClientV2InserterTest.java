@@ -36,7 +36,7 @@ class ClientV2InserterTest {
     // DDL tests.
     private ClickHouseConfig configFor(String database) {
         return ClickHouseConfig.of(CLICKHOUSE.getHost(), CLICKHOUSE.getMappedPort(8123),
-            database, "default", "");
+            database, "default", ClickHouseTestSupport.PASSWORD);
     }
 
     // A representative FeatureVector with only the first of 20 values set, so

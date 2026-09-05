@@ -29,6 +29,18 @@ class FeatureVectorDeduplicationTest {
             ClickHouseTestSupport.repoPath("infrastructure", "clickhouse", "queries", "feature-vector-dedup.sql"));
     }
 
+    // Reads the first feature value. getFloatArray() cannot be used here: the
+    // client throws "Array is not of primitive type" for a value produced by an
+    // aggregate function, because argMax returns a boxed list rather than the
+    // primitive array a plain column read would give. getList() is the accessor
+    // that works for it. This is a client-library detail, not a query defect --
+    // the same query returns the column fine, as filtersToTheRequestedSchemaHash
+    // demonstrates.
+    private static float firstValue(GenericRecord row) {
+        List<Number> values = row.getList("values");
+        return values.get(0).floatValue();
+    }
+
     // Inserts one row directly, so the test controls row_version precisely.
     // logType and connectionUid are the multi-protocol envelope columns added to
     // feature_vectors by the schema redesign; neither has a DEFAULT clause, so an
@@ -67,7 +79,7 @@ class FeatureVectorDeduplicationTest {
 
             assertEquals(1, deduplicated.size(), "the query must collapse the duplicate");
             assertEquals("sensor-eu-1:a", deduplicated.get(0).getString("event_id"));
-            assertEquals(9.0f, deduplicated.get(0).getFloatArray("values")[0], 0.0001f,
+            assertEquals(9.0f, firstValue(deduplicated.get(0)), 0.0001f,
                 "the later row_version wins, so the replayed emission's values survive");
             // The multi-protocol envelope columns. log_type is how training tells
             // protocols apart -- the entire point of the redesign -- and
@@ -90,10 +102,8 @@ class FeatureVectorDeduplicationTest {
             insert(client, "sensor-eu-1:a", SCHEMA_HASH, 1.0f, "2026-08-27 10:03:11.402", "conn", "Cabc123XYZ");
             insert(client, "sensor-eu-1:a", SCHEMA_HASH, 9.0f, "2026-08-27 11:00:00.000", "conn", "Cabc123XYZ");
 
-            float firstRun = client.queryAll(dedupQuery(), Map.of("hash", SCHEMA_HASH))
-                .get(0).getFloatArray("values")[0];
-            float secondRun = client.queryAll(dedupQuery(), Map.of("hash", SCHEMA_HASH))
-                .get(0).getFloatArray("values")[0];
+            float firstRun = firstValue(client.queryAll(dedupQuery(), Map.of("hash", SCHEMA_HASH)).get(0));
+            float secondRun = firstValue(client.queryAll(dedupQuery(), Map.of("hash", SCHEMA_HASH)).get(0));
 
             assertEquals(firstRun, secondRun, 0.0f);
         }

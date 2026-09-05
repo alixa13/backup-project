@@ -101,7 +101,7 @@ class ClickHouseOutageTest {
     void onlineJobKeepsPublishingAfterClickHouseDies() throws Exception {
         Client query = ClickHouseTestSupport.freshDatabase(CLICKHOUSE, DATABASE);
         ClickHouseConfig config = ClickHouseConfig.of(CLICKHOUSE.getHost(),
-            CLICKHOUSE.getMappedPort(ClickHouseTestSupport.HTTP_PORT), DATABASE, "default", "");
+            CLICKHOUSE.getMappedPort(ClickHouseTestSupport.HTTP_PORT), DATABASE, "default", ClickHouseTestSupport.PASSWORD);
 
         // The online job deliberately gets no checkpointing and no restart
         // strategy here. That is asymmetric with the archive job below, and on

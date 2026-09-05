@@ -93,7 +93,7 @@ SELECT
     argMax(connection_uid, row_version) AS connection_uid,
     argMax(event_time, row_version)     AS event_time,
     argMax(quality_flags, row_version)  AS quality_flags,
-    max(row_version)                    AS row_version
+    max(row_version)                    AS latest_row_version
 FROM feature_vectors
 WHERE schema_hash = {hash:FixedString(64)}
 GROUP BY event_id, schema_hash

@@ -35,6 +35,15 @@
 -- Parameter: hash (FixedString(64)) — the frozen feature schema this snapshot is for.
 --
 -- `values` is backtick-quoted because VALUES is INSERT syntax.
+--
+-- The max() output is deliberately NOT aliased `row_version`. An alias that
+-- shadows a column is substituted into OTHER aggregate expressions, so
+-- `max(row_version) AS row_version` makes every argMax(..., row_version) read as
+-- an aggregate nested inside an aggregate and ClickHouse rejects the whole query
+-- with error 184 (ILLEGAL_AGGREGATION). Verified against clickhouse-server 25.8.
+-- `values` is safe to alias after itself because a self-referential alias is not
+-- substituted that way; row_version was not, because max() is a different
+-- expression from the argMax()es that reference it.
 SELECT
     event_id,
     schema_hash,
@@ -44,7 +53,7 @@ SELECT
     argMax(connection_uid, row_version) AS connection_uid,
     argMax(event_time, row_version)     AS event_time,
     argMax(quality_flags, row_version)  AS quality_flags,
-    max(row_version)                    AS row_version
+    max(row_version)                    AS latest_row_version
 FROM feature_vectors
 WHERE schema_hash = {hash:FixedString(64)}
 GROUP BY event_id, schema_hash

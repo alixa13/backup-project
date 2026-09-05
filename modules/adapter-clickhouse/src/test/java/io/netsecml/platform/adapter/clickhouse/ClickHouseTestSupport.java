@@ -31,6 +31,12 @@ import java.util.stream.Collectors;
 public final class ClickHouseTestSupport {
     public static final int HTTP_PORT = 8123;
 
+    // clickhouse-server:25.8 refuses an empty password for the default user
+    // (error 194, REQUIRED_PASSWORD) unless one is configured, so every container
+    // and every client in this module has to agree on one. Tests that build a
+    // ClickHouseConfig must pass this rather than "".
+    public static final String PASSWORD = "test-password";
+
     private ClickHouseTestSupport() {
     }
 
@@ -40,6 +46,8 @@ public final class ClickHouseTestSupport {
     public static GenericContainer<?> newContainer() {
         return new GenericContainer<>(DockerImageName.parse("clickhouse/clickhouse-server:25.8"))
             .withExposedPorts(HTTP_PORT)
+            // The image's entrypoint provisions the default user with this password.
+            .withEnv("CLICKHOUSE_PASSWORD", PASSWORD)
             .waitingFor(Wait.forHttp("/ping").forPort(HTTP_PORT).forStatusCode(200));
     }
 
@@ -54,7 +62,7 @@ public final class ClickHouseTestSupport {
         return new Client.Builder()
             .addEndpoint("http://" + container.getHost() + ":" + container.getMappedPort(HTTP_PORT))
             .setUsername("default")
-            .setPassword("")
+            .setPassword(PASSWORD)
             .setDefaultDatabase(database)
             .build();
     }

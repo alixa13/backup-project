@@ -66,7 +66,7 @@ class DdlMigrationTest {
         builder.environment().put("CLICKHOUSE_PORT", String.valueOf(CLICKHOUSE.getMappedPort(ClickHouseTestSupport.HTTP_PORT)));
         builder.environment().put("CLICKHOUSE_DATABASE", database);
         builder.environment().put("CLICKHOUSE_USER", "default");
-        builder.environment().put("CLICKHOUSE_PASSWORD", "");
+        builder.environment().put("CLICKHOUSE_PASSWORD", ClickHouseTestSupport.PASSWORD);
         builder.redirectErrorStream(true);
 
         Process process = builder.start();

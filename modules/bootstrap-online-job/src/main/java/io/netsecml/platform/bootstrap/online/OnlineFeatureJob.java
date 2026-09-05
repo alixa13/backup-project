@@ -12,6 +12,8 @@ import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.event.SensorId;
 import io.netsecml.platform.domain.feature.FeatureVector;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.connector.base.DeliveryGuarantee;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
@@ -19,7 +21,9 @@ import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
+import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import java.time.Duration;
 
 public final class OnlineFeatureJob {
 
@@ -75,6 +79,33 @@ public final class OnlineFeatureJob {
 
     public static void main(String[] args) throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+
+        // Flink 2.x removed StreamExecutionEnvironment.setRestartStrategy, so the restart
+        // strategy is configuration-only now. Applied before enableCheckpointing below so
+        // the explicit checkpoint settings are the last word regardless of what configure()
+        // reads out of this Configuration. Without this the default with checkpointing on
+        // would restart forever; failure-rate stops hot-looping a broken deployment.
+        Configuration restartConfig = new Configuration();
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY,
+            RestartStrategyOptions.RestartStrategyType.FAILURE_RATE.getMainValue());
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_MAX_FAILURES_PER_INTERVAL, 3);
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_FAILURE_RATE_INTERVAL, Duration.ofMinutes(10));
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_DELAY, Duration.ofSeconds(10));
+        env.configure(restartConfig);
+
+        // This job is stateful -- the keyed rolling buckets in ConnFeatureProcessFunction
+        // only survive a failure if there are checkpoints to restore them from. With
+        // checkpointing off the default strategy is no-restart, so any transient error
+        // kills the job outright and loses that state; with it on, an in-run failure
+        // restores state and source offsets together. The at-least-once Kafka sinks also
+        // flush on the checkpoint barrier, so their durability is tied to this too.
+        // Values are FINAL_ARCHITECTURE.md's initial settings -- benchmark, do not canonize.
+        env.enableCheckpointing(30_000L);
+        CheckpointConfig checkpoints = env.getCheckpointConfig();
+        checkpoints.setMinPauseBetweenCheckpoints(10_000L);
+        checkpoints.setCheckpointTimeout(120_000L);
+        checkpoints.setMaxConcurrentCheckpoints(1);
+
         String bootstrapServers = System.getenv().getOrDefault("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092");
         String inputTopic = System.getenv().getOrDefault("CONN_INPUT_TOPIC", "conn");
         String featureTopic = System.getenv().getOrDefault("FEATURE_VECTOR_TOPIC", "netsec.conn.feature-vector.v1");

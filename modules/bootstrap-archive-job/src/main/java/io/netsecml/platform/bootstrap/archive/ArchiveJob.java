@@ -6,10 +6,14 @@ import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseBatchSink;
 import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseConfig;
 import io.netsecml.platform.adapter.flink.source.RawBytesDeserializationSchema;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
+import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
+import java.time.Duration;
 
 // The independent Kafka-to-ClickHouse archive job.
 //
@@ -76,6 +80,32 @@ public final class ArchiveJob {
     // documented in .env.example) and runs the job until cancelled.
     public static void main(String[] args) throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+
+        // Flink 2.x removed StreamExecutionEnvironment.setRestartStrategy, so the restart
+        // strategy is configuration-only now. Applied before enableCheckpointing below so
+        // the explicit checkpoint settings are the last word regardless of what configure()
+        // reads out of this Configuration. failure-rate keeps a transient ClickHouse outage
+        // recoverable while refusing to hot-loop a genuinely broken deployment.
+        Configuration restartConfig = new Configuration();
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY,
+            RestartStrategyOptions.RestartStrategyType.FAILURE_RATE.getMainValue());
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_MAX_FAILURES_PER_INTERVAL, 3);
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_FAILURE_RATE_INTERVAL, Duration.ofMinutes(10));
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_DELAY, Duration.ofSeconds(10));
+        env.configure(restartConfig);
+
+        // Checkpointing is what makes this job's delivery contract real, so it is not
+        // optional tuning. A failed ClickHouse insert throws out of the sink writer's
+        // flush(), which fails the checkpoint, which leaves the Kafka offsets uncommitted
+        // so the batch replays on recovery and ReplacingMergeTree absorbs the duplicates.
+        // With checkpointing off the source never commits offsets at all, and the sink's
+        // bounded retry would be guarding a contract that never engages.
+        // Values are FINAL_ARCHITECTURE.md's initial settings -- benchmark, do not canonize.
+        env.enableCheckpointing(30_000L);
+        CheckpointConfig checkpoints = env.getCheckpointConfig();
+        checkpoints.setMinPauseBetweenCheckpoints(10_000L);
+        checkpoints.setCheckpointTimeout(120_000L);
+        checkpoints.setMaxConcurrentCheckpoints(1);
 
         // Same variable names the online job reads, all documented in .env.example.
         String bootstrapServers = System.getenv().getOrDefault("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092");

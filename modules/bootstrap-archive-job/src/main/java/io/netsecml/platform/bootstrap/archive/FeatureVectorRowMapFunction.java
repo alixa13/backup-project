@@ -21,6 +21,8 @@ public final class FeatureVectorRowMapFunction extends RichMapFunction<byte[], F
     private transient FeatureVectorDeserializer deserializer;
     private transient FeatureVectorRowMapper mapper;
 
+    // Only the topic name crosses the constructor; the deserializer and mapper
+    // are built later, in open().
     public FeatureVectorRowMapFunction(String topic) {
         this.topic = topic;
     }

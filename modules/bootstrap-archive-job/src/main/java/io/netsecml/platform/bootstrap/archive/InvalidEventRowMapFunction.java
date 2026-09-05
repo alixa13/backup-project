@@ -17,6 +17,8 @@ public final class InvalidEventRowMapFunction extends RichMapFunction<byte[], In
     private transient RejectedEventDeserializer deserializer;
     private transient InvalidEventRowMapper mapper;
 
+    // Only the topic name crosses the constructor; the deserializer and mapper
+    // are built later, in open().
     public InvalidEventRowMapFunction(String topic) {
         this.topic = topic;
     }

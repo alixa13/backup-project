@@ -55,6 +55,9 @@ class ArchiveJobE2ETest {
             values, 0, Instant.parse("2026-08-27T10:03:11.402Z"));
     }
 
+    // Publishes one already-serialized message to the given topic and blocks
+    // until the broker acknowledges it, so the record is guaranteed visible to
+    // the archive job's source before the job starts consuming.
     private void produce(String topic, byte[] payload) throws Exception {
         Properties props = new Properties();
         props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());

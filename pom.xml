@@ -93,6 +93,18 @@
         <version>1.21.4</version>
         <scope>test</scope>
       </dependency>
+      <!-- Testcontainers copies files into a container through commons-compress,
+           whose TarArchiveOutputStream references org.apache.commons.codec.Charsets.
+           Nothing on the reactor's classpath provides commons-codec: Flink supplies
+           commons-compress 1.26.0 but not its codec dependency, so every Kafka
+           container test died with NoClassDefFoundError before reaching a single
+           assertion. Test scope only; no production code needs it. -->
+      <dependency>
+        <groupId>commons-codec</groupId>
+        <artifactId>commons-codec</artifactId>
+        <version>1.16.1</version>
+        <scope>test</scope>
+      </dependency>
       <dependency>
         <groupId>org.testcontainers</groupId>
         <artifactId>junit-jupiter</artifactId>

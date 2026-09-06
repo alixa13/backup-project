@@ -5,8 +5,14 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.apache.kafka.common.serialization.Serializer;
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.io.Serializable;
 
-public final class RejectedRecordSerializer implements Serializer<RejectedRecordPayload> {
+// Serializable because the online job captures an instance of this class inside
+// the lambda it hands to KafkaRecordSerializationSchema, and Flink serializes
+// that lambda to ship it to the TaskManagers. Kafka's Serializer interface does
+// not extend Serializable, so without this the job cannot be submitted at all.
+// The only field is an ObjectMapper, which Jackson already makes Serializable.
+public final class RejectedRecordSerializer implements Serializer<RejectedRecordPayload>, Serializable {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Override

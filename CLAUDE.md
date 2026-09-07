@@ -12,6 +12,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ./mvnw package -pl modules/bootstrap-online-job -am  # build deployable JAR
 ```
 
+Three things about running the tests that will otherwise cost you an hour:
+
+- **`clean verify` does not complete on a small machine.** The container tests are
+  OOM-killed on 5.7 GiB. Run them in stages instead: `./mvnw install -DskipTests`
+  once, then one module at a time, clearing containers between
+  (`docker ps -aq | xargs -r docker rm -f`). Everything passes staged; nothing
+  proves the whole reactor green in one command until CI has more memory.
+- **`-pl <module>` without `-am` resolves siblings from `~/.m2`**, producing
+  phantom "cannot find symbol" errors against code that is fine.
+- **`-Dtest=X` with `-Dsurefire.failIfNoSpecifiedTests=false` reports BUILD SUCCESS
+  having run zero tests.** Always confirm the actual `Tests run:` count before
+  believing a green build.
+
 ### Python (training/)
 ```sh
 cd training
@@ -58,10 +71,42 @@ The ClickHouse archive job (Step 8) is complete on `feat/clickhouse-archive-job`
 but not yet merged to `main`. Implementation order is tracked in
 `Repository_Structure.md` Section E (18 steps).
 
-Working today, end to end: external `conn` topic → parse/validate → bounded keyed
-state → 20-value `FeatureVector` → `netsec.conn.feature-vector.v1` and
+The pipeline is: external `conn` topic → parse/validate → bounded keyed state →
+20-value `FeatureVector` → `netsec.conn.feature-vector.v1` and
 `netsec.conn.dlq.v1` → archive job → ClickHouse `feature_vectors` and
 `invalid_events`.
+
+**`main` cannot currently run the online job at all.** Three serialization defects
+(`SensorId` and both Kafka serializers not `Serializable`; two
+`setValueSerializationSchema` lambdas erasing their generic type) make
+`env.execute()` fail before a single record is read. The fix is on
+`fix/flink-job-serializability`, which should land before this branch. Until it
+does, treat any claim that the pipeline "works" as applying to
+`feat/clickhouse-archive-job` only.
+
+### Verification state
+
+Docker was unavailable for most of this branch's development, so every
+Testcontainers test SKIPPED and read as neutral. When Docker became available the
+skips were hiding real defects — including a deduplication query that was
+syntactically invalid and could never have executed. **Do not read a skipped
+container test as a passing one.**
+
+Executed and green on `feat/clickhouse-archive-job`, against real containers:
+
+| Suite | Result | What it actually proves |
+|---|---|---|
+| `adapter-clickhouse` | 37/37, 0 skipped | Includes `DdlMigrationTest` — `001_mvp_tables.sql` has now been executed by a real ClickHouse 25.8 server, not merely read |
+| `FeatureVectorDeduplicationTest` | 3/3 | The committed dedup query runs and resolves duplicates |
+| `ClientV2InserterTest` | 4/4 | An unknown column is rejected, not silently skipped |
+| `OnlineFeatureJobE2ETest` | 1/1 | The online job can be submitted and produces a feature vector — first pass in this project's history |
+| `ArchiveJobE2ETest` | 1/1 (171 s) | Kafka → ClickHouse, end to end |
+| domain, ports, application, adapter-kafka, adapter-flink | pass | — |
+
+**Not verified:** `ClickHouseOutageTest` — the Definition of Done's headline claim
+that a ClickHouse failure cannot stop feature production. It is OOM-killed during
+container startup (two Flink mini-clusters plus two containers do not fit in
+5.7 GiB) and has never run. It was deliberately not weakened to fit the machine.
 
 Not yet implemented: ONNX inference (Day 9), predictions and `netsec.prediction.v1`
 (Day 9), the model registry (Day 7), and the Python training project.

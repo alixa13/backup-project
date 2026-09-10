@@ -1,0 +1,20 @@
+{
+  "id": "common-feature-tier-v1",
+  "semanticVersion": "1.0.0",
+  "description": "Protocol-agnostic feature tier shared by every per-protocol feature schema. Embedded as the leading block of each <log-type>-feature-schema-v1. Order is frozen; a change creates common-feature-tier-v2.",
+  "encoding": "float32",
+  "features": [
+    { "name": "record_count_5m", "index": 0, "description": "Records seen for this (sensor, sourceIp) key in the 5-minute rolling window." },
+    { "name": "byte_sum_5m", "index": 1, "description": "Byte total for this key in the 5-minute rolling window." },
+    { "name": "failed_count_5m", "index": 2, "description": "Failed records for this key in the 5-minute rolling window." },
+    { "name": "inter_arrival_mean_ms", "index": 3, "description": "Running mean interval between records for this key, in milliseconds." },
+    { "name": "inter_arrival_stddev_ms", "index": 4, "description": "Running population standard deviation of the inter-arrival interval, in milliseconds." },
+    { "name": "is_orig", "index": 5, "description": "1 if the record was sent by the connection originator, else 0." },
+    { "name": "conn_orig_bytes", "index": 6, "description": "Originator bytes since the previous conn.log snapshot. 0 when no snapshot is available." },
+    { "name": "conn_resp_bytes", "index": 7, "description": "Responder bytes since the previous conn.log snapshot. 0 when no snapshot is available." },
+    { "name": "conn_orig_pkts", "index": 8, "description": "Originator packets since the previous conn.log snapshot. 0 when no snapshot is available." },
+    { "name": "conn_resp_pkts", "index": 9, "description": "Responder packets since the previous conn.log snapshot. 0 when no snapshot is available." },
+    { "name": "conn_age_seconds", "index": 10, "description": "Connection age at the time of the latest conn.log snapshot, in seconds. 0 when no snapshot is available." },
+    { "name": "conn_enrichment_present", "index": 11, "description": "1 if a conn.log snapshot was available for this record, else 0. Distinguishes a genuinely idle connection from one whose first snapshot has not yet been emitted." }
+  ]
+}

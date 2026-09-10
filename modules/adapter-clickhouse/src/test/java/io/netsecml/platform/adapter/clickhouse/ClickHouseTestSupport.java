@@ -4,11 +4,15 @@ import com.clickhouse.client.api.Client;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.utility.DockerImageName;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 // Shared plumbing for every ClickHouse container test in this module.
 //
@@ -75,18 +79,36 @@ public final class ClickHouseTestSupport {
         }
     }
 
-    // Applies infrastructure/clickhouse/ddl/001_mvp_tables.sql — the same file the
-    // production runner applies, so there is no test-only copy of the schema.
+    // Every .sql file in the DDL directory, in lexical order.
+    //
+    // The directory is a migration sequence, not a single schema file:
+    // 001_ creates the tables and 002_ alters one of them, so applying them out of
+    // order would fail against a real server. Lexical order is the ordering
+    // contract, which is also what scripts/database/apply-ddl.sh relies on.
+    public static List<Path> ddlFiles() throws IOException {
+        try (Stream<Path> entries = Files.list(repoPath("infrastructure", "clickhouse", "ddl"))) {
+            return entries
+                .filter(path -> path.getFileName().toString().endsWith(".sql"))
+                .sorted(Comparator.comparing(path -> path.getFileName().toString()))
+                .toList();
+        }
+    }
+
+    // Applies the whole DDL directory in order -- the same files, in the same
+    // sequence, that scripts/database/apply-ddl.sh applies in production. Reading
+    // only 001_ here would leave every container test running against a schema
+    // that is missing whatever later migrations add.
     //
     // The HTTP interface takes one statement per request, so line comments are
     // stripped (a ';' inside a comment would split a statement) and the remainder
     // is executed statement by statement, exactly as apply-ddl.sh does it.
     public static void applyDdl(Client client) throws Exception {
-        String sql = Files.readString(repoPath("infrastructure", "clickhouse", "ddl", "001_mvp_tables.sql"))
-            .replaceAll("(?m)--.*$", "");
-        for (String statement : sql.split(";")) {
-            if (!statement.isBlank()) {
-                client.execute(statement).get();
+        for (Path file : ddlFiles()) {
+            String sql = Files.readString(file).replaceAll("(?m)--.*$", "");
+            for (String statement : sql.split(";")) {
+                if (!statement.isBlank()) {
+                    client.execute(statement).get();
+                }
             }
         }
     }

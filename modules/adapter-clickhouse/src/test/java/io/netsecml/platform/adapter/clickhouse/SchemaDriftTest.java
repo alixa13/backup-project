@@ -6,14 +6,18 @@ import io.netsecml.platform.adapter.clickhouse.row.InvalidEventRow;
 import org.junit.jupiter.api.Test;
 import java.lang.reflect.RecordComponent;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
 // This is the executable guard for a seam that otherwise only Docker-backed
 // tests check: DdlMigrationTest merely asserts the tables exist, and
@@ -74,17 +78,44 @@ class SchemaDriftTest {
         }
     }
 
-    // Extracts the column names of one CREATE TABLE statement from the committed
-    // DDL file (the same file the production runner and the Testcontainers tests
-    // apply -- there is no second copy of this schema anywhere).
+    // Columns are resolved across the whole migration sequence, not from the base
+    // file alone. A column added by 002_ is just as real as one declared in 001_,
+    // and a drift check that could not see it would fail the moment a row record
+    // caught up with the schema.
     private Set<String> ddlColumns(String table) throws Exception {
-        String ddl = Files.readString(ClickHouseTestSupport.repoPath(
-            "infrastructure", "clickhouse", "ddl", "001_mvp_tables.sql"));
+        Set<String> columns = new LinkedHashSet<>();
+        for (Path file : ClickHouseTestSupport.ddlFiles()) {
+            String ddl = Files.readString(file).replaceAll("(?m)--.*$", "");
+            columns.addAll(createTableColumns(ddl, table));
+            columns.addAll(addedColumns(ddl, table));
+        }
+        assertFalse(columns.isEmpty(), "no columns found for DDL table " + table);
+        return columns;
+    }
 
+    // ALTER TABLE <table> ADD COLUMN [IF NOT EXISTS] <name> ... -- the column name
+    // is the first identifier after the optional IF NOT EXISTS.
+    private Set<String> addedColumns(String ddl, String table) {
+        Set<String> added = new LinkedHashSet<>();
+        Matcher matcher = Pattern.compile(
+            "ALTER\\s+TABLE\\s+" + Pattern.quote(table)
+                + "\\s+ADD\\s+COLUMN\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?([A-Za-z_][A-Za-z0-9_]*)",
+            Pattern.CASE_INSENSITIVE).matcher(ddl);
+        while (matcher.find()) {
+            added.add(matcher.group(1));
+        }
+        return added;
+    }
+
+    // Extracts the column names of one CREATE TABLE statement from a single DDL
+    // file's text. Returns an empty set when the marker is absent rather than
+    // failing -- a migration file legitimately contains no CREATE TABLE for the
+    // table being asked about.
+    private Set<String> createTableColumns(String ddl, String table) {
         String marker = "CREATE TABLE IF NOT EXISTS " + table + " (";
         int markerStart = ddl.indexOf(marker);
         if (markerStart < 0) {
-            fail("no \"" + marker + "\" statement found in the DDL file");
+            return Set.of();
         }
 
         // bodyStart sits just past the column list's opening '(', which is

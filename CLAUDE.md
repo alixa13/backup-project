@@ -108,6 +108,11 @@ that a ClickHouse failure cannot stop feature production. It is OOM-killed durin
 container startup (two Flink mini-clusters plus two containers do not fit in
 5.7 GiB) and has never run. It was deliberately not weakened to fit the machine.
 
+The common feature tier (`contracts/features/common-feature-tier-v1.json`) and
+its `conn.log` enrichment carrier are implemented, but no protocol consumes them
+yet — `conn-feature-v1` predates the tier and is frozen without it. The first
+consumer is the DNS unit.
+
 Not yet implemented: ONNX inference (Day 9), predictions and `netsec.prediction.v1`
 (Day 9), the model registry (Day 7), and the Python training project.
 

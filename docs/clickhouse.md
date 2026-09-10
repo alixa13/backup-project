@@ -59,6 +59,23 @@ A different log type's schema is free to carry a different feature count in
 the same column; `schema_hash` identifies which schema a given row was written
 under.
 
+## The common feature tier
+
+Every per-protocol feature schema begins with the same 12 protocol-agnostic
+features, frozen at `contracts/features/common-feature-tier-v1.json` and mirrored
+in `CommonFeatureTierV1`. A protocol's own features start at index 12.
+
+Indices 0-5 come from the online job's own keyed state and are always populated.
+Indices 6-11 come from `conn.log` enrichment, which is a **non-blocking left
+join**: a connection's first `conn.log` snapshot does not exist until it has been
+alive five minutes, so those features are zero until one arrives. Index 11,
+`conn_enrichment_present`, is what distinguishes a genuinely idle connection from
+one whose snapshot has not yet been emitted — without it the two are identical to
+a model.
+
+`conn.log` counters are cumulative, so indices 6-9 carry the *delta* between
+consecutive snapshots rather than the raw totals.
+
 ## Applying the schema
 
 ```sh

@@ -6,6 +6,7 @@ import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseBatchSink;
 import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseConfig;
 import io.netsecml.platform.adapter.flink.source.RawBytesDeserializationSchema;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.connector.kafka.source.KafkaSource;
@@ -14,6 +15,7 @@ import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import java.time.Duration;
+import java.util.List;
 
 // The independent Kafka-to-ClickHouse archive job.
 //
@@ -43,40 +45,59 @@ public final class ArchiveJob {
     public static void build(StreamExecutionEnvironment env, String bootstrapServers,
                              String featureVectorTopic, String dlqTopic, ClickHouseConfig clickHouse) {
 
-        // Every operator and sink below gets an explicit, stable .uid(). Without
-        // one Flink derives the operator ID from the topology hash, so ANY future
-        // edit to this graph (adding/removing/reordering an operator) silently
-        // discards state on restore-from-checkpoint instead of failing loudly.
-        // Assigning uids now is a one-time cost: it changes operator identity, so
-        // an existing checkpoint/savepoint will not restore across this change.
-        // That cost is bounded -- this job carries no keyed state, only the
-        // source's committed-offset position and the sink's in-flight batch, both
-        // of which replay safely from Kafka -- and it is strictly cheaper to pay
-        // now than after this job has run longer in production.
+        // Every chain is identical in shape: source -> map -> ClickHouse sink.
+        // Registering them as data rather than writing each one out keeps this
+        // method the same size at six log types as at two. Adding a log type is a
+        // new entry in this list.
+        List<ChainSpec<?>> chains = List.of(
+            // Chain 1 -- feature vectors. The required Day 6 path: a versioned
+            // vector observable in Kafka must become queryable in ClickHouse.
+            new ChainSpec<>(featureVectorTopic,
+                new FeatureVectorRowMapFunction(featureVectorTopic), "feature_vectors",
+                "feature-vector-source", "feature-vector-row", "feature-vectors-clickhouse-sink"),
+            // Chain 2 -- rejected records. Low volume, and duplicates after a
+            // replay are expected rather than prevented.
+            new ChainSpec<>(dlqTopic,
+                new InvalidEventRowMapFunction(dlqTopic), "invalid_events",
+                "dlq-source", "invalid-event-row", "invalid-events-clickhouse-sink"));
 
-        // Chain 1 — feature vectors. The required Day 6 path: a versioned vector
-        // observable in Kafka must become queryable in ClickHouse.
-        env.fromSource(source(bootstrapServers, featureVectorTopic),
-                WatermarkStrategy.noWatermarks(), "feature-vector-source")
-            .uid("feature-vector-source")
-            .map(new FeatureVectorRowMapFunction(featureVectorTopic))
-            .name("feature-vector-row")
-            .uid("feature-vector-row")
-            .sinkTo(new ClickHouseBatchSink<FeatureVectorRow>("feature_vectors", clickHouse))
-            .name("feature-vectors-clickhouse-sink")
-            .uid("feature-vectors-clickhouse-sink");
+        for (ChainSpec<?> chain : chains) {
+            wire(env, bootstrapServers, clickHouse, chain);
+        }
+    }
 
-        // Chain 2 — rejected records. Low volume, and duplicates after a replay
-        // are expected rather than prevented.
-        env.fromSource(source(bootstrapServers, dlqTopic),
-                WatermarkStrategy.noWatermarks(), "dlq-source")
-            .uid("dlq-source")
-            .map(new InvalidEventRowMapFunction(dlqTopic))
-            .name("invalid-event-row")
-            .uid("invalid-event-row")
-            .sinkTo(new ClickHouseBatchSink<InvalidEventRow>("invalid_events", clickHouse))
-            .name("invalid-events-clickhouse-sink")
-            .uid("invalid-events-clickhouse-sink");
+    // One archive chain: a Kafka topic, the map function that turns its raw bytes
+    // into a ClickHouse row, the target table, and the three operator uids.
+    //
+    // The uids are stored explicitly rather than derived from the chain name. They
+    // are checkpoint state identity, and the two pre-existing chains named their
+    // operators inconsistently -- "feature-vector-source" but "invalid-event-row"
+    // under a "dlq" source, and two pluralised sinks. Any rule that generated
+    // those six names would be more intricate than the names themselves, so they
+    // are data.
+    private record ChainSpec<T>(String topic, RichMapFunction<byte[], T> rowMapper, String table,
+                                String sourceUid, String mapUid, String sinkUid) {
+    }
+
+    // Wires one chain. Generic so the row type flows from the map function to the
+    // sink without a cast.
+    //
+    // Every operator gets its explicit, stable uid. Without one Flink derives the
+    // operator ID from the topology hash, so ANY future edit to this graph
+    // silently discards state on restore-from-checkpoint instead of failing
+    // loudly -- and a generated topology can collide uids in a way a hand-written
+    // one cannot, which ArchiveJobTopologyTest guards.
+    private static <T> void wire(StreamExecutionEnvironment env, String bootstrapServers,
+                                 ClickHouseConfig clickHouse, ChainSpec<T> chain) {
+        env.fromSource(source(bootstrapServers, chain.topic()),
+                WatermarkStrategy.noWatermarks(), chain.sourceUid())
+            .uid(chain.sourceUid())
+            .map(chain.rowMapper())
+            .name(chain.mapUid())
+            .uid(chain.mapUid())
+            .sinkTo(new ClickHouseBatchSink<T>(chain.table(), clickHouse))
+            .name(chain.sinkUid())
+            .uid(chain.sinkUid());
     }
 
     // No watermarks: nothing downstream is event-time windowed. The archive job

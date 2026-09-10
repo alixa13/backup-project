@@ -808,8 +808,10 @@ class CommonFeatureExtractorTest {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `./mvnw test -pl modules/application -am -Dtest=CommonFeatureExtractorTest`
+Run: `./mvnw test -pl modules/application -am`
 Expected: FAIL — compilation error, `CommonFeatureExtractor` does not exist.
+
+**Do not add `-Dtest=CommonFeatureExtractorTest`.** With `-am`, Surefire fails hard on the first upstream module that has tests but none matching the pattern (`domain`), and the only suppression flag is forbidden by the Global Constraints because it hides zero-test runs. Run the module's whole suite and read the line for the class you care about.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -885,8 +887,8 @@ public final class CommonFeatureExtractor {
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `./mvnw test -pl modules/application -am -Dtest=CommonFeatureExtractorTest`
-Expected: PASS, 6 tests run.
+Run: `./mvnw test -pl modules/application -am`
+Expected: PASS. Confirm the line `Tests run: 6 ... in ...CommonFeatureExtractorTest` specifically — a green module build does not by itself prove your class ran.
 
 - [ ] **Step 5: Commit**
 
@@ -996,8 +998,8 @@ class ArchiveJobTopologyTest {
 
 - [ ] **Step 2: Run the test to verify the current topology already satisfies it**
 
-Run: `./mvnw test -pl modules/bootstrap-archive-job -am -Dtest=ArchiveJobTopologyTest`
-Expected: **PASS, 3 tests run.** This test characterises the *existing* behaviour before the refactor, so it passes first and then guards the change. If it fails, the assumption about `getStreamGraph` is wrong — fix the test against the real API before touching `ArchiveJob`.
+Run: `./mvnw test -pl modules/bootstrap-archive-job -am`
+Expected: **`Tests run: 3 ... in ...ArchiveJobTopologyTest`.** Do not add `-Dtest=` — with `-am` it fails on upstream modules lacking a match, and the suppression flag is forbidden. This test characterises the *existing* behaviour before the refactor, so it passes first and then guards the change. If it fails, the assumption about `getStreamGraph` is wrong — fix the test against the real API before touching `ArchiveJob`.
 
 - [ ] **Step 3: Refactor `build` into a loop**
 
@@ -1072,8 +1074,8 @@ import java.util.List;
 
 - [ ] **Step 4: Run the topology test to verify the refactor preserved every uid**
 
-Run: `./mvnw test -pl modules/bootstrap-archive-job -am -Dtest=ArchiveJobTopologyTest`
-Expected: PASS, 3 tests run — the same six uids as before the refactor.
+Run: `./mvnw test -pl modules/bootstrap-archive-job -am`
+Expected: `Tests run: 3 ... in ...ArchiveJobTopologyTest` — the same six uids as before the refactor.
 
 If `everyOperatorCarriesAnExplicitUid` fails, a `ChainSpec` entry carries a different uid than the original topology used. **Do not change the test to match the code** — the historical uids are checkpoint state identity. Fix the `ChainSpec` entry.
 

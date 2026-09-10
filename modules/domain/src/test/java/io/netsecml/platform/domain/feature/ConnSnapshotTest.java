@@ -61,6 +61,21 @@ class ConnSnapshotTest {
         assertEquals(3600L, snapshot.ageSeconds());
     }
 
+    // A connection's first snapshot has no predecessor, but its own cumulative
+    // counters already ARE the delta -- conn.log counts from connection start.
+    @Test
+    void asInitialDeltaUsesTheSnapshotsOwnCountersAsTheDelta() {
+        ConnSnapshot first = new ConnSnapshot("Cabc", START, START.plusSeconds(300), 1000L, 2000L, 10L, 20L);
+
+        ConnSnapshotDelta delta = first.asInitialDelta();
+
+        assertEquals(1000L, delta.origBytes());
+        assertEquals(2000L, delta.respBytes());
+        assertEquals(10L, delta.origPkts());
+        assertEquals(20L, delta.respPkts());
+        assertEquals(300L, delta.ageSeconds());
+    }
+
     // Identity is structural: without a uid the snapshot cannot be joined to
     // anything, so an absent one is a construction error rather than a default.
     @Test

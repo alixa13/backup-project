@@ -43,6 +43,18 @@ public record ConnSnapshot(String connectionUid, Instant connectionStart, Instan
             ageSeconds());
     }
 
+    // The delta for a connection's FIRST observed snapshot, which has no
+    // predecessor to diff against. conn.log counters are cumulative from
+    // connection start, so the first snapshot's own raw counters already ARE its
+    // delta -- there is nothing to subtract. This exists so a uid -> latest-
+    // snapshot cache does not have to choose between passing null into deltaFrom
+    // (which throws) and hand-building the same delta itself; every per-protocol
+    // unit needs this on the very first conn.log snapshot it ever sees for a
+    // connection, so it belongs here once rather than five times.
+    public ConnSnapshotDelta asInitialDelta() {
+        return new ConnSnapshotDelta(origBytes, respBytes, origPkts, respPkts, ageSeconds());
+    }
+
     // A counter that went backwards means Zeek restarted or the connection was
     // re-keyed. Zero is the honest answer; a negative rate is not a signal the
     // model can use.

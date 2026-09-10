@@ -64,11 +64,18 @@ Almost nothing in the existing implementation changes to support this:
 
 ### 3.1 Common tier
 
-Derived from ml-platform's existing bounded keyed state per `(sensor, sourceIp)` — six 1-minute
-buckets, 30-minute TTL — enriched from `conn.log` where available (§6.2):
+Derived from ml-platform's existing bounded keyed state per `(sensor, sourceIp)` — enriched from
+`conn.log` where available (§6.2).
 
-- record rate over the window
-- inter-arrival mean and standard deviation
+**A correction against the code, recorded because this design depends on it.** `FINAL_ARCHITECTURE.md`
+describes "six 1-minute buckets/key; 30-minute TTL". The implemented `SourceWindowState` has
+**five** buckets over a **5-minute** window (`connectionCount5m`, `byteSum5m`, `failedCount5m`) and
+**no TTL is configured anywhere**. The code is the authority here; the architecture document is
+aspirational and predates it. Nothing in this design assumes six buckets or a TTL.
+
+- record rate over the 5-minute window
+- inter-arrival mean and standard deviation (needs new state; `SourceWindowState` holds no
+  timestamps and must not be widened, since its serialized shape is shared with `conn`)
 - direction (`is_orig`)
 - `orig_bytes`, `resp_bytes`, `orig_pkts`, `resp_pkts` (conn.log, cumulative)
 - byte and packet deltas between consecutive conn.log snapshots

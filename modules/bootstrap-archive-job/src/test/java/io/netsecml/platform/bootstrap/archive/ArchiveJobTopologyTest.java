@@ -166,8 +166,9 @@ class ArchiveJobTopologyTest {
             }
         });
 
-        assertTrue(uids.contains("dlq-source"),
-            "dlqChain(CONN, ...) must reproduce the historical conn uids, found: " + uids);
+        assertTrue(uids.containsAll(Set.of(
+            "dlq-source", "invalid-event-row", "invalid-events-clickhouse-sink")),
+            "dlqChain(CONN, ...) must reproduce all three historical conn uids, found: " + uids);
     }
 
     private static Set<String> operatorUids() {

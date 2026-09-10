@@ -101,11 +101,14 @@ public final class ArchiveJob {
     // pattern and cannot be regularised: a running job restores state by looking
     // them up verbatim. Every other log type gets the pattern.
     public static LogTypeChain<InvalidEventRow> dlqChain(LogType logType, String topic) {
+        // prefix is the whole of the CONN/non-CONN distinction: empty for conn,
+        // "<wirename>-" for everything else. Conn's three uids therefore fall out
+        // of the same concatenation as every other log type's -- they are the
+        // unprefixed case, not a special case.
         String prefix = logType == LogType.CONN ? "" : logType.wireName() + "-";
-        String sourceUid = logType == LogType.CONN ? "dlq-source" : prefix + "dlq-source";
-        String mapUid = logType == LogType.CONN ? "invalid-event-row" : prefix + "invalid-event-row";
-        String sinkUid = logType == LogType.CONN
-            ? "invalid-events-clickhouse-sink" : prefix + "invalid-events-clickhouse-sink";
+        String sourceUid = prefix + "dlq-source";
+        String mapUid = prefix + "invalid-event-row";
+        String sinkUid = prefix + "invalid-events-clickhouse-sink";
 
         return new LogTypeChain<>(topic, new InvalidEventRowMapFunction(topic, logType),
             "invalid_events", sourceUid, mapUid, sinkUid);

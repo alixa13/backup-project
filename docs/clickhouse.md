@@ -76,6 +76,26 @@ a model.
 `conn.log` counters are cumulative, so indices 6-9 carry the *delta* between
 consecutive snapshots rather than the raw totals.
 
+## The failure path is protocol-aware, without changing the DLQ contract
+
+`invalid_events` carries `log_type`, so rejections can be attributed to a
+protocol — "is the S7comm parser rejecting everything?" is answerable rather than
+lost in one undifferentiated pile.
+
+The value does **not** come from the message. `contracts/stream/dlq-v1.json` is
+frozen at six fields and carries no protocol identifier, deliberately. Each
+protocol has its own DLQ topic, and the archive job knows the log type from the
+topic it is reading, bound at wiring time — the same compile-time binding the
+input side uses. There is no runtime string parse of a topic name or payload.
+
+The column arrived in `002_add_invalid_events_log_type.sql` rather than an edit
+to `001_mvp_tables.sql`, which is immutable. It is `DEFAULT ''`, so rows written
+before the migration stay readable.
+
+The DDL directory is applied as an ordered migration sequence by both
+`scripts/database/apply-ddl.sh` and the Java test support. Reading only the base
+file would leave tests running against a schema missing whatever migrations add.
+
 ## Applying the schema
 
 ```sh

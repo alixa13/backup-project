@@ -1,20 +1,20 @@
 {
   "id": "common-feature-tier-v1",
   "semanticVersion": "1.0.0",
-  "description": "Protocol-agnostic feature tier shared by every per-protocol feature schema. Embedded as the leading block of each <log-type>-feature-schema-v1. Order is frozen; a change creates common-feature-tier-v2.",
-  "encoding": "float32",
+  "inputDtype": "float32",
+  "featureCount": 12,
   "features": [
-    { "name": "record_count_5m", "index": 0, "description": "Records seen for this (sensor, sourceIp) key in the 5-minute rolling window." },
-    { "name": "byte_sum_5m", "index": 1, "description": "Byte total for this key in the 5-minute rolling window." },
-    { "name": "failed_count_5m", "index": 2, "description": "Failed records for this key in the 5-minute rolling window." },
-    { "name": "inter_arrival_mean_ms", "index": 3, "description": "Running mean interval between records for this key, in milliseconds." },
-    { "name": "inter_arrival_stddev_ms", "index": 4, "description": "Running population standard deviation of the inter-arrival interval, in milliseconds." },
-    { "name": "is_orig", "index": 5, "description": "1 if the record was sent by the connection originator, else 0." },
-    { "name": "conn_orig_bytes", "index": 6, "description": "Originator bytes since the previous conn.log snapshot. 0 when no snapshot is available." },
-    { "name": "conn_resp_bytes", "index": 7, "description": "Responder bytes since the previous conn.log snapshot. 0 when no snapshot is available." },
-    { "name": "conn_orig_pkts", "index": 8, "description": "Originator packets since the previous conn.log snapshot. 0 when no snapshot is available." },
-    { "name": "conn_resp_pkts", "index": 9, "description": "Responder packets since the previous conn.log snapshot. 0 when no snapshot is available." },
-    { "name": "conn_age_seconds", "index": 10, "description": "Connection age at the time of the latest conn.log snapshot, in seconds. 0 when no snapshot is available." },
-    { "name": "conn_enrichment_present", "index": 11, "description": "1 if a conn.log snapshot was available for this record, else 0. Distinguishes a genuinely idle connection from one whose first snapshot has not yet been emitted." }
+    { "index": 0, "name": "record_count_5m", "unit": "count", "missingPolicy": "REQUIRED", "formula": "records for (sensor, sourceIp) key in trailing 5-minute rolling window" },
+    { "index": 1, "name": "byte_sum_5m", "unit": "bytes", "missingPolicy": "REQUIRED", "formula": "byte total for (sensor, sourceIp) key in trailing 5-minute rolling window" },
+    { "index": 2, "name": "failed_count_5m", "unit": "count", "missingPolicy": "REQUIRED", "formula": "failed records for (sensor, sourceIp) key in trailing 5-minute rolling window" },
+    { "index": 3, "name": "inter_arrival_mean_ms", "unit": "milliseconds", "missingPolicy": "REQUIRED", "formula": "running mean interval between records for (sensor, sourceIp) key" },
+    { "index": 4, "name": "inter_arrival_stddev_ms", "unit": "milliseconds", "missingPolicy": "REQUIRED", "formula": "running population stddev of the inter-arrival interval for (sensor, sourceIp) key" },
+    { "index": 5, "name": "is_orig", "unit": "boolean", "missingPolicy": "REQUIRED", "formula": "1 if the record was sent by the connection originator else 0" },
+    { "index": 6, "name": "conn_orig_bytes", "unit": "bytes", "missingPolicy": "DEFAULT_ZERO", "formula": "orig_bytes delta since the previous conn.log snapshot" },
+    { "index": 7, "name": "conn_resp_bytes", "unit": "bytes", "missingPolicy": "DEFAULT_ZERO", "formula": "resp_bytes delta since the previous conn.log snapshot" },
+    { "index": 8, "name": "conn_orig_pkts", "unit": "count", "missingPolicy": "DEFAULT_ZERO", "formula": "orig_pkts delta since the previous conn.log snapshot" },
+    { "index": 9, "name": "conn_resp_pkts", "unit": "count", "missingPolicy": "DEFAULT_ZERO", "formula": "resp_pkts delta since the previous conn.log snapshot" },
+    { "index": 10, "name": "conn_age_seconds", "unit": "seconds", "missingPolicy": "DEFAULT_ZERO", "formula": "connection age at the time of the latest conn.log snapshot" },
+    { "index": 11, "name": "conn_enrichment_present", "unit": "boolean", "missingPolicy": "DEFAULT_ZERO", "formula": "1 if a conn.log snapshot was available for this record else 0" }
   ]
 }

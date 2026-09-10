@@ -18,7 +18,7 @@ class ConnSnapshotTest {
         ConnSnapshot first = new ConnSnapshot("Cabc", START, START.plusSeconds(300), 1000L, 2000L, 10L, 20L);
         ConnSnapshot second = new ConnSnapshot("Cabc", START, START.plusSeconds(600), 1500L, 2600L, 14L, 27L);
 
-        ConnSnapshot delta = second.deltaFrom(first);
+        ConnSnapshotDelta delta = second.deltaFrom(first);
 
         assertEquals(500L, delta.origBytes());
         assertEquals(600L, delta.respBytes());
@@ -34,7 +34,7 @@ class ConnSnapshotTest {
         ConnSnapshot first = new ConnSnapshot("Cabc", START, START.plusSeconds(300), 1000L, 2000L, 10L, 20L);
         ConnSnapshot reset = new ConnSnapshot("Cabc", START, START.plusSeconds(600), 5L, 5L, 1L, 1L);
 
-        ConnSnapshot delta = reset.deltaFrom(first);
+        ConnSnapshotDelta delta = reset.deltaFrom(first);
 
         assertEquals(0L, delta.origBytes());
         assertEquals(0L, delta.respBytes());
@@ -67,5 +67,15 @@ class ConnSnapshotTest {
     void rejectsABlankConnectionUid() {
         assertThrows(IllegalArgumentException.class,
             () -> new ConnSnapshot("  ", START, START, 1L, 1L, 1L, 1L));
+    }
+
+    // A sensor with clock skew, or an out-of-order record, can put observedAt
+    // before connectionStart. A negative age is meaningless as a feature, so it
+    // clamps to zero rather than propagating into the vector.
+    @Test
+    void ageSecondsClampsToZeroWhenObservationPrecedesTheConnectionStart() {
+        ConnSnapshot skewed = new ConnSnapshot("Cabc", START, START.minusSeconds(30), 1L, 1L, 1L, 1L);
+
+        assertEquals(0L, skewed.ageSeconds());
     }
 }

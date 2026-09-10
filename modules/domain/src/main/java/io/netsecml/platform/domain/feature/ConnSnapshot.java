@@ -26,20 +26,21 @@ public record ConnSnapshot(String connectionUid, Instant connectionStart, Instan
     }
 
     // The per-interval difference against the previous snapshot of the SAME
-    // connection. Returned as a ConnSnapshot so callers get the delta in the same
-    // shape, with observedAt and connectionStart carried from this snapshot.
-    public ConnSnapshot deltaFrom(ConnSnapshot previous) {
+    // connection. Returned as a ConnSnapshotDelta to keep delta counters
+    // type-distinct from cumulative observations.
+    public ConnSnapshotDelta deltaFrom(ConnSnapshot previous) {
         // Subtracting across connections would blend unrelated traffic into one
         // rate, so it is a programming error rather than a recoverable case.
         if (previous == null || !previous.connectionUid.equals(connectionUid)) {
             throw new IllegalArgumentException(
                 "deltaFrom requires a previous snapshot of the same connection: " + connectionUid);
         }
-        return new ConnSnapshot(connectionUid, connectionStart, observedAt,
+        return new ConnSnapshotDelta(
             nonNegativeDifference(origBytes, previous.origBytes),
             nonNegativeDifference(respBytes, previous.respBytes),
             nonNegativeDifference(origPkts, previous.origPkts),
-            nonNegativeDifference(respPkts, previous.respPkts));
+            nonNegativeDifference(respPkts, previous.respPkts),
+            ageSeconds());
     }
 
     // A counter that went backwards means Zeek restarted or the connection was
@@ -51,8 +52,11 @@ public record ConnSnapshot(String connectionUid, Instant connectionStart, Instan
 
     // How long the connection had been alive when this snapshot was taken. This
     // is the feature that separates a persistent SCADA poll loop from a short
-    // burst of traffic.
+    // burst of traffic. A sensor with clock skew or out-of-order record can put
+    // observedAt before connectionStart; a negative age is not a signal the model
+    // can use, so it clamps to zero matching the philosophy used for counters.
     public long ageSeconds() {
-        return Duration.between(connectionStart, observedAt).getSeconds();
+        long age = Duration.between(connectionStart, observedAt).getSeconds();
+        return Math.max(0L, age);
     }
 }

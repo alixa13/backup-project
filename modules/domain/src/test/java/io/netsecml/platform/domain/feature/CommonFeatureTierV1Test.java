@@ -1,6 +1,12 @@
 package io.netsecml.platform.domain.feature;
 
 import org.junit.jupiter.api.Test;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -41,5 +47,24 @@ class CommonFeatureTierV1Test {
     void featureNamesAreImmutable() {
         assertThrows(UnsupportedOperationException.class,
             () -> CommonFeatureTierV1.FEATURE_NAMES.add("injected"));
+    }
+
+    // Mirrors ConnFeatureSchemaV1Test's contentHashMatchesCommittedContractFile.
+    // Only id, feature names and indices are checked by
+    // CommonFeatureTierContractDriftTest in adapter-kafka -- description,
+    // encoding and semanticVersion could previously drift silently. This closes
+    // that gap without pulling Jackson into domain's test classpath.
+    @Test
+    void contentHashMatchesCommittedContractFile() throws IOException, NoSuchAlgorithmException {
+        Path contractPath = Paths.get("..", "..", "contracts", "features", "common-feature-tier-v1.json");
+        byte[] bytes = Files.readAllBytes(contractPath);
+        byte[] digest = MessageDigest.getInstance("SHA-256").digest(bytes);
+        StringBuilder hex = new StringBuilder();
+        for (byte b : digest) {
+            hex.append(String.format("%02x", b));
+        }
+        assertEquals(CommonFeatureTierV1.CONTENT_HASH, hex.toString(),
+            "CommonFeatureTierV1.CONTENT_HASH must match the SHA-256 of contracts/features/common-feature-tier-v1.json — "
+            + "if you edited the JSON, recompute the hash and update the constant");
     }
 }

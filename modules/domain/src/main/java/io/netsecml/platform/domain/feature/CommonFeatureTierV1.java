@@ -17,6 +17,14 @@ public final class CommonFeatureTierV1 {
 
     public static final String SCHEMA_ID = "common-feature-tier-v1";
 
+    // SHA-256 of contracts/features/common-feature-tier-v1.json. Only id, feature
+    // names and indices are checked elsewhere (CommonFeatureTierContractDriftTest
+    // in adapter-kafka); nothing previously caught a silent edit to description,
+    // encoding or semanticVersion text. CommonFeatureTierV1Test pins this hash
+    // against the committed file the same way ConnFeatureSchemaV1 already does.
+    public static final String CONTENT_HASH =
+        "4357b04f9a3427d6bb4dd7cc41d4f16d3c0192764412cad129e62cf02379c624";
+
     // Indices 0-5 come from ml-platform's own keyed state and are always
     // populated. Indices 6-11 come from conn.log enrichment, which is a
     // non-blocking left join, so they are zero when no snapshot has arrived --

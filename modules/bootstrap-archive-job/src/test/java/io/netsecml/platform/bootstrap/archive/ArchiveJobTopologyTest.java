@@ -2,8 +2,10 @@ package io.netsecml.platform.bootstrap.archive;
 
 import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.flink.streaming.api.graph.StreamNode;
 import org.junit.jupiter.api.Test;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -46,6 +48,33 @@ class ArchiveJobTopologyTest {
             "expected the six pre-existing operator uids, found: " + uids);
     }
 
+    // everyOperatorCarriesAnExplicitUid above and operatorUidsAreUniqueAcrossChains
+    // below both SKIP any node whose getTransformationUID() is null -- so a
+    // seventh chain wired without .uid() would pass every test in this class
+    // except this one. This is the test that actually fails on a missing uid.
+    //
+    // Verified rather than assumed: this job's ClickHouseBatchSink is a plain
+    // Flink Sink V2 (implements Sink<T> directly, not TwoPhaseCommittingSink), so
+    // sinkTo() expands to exactly one Writer StreamNode per chain -- there is no
+    // separate, uid-less Committer/GlobalCommitter node for a two-phase-commit
+    // sink to legitimately lack a uid for. Printing every node's id/uid/operator
+    // name for this exact topology confirmed all six nodes (two sources, two
+    // maps, two sink writers) carry the uid this job assigns them and nothing
+    // else exists in the graph. If a future chain's sink ever becomes a
+    // TwoPhaseCommittingSink, this assertion would need to scope down to the
+    // source/map/writer node types and say so here -- it must not be weakened to
+    // vacuity or deleted.
+    @Test
+    void everyStreamNodeCarriesANonNullUid() {
+        StreamExecutionEnvironment env = buildJob();
+
+        for (StreamNode node : env.getStreamGraph(false).getStreamNodes()) {
+            assertNotNull(node.getTransformationUID(),
+                "stream node " + node.getId() + " (" + node.getOperatorName() + ") has no uid -- "
+                + "every operator in this job must carry an explicit .uid()");
+        }
+    }
+
     // Uids must be unique across chains. Two operators sharing one is how a
     // six-log-type loop silently collides state, and it is exactly the failure a
     // hand-written topology cannot have but a generated one can.
@@ -60,6 +89,38 @@ class ArchiveJobTopologyTest {
                 assertTrue(seen.add(uid), "duplicate operator uid across chains: " + uid);
             }
         });
+    }
+
+    // The parameterised overload Spec §6.3 requires: the set of log types is a
+    // list, so a third log type is a third list entry, wired identically to the
+    // two the 5-argument overload builds. This is what proves adding a log type
+    // is one entry, not two new String parameters on build() itself.
+    @Test
+    void parameterisedBuildWiresOneChainPerListEntry() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        ArchiveJob.build(env, "localhost:9092", List.of(
+            new ArchiveJob.LogTypeChain<>("netsec.conn.feature-vector.v1",
+                new FeatureVectorRowMapFunction("netsec.conn.feature-vector.v1"), "feature_vectors",
+                "feature-vector-source", "feature-vector-row", "feature-vectors-clickhouse-sink"),
+            new ArchiveJob.LogTypeChain<>("netsec.conn.dlq.v1",
+                new InvalidEventRowMapFunction("netsec.conn.dlq.v1"), "invalid_events",
+                "dlq-source", "invalid-event-row", "invalid-events-clickhouse-sink"),
+            new ArchiveJob.LogTypeChain<>("netsec.http.dlq.v1",
+                new InvalidEventRowMapFunction("netsec.http.dlq.v1"), "invalid_events",
+                "http-dlq-source", "http-invalid-event-row", "http-invalid-events-clickhouse-sink")),
+            ClickHouseConfig.of("localhost", 8123, "netsec_ml", "default", "test-password"));
+
+        Set<String> uids = new HashSet<>();
+        env.getStreamGraph(false).getStreamNodes().forEach(node -> {
+            if (node.getTransformationUID() != null) {
+                uids.add(node.getTransformationUID());
+            }
+        });
+
+        assertTrue(uids.containsAll(Set.of("http-dlq-source", "http-invalid-event-row",
+            "http-invalid-events-clickhouse-sink")), "a third registered chain must produce its own three uids");
+        assertEquals(9, uids.size(), "three chains of three operators each, no collisions");
     }
 
     private static Set<String> operatorUids() {

@@ -102,7 +102,8 @@ file would leave tests running against a schema missing whatever migrations add.
 CLICKHOUSE_HOST=localhost CLICKHOUSE_DATABASE=netsec_ml ./scripts/database/apply-ddl.sh
 ```
 
-Every statement is `CREATE ... IF NOT EXISTS`, so re-running is a no-op. The
+Every statement is `CREATE ... IF NOT EXISTS` or `ALTER ... ADD COLUMN IF NOT EXISTS`,
+so re-running is a no-op. The
 script creates the database first, then applies `infrastructure/clickhouse/ddl/*.sql`
 in lexical order. It reads the `CLICKHOUSE_*` variables documented in `.env.example`.
 

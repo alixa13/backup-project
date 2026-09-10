@@ -24,9 +24,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 // ClientV2InserterTest's "an unknown column must not be silently discarded"
 // case only proves anything once input_format_skip_unknown_fields is forced to
 // 0 (see ClientV2Inserter) -- and both need a real ClickHouse container, which
-// is unavailable in this environment. This test parses the committed DDL file
-// directly with plain JUnit, no Testcontainers and no Docker, so it actually
-// runs here and catches the exact drift those tests exist to catch: a row
+// is unavailable in this environment. This test parses the committed DDL
+// directory -- every migration file, not just the base schema -- directly with
+// plain JUnit, no Testcontainers and no Docker, so it actually runs here and
+// catches the exact drift those tests exist to catch: a row
 // record's @JsonProperty name that does not match any DDL column, e.g. from a
 // rename on one side without the other.
 //

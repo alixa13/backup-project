@@ -52,9 +52,13 @@ public final class ArchiveJob {
     // operators inconsistently -- "feature-vector-source" but "invalid-event-row"
     // under a "dlq" source, and two pluralised sinks. Any rule that generated
     // those six names would be more intricate than the names themselves, so they
-    // are data. The six existing uid strings below are unchanged from before this
-    // type was made public -- changing any of them would make Flink silently
-    // discard that operator's checkpoint state on restore.
+    // are data here, on this record. That is not a blanket argument against
+    // generating uids anywhere: dlqChain below IS a generation rule, but only for
+    // the DLQ family, whose six per-protocol variants follow one regular pattern
+    // that the mismatched feature-vector uids never did. The six existing uid
+    // strings below are unchanged from before this type was made public --
+    // changing any of them would make Flink silently discard that operator's
+    // checkpoint state on restore.
     public record LogTypeChain<T>(String topic, RichMapFunction<byte[], T> rowMapper, String table,
                                   String sourceUid, String mapUid, String sinkUid) {
     }

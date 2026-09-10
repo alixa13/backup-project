@@ -1,6 +1,7 @@
 package io.netsecml.platform.bootstrap.archive;
 
 import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseConfig;
+import io.netsecml.platform.domain.event.LogType;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.graph.StreamNode;
 import org.junit.jupiter.api.Test;
@@ -104,10 +105,17 @@ class ArchiveJobTopologyTest {
                 new FeatureVectorRowMapFunction("netsec.conn.feature-vector.v1"), "feature_vectors",
                 "feature-vector-source", "feature-vector-row", "feature-vectors-clickhouse-sink"),
             new ArchiveJob.LogTypeChain<>("netsec.conn.dlq.v1",
-                new InvalidEventRowMapFunction("netsec.conn.dlq.v1"), "invalid_events",
+                new InvalidEventRowMapFunction("netsec.conn.dlq.v1", LogType.CONN), "invalid_events",
                 "dlq-source", "invalid-event-row", "invalid-events-clickhouse-sink"),
+            // LogType.CONN here is a placeholder: there is no LogType.HTTP (only
+            // CONN exists -- see LogType's own comment), so this chain's
+            // "http"-named topic and uids are labels exercising uid uniqueness
+            // across a third chain, not a second real log type. This test's
+            // subject is topology wiring -- N chains produce N*3 distinct uids --
+            // not log-type semantics. Unit 3 should switch this to a real second
+            // log type (e.g. DNS) once one lands.
             new ArchiveJob.LogTypeChain<>("netsec.http.dlq.v1",
-                new InvalidEventRowMapFunction("netsec.http.dlq.v1"), "invalid_events",
+                new InvalidEventRowMapFunction("netsec.http.dlq.v1", LogType.CONN), "invalid_events",
                 "http-dlq-source", "http-invalid-event-row", "http-invalid-events-clickhouse-sink")),
             ClickHouseConfig.of("localhost", 8123, "netsec_ml", "default", "test-password"));
 
@@ -121,6 +129,45 @@ class ArchiveJobTopologyTest {
         assertTrue(uids.containsAll(Set.of("http-dlq-source", "http-invalid-event-row",
             "http-invalid-events-clickhouse-sink")), "a third registered chain must produce its own three uids");
         assertEquals(9, uids.size(), "three chains of three operators each, no collisions");
+    }
+
+    // The conn DLQ chain keeps its historical uids. They are checkpoint state
+    // identity: a job restoring from an existing checkpoint looks them up by
+    // exactly these strings, so renaming them to match a new per-protocol pattern
+    // would silently discard that operator's state instead of failing.
+    @Test
+    void theConnDlqChainKeepsItsHistoricalUids() {
+        Set<String> uids = operatorUids();
+
+        assertTrue(uids.containsAll(Set.of(
+            "dlq-source", "invalid-event-row", "invalid-events-clickhouse-sink")),
+            "the conn DLQ chain's original uids must survive, found: " + uids);
+    }
+
+    // dlqChain is the single place that knows the conn uids, so this pins that it
+    // reproduces them rather than generating the per-protocol pattern for CONN.
+    //
+    // NOTE the limit of this test: LogType has only CONN today, so dlqChain's
+    // non-CONN branch -- the per-protocol uid prefix -- is UNEXERCISED until Unit 3
+    // adds DNS. Do not rename this to suggest it covers a second log type; it
+    // cannot, and a test whose name overstates its reach is worse than none.
+    @Test
+    void dlqChainReproducesTheHistoricalConnUids() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        ArchiveJob.build(env, "localhost:9092", List.of(
+            ArchiveJob.dlqChain(LogType.CONN, "netsec.conn.dlq.v1")),
+            ClickHouseConfig.of("localhost", 8123, "netsec_ml", "default", "test-password"));
+
+        Set<String> uids = new HashSet<>();
+        env.getStreamGraph(false).getStreamNodes().forEach(node -> {
+            if (node.getTransformationUID() != null) {
+                uids.add(node.getTransformationUID());
+            }
+        });
+
+        assertTrue(uids.contains("dlq-source"),
+            "dlqChain(CONN, ...) must reproduce the historical conn uids, found: " + uids);
     }
 
     private static Set<String> operatorUids() {

@@ -1,8 +1,10 @@
 package io.netsecml.platform.bootstrap.archive;
 
+import io.netsecml.platform.adapter.clickhouse.row.InvalidEventRow;
 import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseBatchSink;
 import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseConfig;
 import io.netsecml.platform.adapter.flink.source.RawBytesDeserializationSchema;
+import io.netsecml.platform.domain.event.LogType;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.configuration.Configuration;
@@ -85,11 +87,28 @@ public final class ArchiveJob {
                 new FeatureVectorRowMapFunction(featureVectorTopic), "feature_vectors",
                 "feature-vector-source", "feature-vector-row", "feature-vectors-clickhouse-sink"),
             // Chain 2 -- rejected records. Low volume, and duplicates after a
-            // replay are expected rather than prevented.
-            new LogTypeChain<>(dlqTopic,
-                new InvalidEventRowMapFunction(dlqTopic), "invalid_events",
-                "dlq-source", "invalid-event-row", "invalid-events-clickhouse-sink")),
+            // replay are expected rather than prevented. Built through dlqChain so
+            // there is exactly one place in this class that knows the conn uids.
+            dlqChain(LogType.CONN, dlqTopic)),
             clickHouse);
+    }
+
+    // One DLQ chain for a log type. A factory rather than six literal strings at
+    // each call site, because the uids are checkpoint state identity and hand-
+    // writing them per protocol is how a typo silently orphans state.
+    //
+    // CONN keeps the uids it has always had. They predate any per-protocol naming
+    // pattern and cannot be regularised: a running job restores state by looking
+    // them up verbatim. Every other log type gets the pattern.
+    public static LogTypeChain<InvalidEventRow> dlqChain(LogType logType, String topic) {
+        String prefix = logType == LogType.CONN ? "" : logType.wireName() + "-";
+        String sourceUid = logType == LogType.CONN ? "dlq-source" : prefix + "dlq-source";
+        String mapUid = logType == LogType.CONN ? "invalid-event-row" : prefix + "invalid-event-row";
+        String sinkUid = logType == LogType.CONN
+            ? "invalid-events-clickhouse-sink" : prefix + "invalid-events-clickhouse-sink";
+
+        return new LogTypeChain<>(topic, new InvalidEventRowMapFunction(topic, logType),
+            "invalid_events", sourceUid, mapUid, sinkUid);
     }
 
     // Wires one chain. Generic so the row type flows from the map function to the

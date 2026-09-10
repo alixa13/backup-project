@@ -42,9 +42,15 @@ public final class RecordTimingState {
             return new RecordTimingState(recordTime, 1L, 0.0, 0.0);
         }
 
-        // Zeek can deliver slightly out of order. A negative interval would drag
-        // the running mean below zero, so it is clamped to zero.
-        long intervalMillis = Math.max(0L, Duration.between(lastRecordTime, recordTime).toMillis());
+        // Zeek can deliver slightly out of order. A record that arrives out of order
+        // yields no valid interval, so it must be ignored entirely. Clamping it to
+        // zero would fold a fabricated data point into the mean and deviation the
+        // model consumes, biasing the feature for every downstream inference.
+        if (recordTime.isBefore(lastRecordTime)) {
+            return this;
+        }
+
+        long intervalMillis = Duration.between(lastRecordTime, recordTime).toMillis();
 
         // Welford: update the mean, then accumulate the squared difference using
         // both the old and new means. This is numerically stable where a naive

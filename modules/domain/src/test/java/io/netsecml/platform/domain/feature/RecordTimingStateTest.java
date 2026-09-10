@@ -2,6 +2,10 @@ package io.netsecml.platform.domain.feature;
 
 import org.junit.jupiter.api.Test;
 import java.time.Instant;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.Collection;
+import java.util.Map;
 import static org.junit.jupiter.api.Assertions.*;
 
 // Inter-arrival statistics for one key, kept in constant space. The bounded-state
@@ -50,10 +54,10 @@ class RecordTimingStateTest {
         assertEquals(450.0, state.stddevIntervalMillis(), 0.0001);
     }
 
-    // The whole point of Welford: state size is constant. Ten thousand records
-    // must leave exactly the same footprint as three.
+    // Welford is numerically stable at scale: ten thousand records must still
+    // produce the exact arithmetic answer, not a drifted one.
     @Test
-    void stateIsBoundedRegardlessOfObservationCount() {
+    void arithmeticStaysExactAcrossManyObservations() {
         RecordTimingState state = RecordTimingState.empty();
         for (int i = 0; i < 10_000; i++) {
             state = state.observe(T0.plusMillis(i * 10L));
@@ -64,15 +68,40 @@ class RecordTimingStateTest {
         assertEquals(0.0, state.stddevIntervalMillis(), 0.0001);
     }
 
-    // Zeek can deliver slightly out of order. A negative interval would corrupt
-    // the running mean, so it is clamped rather than trusted.
+    // The bounded-state invariant, asserted structurally rather than implied.
+    // The previous version of this test ran a large loop and checked the answer,
+    // which would have passed unchanged if someone added a List<Instant> field.
+    // This one fails the moment any collection or array is introduced.
     @Test
-    void outOfOrderRecordsDoNotProduceNegativeIntervals() {
-        RecordTimingState state = RecordTimingState.empty()
-            .observe(T0.plusMillis(500))
-            .observe(T0);
+    void holdsNoStructureThatGrowsWithObservationCount() {
+        for (Field field : RecordTimingState.class.getDeclaredFields()) {
+            if (Modifier.isStatic(field.getModifiers())) {
+                continue;
+            }
+            Class<?> type = field.getType();
+            assertFalse(type.isArray(),
+                "RecordTimingState must hold no array field, found: " + field.getName());
+            assertFalse(Collection.class.isAssignableFrom(type),
+                "RecordTimingState must hold no collection field, found: " + field.getName());
+            assertFalse(Map.class.isAssignableFrom(type),
+                "RecordTimingState must hold no map field, found: " + field.getName());
+        }
+    }
 
-        assertTrue(state.meanIntervalMillis() >= 0.0,
-            "an out-of-order record must not drive the mean interval negative");
+    // Zeek can deliver slightly out of order. Such a record yields no valid
+    // interval, so it must be ignored entirely -- clamping it to zero would fold
+    // a fabricated data point into the mean and deviation the model consumes.
+    @Test
+    void outOfOrderRecordsAreIgnoredRatherThanClampedToZero() {
+        RecordTimingState inOrder = RecordTimingState.empty()
+            .observe(T0)
+            .observe(T0.plusMillis(100));
+
+        RecordTimingState withLateArrival = inOrder.observe(T0.plusMillis(50));
+
+        assertEquals(inOrder.meanIntervalMillis(), withLateArrival.meanIntervalMillis(), 0.0001,
+            "an out-of-order record must not move the mean");
+        assertEquals(inOrder.stddevIntervalMillis(), withLateArrival.stddevIntervalMillis(), 0.0001,
+            "an out-of-order record must not move the deviation");
     }
 }

@@ -85,7 +85,10 @@ class ClientV2InserterTest {
     @Test
     void insertsInvalidEventRows() throws Exception {
         String database = "inserter_invalid";
-        InvalidEventRowMapper mapper = new InvalidEventRowMapper();
+        // Conn is the only log type that exists today; the archive job would
+        // bind this from the topic it reads, but this test constructs the row
+        // directly so it binds the same constant explicitly.
+        InvalidEventRowMapper mapper = new InvalidEventRowMapper(LogType.CONN);
 
         try (Client query = ClickHouseTestSupport.freshDatabase(CLICKHOUSE, database);
              ClickHouseInserter inserter = new ClientV2Inserter(configFor(database))) {

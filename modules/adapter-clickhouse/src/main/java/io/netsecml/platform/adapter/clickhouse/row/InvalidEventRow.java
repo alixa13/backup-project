@@ -10,6 +10,10 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 // improvement that recovers the source timestamp.
 //
 // created_at is absent on purpose: server-side DEFAULT now64(3).
+//
+// log_type is last so that adding it does not shift any existing column
+// position. It carries the wire form (e.g. "conn"), supplied by the mapper at
+// construction time rather than read from the event — see InvalidEventRowMapper.
 public record InvalidEventRow(
     @JsonProperty("event_id") String eventId,
     @JsonProperty("event_time") String eventTime,
@@ -18,5 +22,6 @@ public record InvalidEventRow(
     @JsonProperty("reason_code") String reasonCode,
     @JsonProperty("detail") String detail,
     @JsonProperty("source_version") String sourceVersion,
-    @JsonProperty("raw_payload_hash") String rawPayloadHash) {
+    @JsonProperty("raw_payload_hash") String rawPayloadHash,
+    @JsonProperty("log_type") String logType) {
 }

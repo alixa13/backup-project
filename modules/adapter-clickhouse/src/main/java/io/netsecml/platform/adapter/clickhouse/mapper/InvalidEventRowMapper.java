@@ -1,16 +1,31 @@
 package io.netsecml.platform.adapter.clickhouse.mapper;
 
 import io.netsecml.platform.adapter.clickhouse.row.InvalidEventRow;
+import io.netsecml.platform.domain.event.LogType;
 import io.netsecml.platform.domain.event.RejectedEvent;
 import java.io.Serializable;
 
 // Turns a domain RejectedEvent into an invalid_events row.
 public final class InvalidEventRowMapper implements Serializable {
 
-    // The source contract the rejected bytes claimed to satisfy. Constant while
-    // the platform ingests only Zeek conn logs; it becomes a parameter the day a
-    // second source type appears.
-    public static final String SOURCE_VERSION = "zeek-conn-source-v1";
+    // Supplied at construction from the topic binding, never read from the event:
+    // dlq-v1 is frozen and carries no protocol field. The archive job knows the
+    // log type because it knows which topic it read the rejection from, bound at
+    // wiring time. See the design's section 9.
+    private final LogType logType;
+
+    public InvalidEventRowMapper(LogType logType) {
+        if (logType == null) {
+            throw new IllegalArgumentException("logType must not be null");
+        }
+        this.logType = logType;
+    }
+
+    // The source contract the rejected bytes claimed to satisfy, derived from the
+    // constructed log type so it stays correct as more Zeek log types are added.
+    public String sourceVersion() {
+        return "zeek-" + logType.wireName() + "-source-v1";
+    }
 
     // Copies every RejectedEvent field across. eventId and detail arrive already
     // normalized to "" by RejectedEvent's own compact constructor, so no null
@@ -26,7 +41,11 @@ public final class InvalidEventRowMapper implements Serializable {
             event.reason().stage().name(),
             event.reason().name(),
             event.detail(),
-            SOURCE_VERSION,
-            event.rawPayloadHash());
+            sourceVersion(),
+            event.rawPayloadHash(),
+            // The wire form, not the enum name: the column is LowCardinality(String)
+            // and would silently accept "CONN", which would then fail to join
+            // against feature_vectors.log_type.
+            logType.wireName());
     }
 }

@@ -36,10 +36,11 @@
 | File | Responsibility |
 |---|---|
 | `modules/domain/.../feature/ConnSnapshot.java` | One `conn.log` observation: cumulative counters plus the connection's start time. Pure value. |
+| `modules/domain/.../feature/ConnSnapshotDelta.java` | The per-interval difference between two consecutive snapshots. A distinct type so a delta and an absolute observation are not interchangeable at compile time. |
 | `modules/domain/.../feature/RecordTimingState.java` | Bounded inter-arrival statistics for one key, via Welford. Holds no timestamp history. |
 | `modules/domain/.../feature/CommonFeatureTierV1.java` | The frozen name and order of the 12 common features, and its content hash. |
 | `contracts/features/common-feature-tier-v1.json` | Language-neutral contract for the same, read by the Python side. |
-| `modules/application/.../feature/CommonFeatureExtractor.java` | Turns `SourceWindowState` + `RecordTimingState` + optional `ConnSnapshot` into `float[12]`. |
+| `modules/application/.../feature/CommonFeatureExtractor.java` | Turns `SourceWindowState` + `RecordTimingState` + optional `ConnSnapshotDelta` into `float[12]`. |
 | `modules/bootstrap-archive-job/.../ArchiveJob.java` | Chain loop over registered log types, replacing two hand-written chains. |
 
 ---
@@ -54,7 +55,7 @@
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `record ConnSnapshot(String connectionUid, Instant connectionStart, Instant observedAt, long origBytes, long respBytes, long origPkts, long respPkts)`, with `ConnSnapshot deltaFrom(ConnSnapshot previous)` and `long ageSeconds()`.
+- Produces: `record ConnSnapshot(String connectionUid, Instant connectionStart, Instant observedAt, long origBytes, long respBytes, long origPkts, long respPkts)`, with `ConnSnapshotDelta deltaFrom(ConnSnapshot previous)` and `long ageSeconds()` (clamped to zero when `observedAt` precedes `connectionStart`).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -675,8 +676,8 @@ The `conn.log` join is **non-blocking** (spec §6.2): an absent snapshot yields 
 - Test: `modules/application/src/test/java/io/netsecml/platform/application/feature/CommonFeatureExtractorTest.java`
 
 **Interfaces:**
-- Consumes: `SourceWindowState.connectionCount5m()`, `byteSum5m()`, `failedCount5m()`; `RecordTimingState.meanIntervalMillis()`, `stddevIntervalMillis()`; `ConnSnapshot` and its `ageSeconds()`.
-- Produces: `static float[] extract(SourceWindowState window, RecordTimingState timing, boolean isOrig, ConnSnapshot enrichmentDelta)` returning exactly `CommonFeatureTierV1.FEATURE_COUNT` values. `enrichmentDelta` is nullable and null means "no snapshot available".
+- Consumes: `SourceWindowState.connectionCount5m()`, `byteSum5m()`, `failedCount5m()`; `RecordTimingState.meanIntervalMillis()`, `stddevIntervalMillis()`; `ConnSnapshotDelta` and its `origBytes()`, `respBytes()`, `origPkts()`, `respPkts()`, `ageSeconds()`.
+- Produces: `static float[] extract(SourceWindowState window, RecordTimingState timing, boolean isOrig, ConnSnapshotDelta enrichmentDelta)` returning exactly `CommonFeatureTierV1.FEATURE_COUNT` values. `enrichmentDelta` is nullable and null means "no snapshot available".
 
 - [ ] **Step 1: Write the failing test**
 
@@ -686,7 +687,7 @@ The `conn.log` join is **non-blocking** (spec §6.2): an absent snapshot yields 
 package io.netsecml.platform.application.feature;
 
 import io.netsecml.platform.domain.feature.CommonFeatureTierV1;
-import io.netsecml.platform.domain.feature.ConnSnapshot;
+import io.netsecml.platform.domain.feature.ConnSnapshotDelta;
 import io.netsecml.platform.domain.feature.RecordTimingState;
 import io.netsecml.platform.domain.feature.SourceWindowState;
 import org.junit.jupiter.api.Test;
@@ -759,7 +760,7 @@ class CommonFeatureExtractorTest {
     // snapshot has not been emitted yet.
     @Test
     void presentEnrichmentPopulatesItsIndicesAndSetsTheFlag() {
-        ConnSnapshot delta = new ConnSnapshot("Cabc", START, START.plusSeconds(600), 500L, 600L, 4L, 7L);
+        ConnSnapshotDelta delta = new ConnSnapshotDelta(500L, 600L, 4L, 7L, 600L);
 
         float[] values = CommonFeatureExtractor.extract(
             windowWithThreeRecords(), evenlySpacedTiming(), true, delta);
@@ -777,7 +778,7 @@ class CommonFeatureExtractorTest {
     // for, so it is asserted directly rather than implied.
     @Test
     void aZeroValuedSnapshotIsDistinguishableFromAnAbsentOne() {
-        ConnSnapshot idle = new ConnSnapshot("Cabc", START, START.plusSeconds(600), 0L, 0L, 0L, 0L);
+        ConnSnapshotDelta idle = new ConnSnapshotDelta(0L, 0L, 0L, 0L, 600L);
 
         float[] present = CommonFeatureExtractor.extract(
             windowWithThreeRecords(), evenlySpacedTiming(), true, idle);
@@ -818,7 +819,7 @@ Expected: FAIL — compilation error, `CommonFeatureExtractor` does not exist.
 package io.netsecml.platform.application.feature;
 
 import io.netsecml.platform.domain.feature.CommonFeatureTierV1;
-import io.netsecml.platform.domain.feature.ConnSnapshot;
+import io.netsecml.platform.domain.feature.ConnSnapshotDelta;
 import io.netsecml.platform.domain.feature.RecordTimingState;
 import io.netsecml.platform.domain.feature.SourceWindowState;
 
@@ -840,7 +841,7 @@ public final class CommonFeatureExtractor {
     // connection's first snapshot does not exist until it has been alive five
     // minutes, and waiting for it would stall every record from a new connection.
     public static float[] extract(SourceWindowState window, RecordTimingState timing,
-                                  boolean isOrig, ConnSnapshot enrichmentDelta) {
+                                  boolean isOrig, ConnSnapshotDelta enrichmentDelta) {
         if (window == null || timing == null) {
             throw new IllegalArgumentException("window and timing must not be null");
         }
@@ -1150,7 +1151,7 @@ git commit -m "docs: describe the common feature tier and its conn.log enrichmen
 
 **Deliberate deferral.** Spec §6.1's protocol-internal merge is S7comm-only and belongs to Unit 7, not here.
 
-**Type consistency.** `ConnSnapshot` accessors (`origBytes`, `respBytes`, `origPkts`, `respPkts`, `ageSeconds`) are used identically in Tasks 1 and 4. `RecordTimingState.meanIntervalMillis`/`stddevIntervalMillis` match between Tasks 2 and 4. `CommonFeatureTierV1.FEATURE_COUNT` is used in Tasks 3 and 4. `SourceWindowState.connectionCount5m`/`byteSum5m`/`failedCount5m` match the existing class exactly.
+**Type consistency.** `ConnSnapshotDelta` accessors (`origBytes`, `respBytes`, `origPkts`, `respPkts`, `ageSeconds`) are produced by Task 1's `deltaFrom` and consumed identically in Task 4. `RecordTimingState.meanIntervalMillis`/`stddevIntervalMillis` match between Tasks 2 and 4. `CommonFeatureTierV1.FEATURE_COUNT` is used in Tasks 3 and 4. `SourceWindowState.connectionCount5m`/`byteSum5m`/`failedCount5m` match the existing class exactly.
 
 **Known risk carried into Task 5.** The two pre-existing chains name their operators inconsistently (`feature-vector-source` but `invalid-event-row` under a `dlq` source, and a pluralised `feature-vectors-clickhouse-sink`). `ChainSpec` stores all three uids explicitly rather than deriving them, because a uid change orphans checkpoint state and any generating rule would be more intricate than the six literal names. Task 5 Step 4 explicitly forbids fixing the test instead of the code. A reviewer may reasonably dislike the inconsistent names; a reviewer must not propose renaming them.
 

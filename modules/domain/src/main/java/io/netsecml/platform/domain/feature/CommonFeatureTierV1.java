@@ -23,7 +23,7 @@ public final class CommonFeatureTierV1 {
     // encoding or semanticVersion text. CommonFeatureTierV1Test pins this hash
     // against the committed file the same way ConnFeatureSchemaV1 already does.
     public static final String CONTENT_HASH =
-        "470448ba6b24a21a14a5c16e13a6146fe60e16acedc5993966dcf0f11fe75425";
+        "77dfc12409792a9e1438b6c366d2d46a8168752dc206688702f99534ca78d1cb";
 
     // Indices 0-5 come from ml-platform's own keyed state and are always
     // populated. Indices 6-11 come from conn.log enrichment, which is a

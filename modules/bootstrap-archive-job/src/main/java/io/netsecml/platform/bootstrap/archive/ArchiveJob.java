@@ -1,7 +1,5 @@
 package io.netsecml.platform.bootstrap.archive;
 
-import io.netsecml.platform.adapter.clickhouse.row.FeatureVectorRow;
-import io.netsecml.platform.adapter.clickhouse.row.InvalidEventRow;
 import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseBatchSink;
 import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseConfig;
 import io.netsecml.platform.adapter.flink.source.RawBytesDeserializationSchema;
@@ -87,6 +85,11 @@ public final class ArchiveJob {
     // silently discards state on restore-from-checkpoint instead of failing
     // loudly -- and a generated topology can collide uids in a way a hand-written
     // one cannot, which ArchiveJobTopologyTest guards.
+    // The one-time cost of assigning uids was judged acceptable when they were
+    // introduced: this job carries no keyed state -- only the source's committed
+    // offset position and the sink's in-flight batch, both of which replay safely
+    // from Kafka -- so a checkpoint that fails to restore across the change loses
+    // nothing that Kafka cannot re-deliver.
     private static <T> void wire(StreamExecutionEnvironment env, String bootstrapServers,
                                  ClickHouseConfig clickHouse, ChainSpec<T> chain) {
         env.fromSource(source(bootstrapServers, chain.topic()),

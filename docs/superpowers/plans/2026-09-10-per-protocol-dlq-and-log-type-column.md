@@ -263,7 +263,10 @@ git commit -m "feat(infrastructure): add the invalid_events log_type migration a
 **Files:**
 - Modify: `modules/adapter-clickhouse/src/main/java/io/netsecml/platform/adapter/clickhouse/row/InvalidEventRow.java`
 - Modify: `modules/adapter-clickhouse/src/main/java/io/netsecml/platform/adapter/clickhouse/mapper/InvalidEventRowMapper.java`
+- Modify: `modules/adapter-clickhouse/src/test/java/io/netsecml/platform/adapter/clickhouse/writer/ClientV2InserterTest.java:88` — also constructs the mapper
 - Test: `modules/adapter-clickhouse/src/test/java/io/netsecml/platform/adapter/clickhouse/mapper/InvalidEventRowMapperTest.java`
+
+**Every caller of `new InvalidEventRowMapper()` must be updated** — there are three: `InvalidEventRowMapperTest:16`, `ClientV2InserterTest:88`, and `InvalidEventRowMapFunction:30` (that last one belongs to Task 3). Pass `LogType.CONN` in the two tests; conn is the only log type that exists.
 
 **Interfaces:**
 - Consumes: `io.netsecml.platform.domain.event.LogType` and its `wireName()`; `RejectedEvent`.
@@ -369,6 +372,12 @@ git commit -m "feat(adapter-clickhouse): carry the bound log type onto invalid_e
 - Modify: `modules/bootstrap-archive-job/src/main/java/io/netsecml/platform/bootstrap/archive/InvalidEventRowMapFunction.java`
 - Modify: `modules/bootstrap-archive-job/src/main/java/io/netsecml/platform/bootstrap/archive/ArchiveJob.java`
 - Test: `modules/bootstrap-archive-job/src/test/java/io/netsecml/platform/bootstrap/archive/ArchiveJobTopologyTest.java`
+
+**Two existing call sites in that test already construct `InvalidEventRowMapFunction`** (lines 107 and 110) and will not compile once the constructor changes. One of them wires a chain labelled `netsec.http.dlq.v1` with uids `http-dlq-source`, `http-invalid-event-row`, `http-invalid-events-clickhouse-sink`.
+
+**Good news:** those are exactly the strings `dlqChain` will generate for a non-CONN log type, so the factory and that test already agree — do not change the uids.
+
+**The catch:** there is no `LogType.HTTP`. `LogType` has only `CONN`, and its own comment states a constant is added per log type as each one lands, so Java never advertises support with nothing behind it. **Do not add `LogType.HTTP`.** Pass `LogType.CONN` at both call sites and add a comment to the http-named chain saying its names are placeholder labels exercising uid uniqueness, not real protocol support — that test's subject is topology wiring, not log-type semantics. Unit 3 should switch it to a real second log type when DNS lands.
 
 **Interfaces:**
 - Consumes: `ArchiveJob.LogTypeChain<T>(String topic, RichMapFunction<byte[],T> rowMapper, String table, String sourceUid, String mapUid, String sinkUid)`; `ArchiveJob.build(env, bootstrapServers, List<LogTypeChain<?>>, clickHouse)`.

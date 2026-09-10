@@ -15,6 +15,6 @@
     { "index": 8, "name": "conn_orig_pkts", "unit": "count", "missingPolicy": "DEFAULT_ZERO", "formula": "orig_pkts delta since the previous conn.log snapshot" },
     { "index": 9, "name": "conn_resp_pkts", "unit": "count", "missingPolicy": "DEFAULT_ZERO", "formula": "resp_pkts delta since the previous conn.log snapshot" },
     { "index": 10, "name": "conn_age_seconds", "unit": "seconds", "missingPolicy": "DEFAULT_ZERO", "formula": "connection age at the time of the latest conn.log snapshot" },
-    { "index": 11, "name": "conn_enrichment_present", "unit": "boolean", "missingPolicy": "DEFAULT_ZERO", "formula": "1 if a conn.log snapshot was available for this record else 0" }
+    { "index": 11, "name": "conn_enrichment_present", "unit": "boolean", "missingPolicy": "REQUIRED", "formula": "1 if a conn.log snapshot was available for this record else 0" }
   ]
 }

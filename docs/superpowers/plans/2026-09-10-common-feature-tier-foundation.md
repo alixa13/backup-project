@@ -1094,11 +1094,47 @@ git commit -m "refactor(bootstrap-archive-job): wire archive chains from a regis
 
 ---
 
-## Task 6: Document the foundation
+## Task 6: Document the foundation and clear Task 5's residue
 
 **Files:**
 - Modify: `docs/clickhouse.md`
 - Modify: `CLAUDE.md`
+- Modify: `modules/bootstrap-archive-job/src/main/java/io/netsecml/platform/bootstrap/archive/ArchiveJob.java`
+
+- [ ] **Step 0: Clear two Minor findings left by Task 5**
+
+Task 5's review left two Minors in `ArchiveJob.java`. They are folded in here rather than deferred,
+because both are one-line changes in code the same reviewer just read.
+
+**0a — remove two now-dead imports.** Before the refactor, `ClickHouseBatchSink<FeatureVectorRow>`
+and `ClickHouseBatchSink<InvalidEventRow>` named their type arguments explicitly. The generic
+`wire()` now infers `T`, so these two imports are unused:
+
+```java
+import io.netsecml.platform.adapter.clickhouse.row.FeatureVectorRow;
+import io.netsecml.platform.adapter.clickhouse.row.InvalidEventRow;
+```
+
+Delete both. No checkstyle is configured for this module, so nothing fails today — that is why it
+needs doing deliberately rather than being caught by the build.
+
+**0b — restore reasoning the refactor dropped.** The original comment explained not just why UIDs
+matter but why assigning them *now* was safe. That specific argument did not survive. Add it to the
+`wire()` method's comment, after the existing explanation of UID identity:
+
+```java
+    // The one-time cost of assigning uids was judged acceptable when they were
+    // introduced: this job carries no keyed state -- only the source's committed
+    // offset position and the sink's in-flight batch, both of which replay safely
+    // from Kafka -- so a checkpoint that fails to restore across the change loses
+    // nothing that Kafka cannot re-deliver.
+```
+
+Verify it still compiles and the topology test still passes:
+
+Run: `./mvnw install -DskipTests -q -o && ./mvnw test -pl modules/bootstrap-archive-job -o -Dtest=ArchiveJobTopologyTest`
+Expected: `Tests run: 3, Failures: 0, Errors: 0`.
+
 
 - [ ] **Step 1: Add a common-tier section to `docs/clickhouse.md`**
 

@@ -55,17 +55,28 @@ class RecordTimingStateTest {
     }
 
     // Welford is numerically stable at scale: ten thousand records must still
-    // produce the exact arithmetic answer, not a drifted one.
+    // produce the exact arithmetic answer, not a drifted one. Intervals alternate
+    // between 10 ms and 30 ms rather than staying identical -- identical intervals
+    // leave sumSquaredDifferences at exactly 0 no matter what, so that shape could
+    // never have caught instability in the running deviation. Alternating gives a
+    // known non-zero mean and deviation to check the accumulated arithmetic
+    // against after ten thousand folds.
     @Test
     void arithmeticStaysExactAcrossManyObservations() {
         RecordTimingState state = RecordTimingState.empty();
+        Instant time = T0;
+        state = state.observe(time);
         for (int i = 0; i < 10_000; i++) {
-            state = state.observe(T0.plusMillis(i * 10L));
+            long step = (i % 2 == 0) ? 10L : 30L;
+            time = time.plusMillis(step);
+            state = state.observe(time);
         }
 
-        assertEquals(10_000L, state.observationCount());
-        assertEquals(10.0, state.meanIntervalMillis(), 0.0001);
-        assertEquals(0.0, state.stddevIntervalMillis(), 0.0001);
+        // 5,000 intervals of 10 ms and 5,000 of 30 ms: mean 20, population
+        // variance 0.5*(10-20)^2 + 0.5*(30-20)^2 = 100, stddev 10.
+        assertEquals(10_001L, state.observationCount());
+        assertEquals(20.0, state.meanIntervalMillis(), 0.0001);
+        assertEquals(10.0, state.stddevIntervalMillis(), 0.0001);
     }
 
     // The bounded-state invariant, asserted structurally rather than implied.
@@ -99,6 +110,9 @@ class RecordTimingStateTest {
 
         RecordTimingState withLateArrival = inOrder.observe(T0.plusMillis(50));
 
+        assertEquals(inOrder.observationCount(), withLateArrival.observationCount(),
+            "an out-of-order record must not bump the observation count either -- "
+            + "an implementation could bump the count without folding an interval and still pass the checks below");
         assertEquals(inOrder.meanIntervalMillis(), withLateArrival.meanIntervalMillis(), 0.0001,
             "an out-of-order record must not move the mean");
         assertEquals(inOrder.stddevIntervalMillis(), withLateArrival.stddevIntervalMillis(), 0.0001,

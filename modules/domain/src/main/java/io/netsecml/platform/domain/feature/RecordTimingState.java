@@ -46,6 +46,15 @@ public final class RecordTimingState {
         // yields no valid interval, so it must be ignored entirely. Clamping it to
         // zero would fold a fabricated data point into the mean and deviation the
         // model consumes, biasing the feature for every downstream inference.
+        //
+        // Ignoring it is not bias-free either: lastRecordTime stays at the running
+        // maximum, so the next IN-ORDER record after this gap measures one long
+        // interval spanning both the skipped record and itself, instead of the two
+        // shorter intervals a fully-ordered stream would have produced. That is a
+        // directional bias toward a longer mean and a higher deviation, on top of
+        // the smaller sample size from dropping the out-of-order record outright.
+        // Accepted because the alternative (clamping to a fabricated near-zero
+        // interval) is worse, not because this path is neutral.
         if (recordTime.isBefore(lastRecordTime)) {
             return this;
         }

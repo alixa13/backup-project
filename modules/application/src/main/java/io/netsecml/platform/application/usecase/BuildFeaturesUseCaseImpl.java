@@ -1,6 +1,7 @@
 package io.netsecml.platform.application.usecase;
 
 import io.netsecml.platform.application.feature.EventFeatureExtractor;
+import io.netsecml.platform.domain.event.ConnEvent;
 import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.feature.ConnFeatureSchemaV1;
 import io.netsecml.platform.domain.feature.FeatureBuildResult;
@@ -33,13 +34,21 @@ public final class BuildFeaturesUseCaseImpl implements BuildFeaturesUseCase {
 
     @Override
     public FeatureBuildResult build(NetworkEvent event, SourceWindowState currentState) {
+        // The single switch that reaches ConnEvent for this whole use case. A
+        // pattern switch rather than a cast, so the compiler flags this site when
+        // a second log type joins the hierarchy and this code has to decide what
+        // building features means for that type.
+        ConnEvent conn = switch (event) {
+            case ConnEvent c -> c;
+        };
+
         // Indices 0-16: deterministic, event-local features.
-        float[] eventLevel = eventFeatureExtractor.extractEventLevel(event);
+        float[] eventLevel = eventFeatureExtractor.extractEventLevel(conn);
 
         // Fold this event into the bounded 5-bucket rolling window. record()
         // returns a NEW state; the caller is responsible for storing it.
-        long totalBytes = event.measurements().originBytes() + event.measurements().responseBytes();
-        boolean failed = event.connection().connectionState().isFailed();
+        long totalBytes = conn.measurements().originBytes() + conn.measurements().responseBytes();
+        boolean failed = conn.connection().connectionState().isFailed();
         long bucketMinute = event.eventTime().getEpochSecond() / 60;
         SourceWindowState newState = currentState.record(bucketMinute, totalBytes, failed);
 

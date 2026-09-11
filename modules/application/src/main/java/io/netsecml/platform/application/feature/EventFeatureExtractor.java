@@ -1,11 +1,15 @@
 package io.netsecml.platform.application.feature;
 
-import io.netsecml.platform.domain.event.NetworkEvent;
+import io.netsecml.platform.domain.event.ConnEvent;
 import io.netsecml.platform.domain.event.Protocol;
 import io.netsecml.platform.domain.event.ServiceCode;
 
+// Narrowed to ConnEvent rather than the sealed NetworkEvent interface: every line
+// below reads measurements() or connection(), so this class IS the conn
+// extractor, not a generic one wearing a switch. A later unit adds per-log-type
+// extractors beside this one rather than branches inside it.
 public final class EventFeatureExtractor {
-    public float[] extractEventLevel(NetworkEvent event) {
+    public float[] extractEventLevel(ConnEvent event) {
         long durationMillis = event.measurements().durationMillis();
         long originBytes = event.measurements().originBytes();
         long responseBytes = event.measurements().responseBytes();

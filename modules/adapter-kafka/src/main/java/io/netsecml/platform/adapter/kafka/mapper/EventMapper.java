@@ -62,7 +62,11 @@ public final class EventMapper {
 
         ConnectionLocality locality = new ConnectionLocality(dto.localOrig(), dto.localResp());
 
-        NetworkEvent event = new NetworkEvent(eventId, eventTime, sensor, logType, connectionUid, tuple, measurements, locality);
+        // This mapper handles conn.log exclusively, so it always produces a
+        // ConnEvent -- the envelope carries identity and timing, ConnEvent carries
+        // the conn-specific payload this DTO parsed.
+        NetworkEvent event = new ConnEvent(new EventEnvelope(eventId, eventTime, sensor, logType, connectionUid),
+            tuple, measurements, locality);
         return MappingResult.valid(event);
     }
 }

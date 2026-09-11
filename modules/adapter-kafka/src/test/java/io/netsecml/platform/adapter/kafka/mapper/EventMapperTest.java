@@ -27,12 +27,18 @@ class EventMapperTest {
         NetworkEvent event = result.value();
         assertEquals("sensor-eu-1:Cabc123XYZ", event.eventId().value());
         assertEquals(Instant.ofEpochMilli(1786608000123L), event.eventTime());
-        assertEquals(Protocol.TCP, event.connection().protocol());
-        assertEquals(ServiceCode.SSL, event.connection().service());
-        assertEquals(ConnectionState.SF, event.connection().connectionState());
-        assertEquals(443, event.connection().destinationPort());
-        assertEquals(1500L, event.measurements().durationMillis());
-        assertEquals(2048L, event.measurements().originBytes());
+
+        // EventMapper handles conn.log exclusively, so its output is always a
+        // ConnEvent; this switch reaches the conn-specific fields to assert on.
+        ConnEvent conn = switch (event) {
+            case ConnEvent c -> c;
+        };
+        assertEquals(Protocol.TCP, conn.connection().protocol());
+        assertEquals(ServiceCode.SSL, conn.connection().service());
+        assertEquals(ConnectionState.SF, conn.connection().connectionState());
+        assertEquals(443, conn.connection().destinationPort());
+        assertEquals(1500L, conn.measurements().durationMillis());
+        assertEquals(2048L, conn.measurements().originBytes());
     }
 
     // EventMapper handles conn.log exclusively, so LogType.CONN should show up as
@@ -51,8 +57,11 @@ class EventMapperTest {
     void defaultsMissingOptionalNumericFieldsToZero() throws IOException {
         MappingResult<NetworkEvent> result = mapper.map(fixture("valid-udp-dns.json"), sensor);
         assertTrue(result.isValid());
-        assertEquals(0L, result.value().measurements().durationMillis(), "duration was absent in this fixture");
-        assertEquals(0L, result.value().measurements().missedBytes(), "missed_bytes was absent in this fixture");
+        ConnEvent conn = switch (result.value()) {
+            case ConnEvent c -> c;
+        };
+        assertEquals(0L, conn.measurements().durationMillis(), "duration was absent in this fixture");
+        assertEquals(0L, conn.measurements().missedBytes(), "missed_bytes was absent in this fixture");
     }
 
     @Test

@@ -22,8 +22,9 @@ class BuildFeaturesUseCaseImplTest {
         // LogType.CONN and a non-blank uid are required positional components now;
         // this use case test only exercises feature-building math, so a fixed
         // constant and the same timestamp-derived id used for eventId are enough.
-        return new NetworkEvent(EventId.derive(sensor, eventTime.toString()), eventTime, sensor, LogType.CONN,
-            eventTime.toString(), tuple, measurements, new ConnectionLocality(null, null));
+        EventEnvelope envelope = new EventEnvelope(
+            EventId.derive(sensor, eventTime.toString()), eventTime, sensor, LogType.CONN, eventTime.toString());
+        return new ConnEvent(envelope, tuple, measurements, new ConnectionLocality(null, null));
     }
 
     @Test

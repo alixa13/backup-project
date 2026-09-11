@@ -1,11 +1,13 @@
 package io.netsecml.platform.adapter.flink.process;
 
-import io.netsecml.platform.application.usecase.BuildFeaturesUseCaseImpl;
+import io.netsecml.platform.application.usecase.ConnBuildFeaturesUseCase;
+import io.netsecml.platform.domain.event.ConnEvent;
 import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.feature.FeatureBuildResult;
 import io.netsecml.platform.domain.feature.FeatureVector;
 import io.netsecml.platform.domain.feature.ConnWindowState;
 import io.netsecml.platform.domain.feature.SourceKey;
+import io.netsecml.platform.port.in.BuildFeaturesUseCase;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
@@ -15,7 +17,7 @@ import org.apache.flink.util.Collector;
 
 public final class ConnFeatureProcessFunction extends KeyedProcessFunction<SourceKey, NetworkEvent, FeatureVector> {
     private transient ValueState<ConnWindowState> windowState;
-    private transient BuildFeaturesUseCaseImpl useCase;
+    private transient BuildFeaturesUseCase<ConnEvent, ConnWindowState> useCase;
 
     @Override
     public void open(OpenContext openContext) {
@@ -33,7 +35,7 @@ public final class ConnFeatureProcessFunction extends KeyedProcessFunction<Sourc
         ValueStateDescriptor<ConnWindowState> descriptor = new ValueStateDescriptor<>(
             "source-window-state", TypeInformation.of(ConnWindowState.class));
         windowState = getRuntimeContext().getState(descriptor);
-        useCase = new BuildFeaturesUseCaseImpl();
+        useCase = new ConnBuildFeaturesUseCase();
     }
 
     @Override
@@ -43,7 +45,16 @@ public final class ConnFeatureProcessFunction extends KeyedProcessFunction<Sourc
             currentState = ConnWindowState.empty();
         }
 
-        FeatureBuildResult result = useCase.build(event, currentState);
+        // The stream is DataStream<NetworkEvent> and KeyedProcessFunction's input
+        // type follows it, so this cannot take ConnEvent directly the way the use
+        // case does -- same constraint as SourceKeySelector. It narrows here
+        // instead, and the compiler will flag this site when a second log type
+        // joins the hierarchy and this function has to decide what it means.
+        ConnEvent conn = switch (event) {
+            case ConnEvent c -> c;
+        };
+
+        FeatureBuildResult<ConnWindowState> result = useCase.build(conn, currentState);
         windowState.update(result.newState());
         out.collect(result.vector());
     }

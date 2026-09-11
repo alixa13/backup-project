@@ -2,8 +2,8 @@ package io.netsecml.platform.application.feature;
 
 import io.netsecml.platform.domain.feature.CommonFeatureTierV1;
 import io.netsecml.platform.domain.feature.ConnSnapshotDelta;
+import io.netsecml.platform.domain.feature.ConnWindowState;
 import io.netsecml.platform.domain.feature.RecordTimingState;
-import io.netsecml.platform.domain.feature.SourceWindowState;
 import org.junit.jupiter.api.Test;
 import java.time.Instant;
 import static org.junit.jupiter.api.Assertions.*;
@@ -14,9 +14,9 @@ class CommonFeatureExtractorTest {
 
     private static final Instant START = Instant.parse("2026-09-10T10:00:00Z");
 
-    private static SourceWindowState windowWithThreeRecords() {
+    private static ConnWindowState windowWithThreeRecords() {
         long minute = START.getEpochSecond() / 60L;
-        return SourceWindowState.empty()
+        return ConnWindowState.empty()
             .record(minute, 100L, false)
             .record(minute, 200L, true)
             .record(minute, 300L, false);

@@ -4,9 +4,9 @@ import io.netsecml.platform.application.feature.EventFeatureExtractor;
 import io.netsecml.platform.domain.event.ConnEvent;
 import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.feature.ConnFeatureSchemaV1;
+import io.netsecml.platform.domain.feature.ConnWindowState;
 import io.netsecml.platform.domain.feature.FeatureBuildResult;
 import io.netsecml.platform.domain.feature.FeatureVector;
-import io.netsecml.platform.domain.feature.SourceWindowState;
 import io.netsecml.platform.port.in.BuildFeaturesUseCase;
 import java.time.Clock;
 import java.time.temporal.ChronoUnit;
@@ -33,7 +33,7 @@ public final class BuildFeaturesUseCaseImpl implements BuildFeaturesUseCase {
     }
 
     @Override
-    public FeatureBuildResult build(NetworkEvent event, SourceWindowState currentState) {
+    public FeatureBuildResult build(NetworkEvent event, ConnWindowState currentState) {
         // The single switch that reaches ConnEvent for this whole use case. A
         // pattern switch rather than a cast, so the compiler flags this site when
         // a second log type joins the hierarchy and this code has to decide what
@@ -50,7 +50,7 @@ public final class BuildFeaturesUseCaseImpl implements BuildFeaturesUseCase {
         long totalBytes = conn.measurements().originBytes() + conn.measurements().responseBytes();
         boolean failed = conn.connection().connectionState().isFailed();
         long bucketMinute = event.eventTime().getEpochSecond() / 60;
-        SourceWindowState newState = currentState.record(bucketMinute, totalBytes, failed);
+        ConnWindowState newState = currentState.record(bucketMinute, totalBytes, failed);
 
         // Indices 17-19 come from the window AFTER this event is folded in.
         float[] values = new float[20];

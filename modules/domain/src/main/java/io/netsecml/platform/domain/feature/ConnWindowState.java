@@ -3,32 +3,48 @@ package io.netsecml.platform.domain.feature;
 import java.util.Arrays;
 
 /**
- * Five fixed one-minute buckets holding rolling connection-count/byte-sum/failed-count totals
- * for a single (sensor, sourceIp) key. Bounded by construction: exactly 5 longs per array,
- * never a per-IP set or list. See PILOT_ARCHITECTURE.md section 6 for the design rationale.
+ * Five fixed one-minute buckets holding rolling connection-count/byte-sum/
+ * failed-count totals for a single (sensor, sourceIp) key.
+ *
+ * Named for conn deliberately. These three counters are connection concepts: a
+ * DNS window would want NXDOMAIN counts and an SSH window would want auth
+ * failures. The ring mechanics are worth extracting when a second log type
+ * actually needs a rolling window -- not before, because each of the three
+ * possible generalizations trades away something real, and there is no second
+ * consumer yet to say which trade is right.
+ *
+ * Bounded by construction: exactly 5 longs per array, never a per-IP set or
+ * list. See PILOT_ARCHITECTURE.md section 6 for the design rationale.
  */
-public final class SourceWindowState {
+public final class ConnWindowState {
     private static final int BUCKET_COUNT = 5;
 
+    // Ring-buffer style parallel arrays: each index is a one-minute bucket slot,
+    // reused (and reset) once the epoch minute wraps back onto that slot.
     private final long[] bucketMinutes;
     private final long[] connectionCounts;
     private final long[] byteSums;
     private final long[] failedCounts;
 
-    private SourceWindowState(long[] bucketMinutes, long[] connectionCounts, long[] byteSums, long[] failedCounts) {
+    private ConnWindowState(long[] bucketMinutes, long[] connectionCounts, long[] byteSums, long[] failedCounts) {
         this.bucketMinutes = bucketMinutes;
         this.connectionCounts = connectionCounts;
         this.byteSums = byteSums;
         this.failedCounts = failedCounts;
     }
 
-    public static SourceWindowState empty() {
+    // Fresh window: every bucket slot is unset (Long.MIN_VALUE sentinel) so the
+    // first record into any slot is always treated as a new bucket.
+    public static ConnWindowState empty() {
         long[] minutes = new long[BUCKET_COUNT];
         Arrays.fill(minutes, Long.MIN_VALUE);
-        return new SourceWindowState(minutes, new long[BUCKET_COUNT], new long[BUCKET_COUNT], new long[BUCKET_COUNT]);
+        return new ConnWindowState(minutes, new long[BUCKET_COUNT], new long[BUCKET_COUNT], new long[BUCKET_COUNT]);
     }
 
-    public SourceWindowState record(long bucketEpochMinute, long bytes, boolean failed) {
+    // Folds one record into its bucket, returning a new immutable state. If the
+    // target slot belongs to a different (older) minute, it is reset to zero
+    // before accumulating -- this is how stale buckets roll off the window.
+    public ConnWindowState record(long bucketEpochMinute, long bytes, boolean failed) {
         long[] minutes = Arrays.copyOf(bucketMinutes, BUCKET_COUNT);
         long[] counts = Arrays.copyOf(connectionCounts, BUCKET_COUNT);
         long[] sums = Arrays.copyOf(byteSums, BUCKET_COUNT);
@@ -46,9 +62,11 @@ public final class SourceWindowState {
         if (failed) {
             fails[slot] += 1;
         }
-        return new SourceWindowState(minutes, counts, sums, fails);
+        return new ConnWindowState(minutes, counts, sums, fails);
     }
 
+    // Sums only the buckets still within the 5-minute window relative to the
+    // most recent bucket seen; anything older is treated as rolled off.
     private long sumWithinWindow(long[] values, long currentMinuteHint) {
         long total = 0;
         for (int i = 0; i < BUCKET_COUNT; i++) {
@@ -59,6 +77,8 @@ public final class SourceWindowState {
         return total;
     }
 
+    // The most recent bucket minute recorded, used as the reference point for
+    // deciding which other buckets are still within the window.
     private long latestBucketMinute() {
         long latest = Long.MIN_VALUE;
         for (long m : bucketMinutes) {

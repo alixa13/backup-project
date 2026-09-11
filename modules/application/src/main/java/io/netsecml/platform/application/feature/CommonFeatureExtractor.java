@@ -2,8 +2,8 @@ package io.netsecml.platform.application.feature;
 
 import io.netsecml.platform.domain.feature.CommonFeatureTierV1;
 import io.netsecml.platform.domain.feature.ConnSnapshotDelta;
+import io.netsecml.platform.domain.feature.ConnWindowState;
 import io.netsecml.platform.domain.feature.RecordTimingState;
-import io.netsecml.platform.domain.feature.SourceWindowState;
 
 // Builds the protocol-agnostic feature tier that leads every per-protocol
 // feature vector.
@@ -22,7 +22,7 @@ public final class CommonFeatureExtractor {
     // for this connection yet". The join is deliberately non-blocking: a
     // connection's first snapshot does not exist until it has been alive five
     // minutes, and waiting for it would stall every record from a new connection.
-    public static float[] extract(SourceWindowState window, RecordTimingState timing,
+    public static float[] extract(ConnWindowState window, RecordTimingState timing,
                                   boolean isOrig, ConnSnapshotDelta enrichmentDelta) {
         if (window == null || timing == null) {
             throw new IllegalArgumentException("window and timing must not be null");

@@ -5,7 +5,7 @@ import java.time.Instant;
 
 // Running inter-arrival statistics for a single (sensor, sourceIp) key.
 //
-// Deliberately NOT part of SourceWindowState: that type's serialized shape is
+// Deliberately NOT part of ConnWindowState: that type's serialized shape is
 // shared with the frozen conn path, and widening it would change checkpoint
 // state for a job that is already running.
 //

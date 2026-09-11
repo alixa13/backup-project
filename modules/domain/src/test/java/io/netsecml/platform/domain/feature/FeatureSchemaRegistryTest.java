@@ -56,4 +56,14 @@ class FeatureSchemaRegistryTest {
                 logType + " has no registered schema");
         }
     }
+
+    // A null key is a caller bug, and it should report as one. Without these
+    // checks the map throws a NullPointerException whose message names
+    // Object.hashCode -- useless to whoever has to diagnose it, and inconsistent
+    // with every other failure in this class.
+    @Test
+    void rejectsNullArgumentsWithTheSameExceptionAsUnknownKeys() {
+        assertThrows(IllegalArgumentException.class, () -> FeatureSchemaRegistry.byLogType(null));
+        assertThrows(IllegalArgumentException.class, () -> FeatureSchemaRegistry.byId(null));
+    }
 }

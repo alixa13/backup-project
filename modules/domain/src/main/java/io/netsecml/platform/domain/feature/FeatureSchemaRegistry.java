@@ -34,6 +34,13 @@ public final class FeatureSchemaRegistry {
     // deployment is wrong, and failing at wiring time is cheaper than failing per
     // record once traffic arrives.
     public static FeatureSchema byLogType(LogType logType) {
+        // Checked before the map lookup: Map.of() throws a bare NullPointerException
+        // on a null key, whose message names Object.hashCode rather than the thing
+        // that actually went wrong. Every other failure here names the key, and a
+        // null argument should not be the one case that does not.
+        if (logType == null) {
+            throw new IllegalArgumentException("logType must not be null");
+        }
         FeatureSchema schema = BY_LOG_TYPE.get(logType);
         if (schema == null) {
             throw new IllegalArgumentException("no feature schema registered for log type " + logType);
@@ -42,6 +49,13 @@ public final class FeatureSchemaRegistry {
     }
 
     public static FeatureSchema byId(String schemaId) {
+        // Checked before the map lookup: Collectors.toUnmodifiableMap() throws a bare
+        // NullPointerException on a null key, whose message names Object.hashCode
+        // rather than the thing that actually went wrong. Every other failure here
+        // names the key, and a null argument should not be the one case that does not.
+        if (schemaId == null) {
+            throw new IllegalArgumentException("schemaId must not be null");
+        }
         FeatureSchema schema = BY_ID.get(schemaId);
         if (schema == null) {
             throw new IllegalArgumentException("no feature schema registered with id " + schemaId);

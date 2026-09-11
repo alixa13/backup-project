@@ -417,7 +417,22 @@ and use `schema.id()` and `schema.contentHash()` in the `FeatureVector` rather t
 
 `ConnFeatureProcessFunction` currently holds the **concrete** `BuildFeaturesUseCaseImpl` in a field (line 18), not the interface, so it breaks on the rename regardless. Change the field to the interface type `BuildFeaturesUseCase<ConnEvent, ConnWindowState>` and construct a `ConnBuildFeaturesUseCase` in `open()`. Its `ValueState<ConnWindowState>` and stream types follow.
 
-**Do not change the `ValueStateDescriptor`'s name string** — see Task 2's ruling. No logic changes.
+**Do not change the `ValueStateDescriptor`'s name string** — see Task 2's ruling.
+
+**One logic change IS required, contrary to what this step originally said.** `ConnFeatureProcessFunction` is declared `KeyedProcessFunction<SourceKey, NetworkEvent, FeatureVector>`, so `processElement` receives a `NetworkEvent` — that type is fixed by the `DataStream<NetworkEvent>` `OnlineFeatureJob` keys. The generic use case takes a `ConnEvent`. So `processElement` must narrow before calling it:
+
+```java
+        // The stream is DataStream<NetworkEvent> and KeyedProcessFunction's input
+        // type follows it, so this cannot take ConnEvent directly the way the use
+        // case does -- same constraint as SourceKeySelector. It narrows here
+        // instead, and the compiler will flag this site when a second log type
+        // joins the hierarchy and this function has to decide what it means.
+        ConnEvent conn = switch (event) {
+            case ConnEvent c -> c;
+        };
+```
+
+This is the switch that moves out of the use case and into the adapter: §6.2's "no casting anywhere" applies to the use-case implementations, which now receive their own event type, not to the Flink adapter whose type parameters are fixed by the framework.
 
 - [ ] **Step 6: Run every affected module**
 

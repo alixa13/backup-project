@@ -62,6 +62,12 @@ domain → ports → application → adapters → bootstrap
 - `NetworkEvent` is a **sealed interface** over a shared `EventEnvelope`, with one record per log
   type. `permits` lists only log types that have a parser, mapper and feature schema — adding a
   record ahead of its implementation defeats the exhaustiveness checking that sealing buys.
+- Feature schemas resolve through `FeatureSchemaRegistry`, by `LogType` at wiring time or by
+  `schemaId` for an archived row. Both throw on an unknown key: an unresolvable schema is a
+  deployment error, not a runtime condition. A vector's width, id and content hash all come from
+  its registered schema, never from a literal.
+- `BuildFeaturesUseCase<E, S>` has one implementation per log type, so no implementation casts or
+  switches to discover what it was given.
 
 **Contracts (`contracts/`)** are immutable, content-hashed, and language-neutral. A schema change creates a new version (`-v2`), never edits an existing file.
 

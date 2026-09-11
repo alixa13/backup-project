@@ -59,6 +59,9 @@ domain → ports → application → adapters → bootstrap
 - ClickHouse is never on the online scoring path. Predictions go to Kafka first; the archive job writes to ClickHouse asynchronously.
 - ClickHouse inserts are idempotent (`ReplacingMergeTree`). Do not promise exactly-once for the archive sink.
 - Bounded per-`(sensor, sourceIp)` state only — no unbounded per-IP maps or event history.
+- `NetworkEvent` is a **sealed interface** over a shared `EventEnvelope`, with one record per log
+  type. `permits` lists only log types that have a parser, mapper and feature schema — adding a
+  record ahead of its implementation defeats the exhaustiveness checking that sealing buys.
 
 **Contracts (`contracts/`)** are immutable, content-hashed, and language-neutral. A schema change creates a new version (`-v2`), never edits an existing file.
 

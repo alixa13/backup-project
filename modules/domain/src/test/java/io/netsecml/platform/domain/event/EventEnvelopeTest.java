@@ -24,14 +24,18 @@ class EventEnvelopeTest {
         assertEquals("Cabc123XYZ", envelope.connectionUid());
     }
 
-    // eventId is the ClickHouse ORDER BY key tail and eventTime partitions the
-    // table, so neither can be absent. A row cannot be archived without them.
+    // eventId is the ClickHouse ORDER BY key tail, eventTime is the partition key,
+    // and sensor is what makes an event attributable to a deployment. All three
+    // are structural: a row cannot be archived without them. Each is varied
+    // independently so dropping any single check fails this test.
     @Test
-    void rejectsAMissingEventIdOrEventTime() {
+    void rejectsAMissingEventIdEventTimeOrSensor() {
         assertThrows(NullPointerException.class, () -> new EventEnvelope(
             null, WHEN, SENSOR, LogType.CONN, "Cabc"));
         assertThrows(NullPointerException.class, () -> new EventEnvelope(
             EventId.derive(SENSOR, "Cabc"), null, SENSOR, LogType.CONN, "Cabc"));
+        assertThrows(NullPointerException.class, () -> new EventEnvelope(
+            EventId.derive(SENSOR, "Cabc"), WHEN, null, LogType.CONN, "Cabc"));
     }
 
     // logType is structural: every event must say which Zeek log produced it, or

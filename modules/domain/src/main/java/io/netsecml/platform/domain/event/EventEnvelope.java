@@ -14,9 +14,9 @@ public record EventEnvelope(EventId eventId, Instant eventTime, SensorId sensor,
                             LogType logType, String connectionUid) {
 
     public EventEnvelope {
-        // Identity and time are structural: eventId is the ClickHouse ORDER BY key
-        // tail and eventTime is the partition key, so a row cannot be archived
-        // without either.
+        // Identity, time, and sensor are structural: eventId is the ClickHouse ORDER BY key
+        // tail, eventTime is the partition key, and sensor attributes an event to a
+        // deployment. A row cannot be archived without any of these.
         Objects.requireNonNull(eventId, "eventId must not be null");
         Objects.requireNonNull(eventTime, "eventTime must not be null");
         Objects.requireNonNull(sensor, "sensor must not be null");

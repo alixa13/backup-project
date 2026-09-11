@@ -10,6 +10,14 @@ import java.util.Objects;
 // duration or byte counts. Before this existed, NetworkEvent required all three
 // conn components non-null, so a non-conn protocol could not be represented at
 // all without fabricating them.
+
+// DEFERRED DESIGN: The binding spec (docs/superpowers/specs/2026-09-04-multi-protocol-feature-schema-design.md
+// §5.1) specifies a sixth component, Endpoints, carrying sourceIp, sourcePort, destinationIp, and
+// destinationPort—the four endpoint fields every Zeek log has. It is deliberately omitted because
+// extracting it requires splitting the existing ConnectionTuple into Endpoints and ConnClassification, a
+// refactor affecting 13 files across 4 modules. Until that work completes, SourceKeySelector
+// pattern-switches to reach sourceIp, and each new protocol will require an additional case in that
+// switch—costs that would vanish once Endpoints is properly defined on the envelope.
 public record EventEnvelope(EventId eventId, Instant eventTime, SensorId sensor,
                             LogType logType, String connectionUid) {
 

@@ -12,6 +12,16 @@ class NetworkEventTest {
     private static final ConnectionMeasurements MEASUREMENTS = new ConnectionMeasurements(1500, 2048, 4096, 10, 12, 0);
     private static final ConnectionLocality LOCALITY = new ConnectionLocality(null, null);
 
+    // Shared event envelope used to test that ConnEvent requires it non-null, and by tests
+    // that build ConnEvent instances needing a valid envelope.
+    private static final SensorId SENSOR = new SensorId("sensor-eu-1");
+    private static final EventEnvelope ENVELOPE = new EventEnvelope(
+        EventId.derive(SENSOR, "Cabc123XYZ"),
+        Instant.parse("2026-08-13T10:00:00Z"),
+        SENSOR,
+        LogType.CONN,
+        "Cabc123XYZ");
+
     @Test
     void buildsValidEvent() {
         SensorId sensor = new SensorId("sensor-eu-1");
@@ -27,19 +37,23 @@ class NetworkEventTest {
 
     @Test
     void rejectsNullRequiredFields() {
-        SensorId sensor = new SensorId("sensor-eu-1");
-        EventId id = EventId.derive(sensor, "Cabc123XYZ");
-
-        // A null eventTime is now rejected by the envelope, not by ConnEvent -- the
+        // A null eventTime is rejected by the envelope, not by ConnEvent -- the
         // envelope owns identity and timing, so it is the one that must throw.
         assertThrows(NullPointerException.class, () -> new EventEnvelope(
-            id, null, sensor, LogType.CONN, "Cabc123XYZ"));
+            EventId.derive(SENSOR, "Cabc123XYZ"), null, SENSOR, LogType.CONN, "Cabc123XYZ"));
 
-        // A null connection tuple is still rejected by ConnEvent, since only ConnEvent
-        // knows a conn record is malformed without one.
-        EventEnvelope envelope = new EventEnvelope(id, Instant.now(), sensor, LogType.CONN, "Cabc123XYZ");
-        assertThrows(NullPointerException.class, () -> new ConnEvent(
-            envelope, null, MEASUREMENTS, LOCALITY));
+        // Each of ConnEvent's four null checks, varied one at a time so that deleting
+        // any single requireNonNull fails this test. envelope's check is new in this
+        // branch and was previously unguarded; the other three carry over from the
+        // record NetworkEvent used to be.
+        assertThrows(NullPointerException.class,
+            () -> new ConnEvent(null, TUPLE, MEASUREMENTS, LOCALITY));
+        assertThrows(NullPointerException.class,
+            () -> new ConnEvent(ENVELOPE, null, MEASUREMENTS, LOCALITY));
+        assertThrows(NullPointerException.class,
+            () -> new ConnEvent(ENVELOPE, TUPLE, null, LOCALITY));
+        assertThrows(NullPointerException.class,
+            () -> new ConnEvent(ENVELOPE, TUPLE, MEASUREMENTS, null));
     }
 
     // logType and connectionUid are this task's two additions; downstream code

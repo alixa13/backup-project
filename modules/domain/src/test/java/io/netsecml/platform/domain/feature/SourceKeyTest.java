@@ -11,8 +11,13 @@ class SourceKeyTest {
     // same sensor and the same source IP. Without logType they would share one
     // rolling window, and DNS's record_count_5m would silently include the host's
     // connections. Same sensor, same IP, different log -- different key.
+    //
+    // The name says "keys differ", not "windows are isolated", because key
+    // inequality is all this asserts. Key inequality is the MECHANISM by which
+    // the windows stay separate, but the behaviour itself is a Flink keyed-state
+    // property and is exercised in ConnFeatureProcessFunctionTest's harness.
     @Test
-    void keysDifferByLogTypeAloneSoProtocolsDoNotShareAWindow() {
+    void keysDifferByLogTypeAlone() {
         SensorId sensor = new SensorId("sensor-eu-1");
         SourceKey connKey = new SourceKey(sensor, LogType.CONN, "10.0.0.5");
         SourceKey dnsKey = new SourceKey(sensor, LogType.DNS, "10.0.0.5");

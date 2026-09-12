@@ -40,10 +40,15 @@ class FeatureSchemaRegistryTest {
     // An unresolvable schema is a deployment error, not a runtime condition -- a
     // null return would let a misconfigured job start and fail later, per input,
     // instead of failing at startup.
+    //
+    // This used "dns-feature-v1" as the unknown id until DNS's task registered
+    // it -- at that point this assertion would have started failing (byId would
+    // resolve rather than throw) rather than merely going stale, so the example
+    // id is now one that genuinely has no schema behind it yet.
     @Test
     void throwsOnAnUnknownSchemaIdRatherThanReturningNull() {
         assertThrows(IllegalArgumentException.class,
-            () -> FeatureSchemaRegistry.byId("dns-feature-v1"));
+            () -> FeatureSchemaRegistry.byId("http-feature-v1"));
     }
 
     // Every LogType constant must resolve. This is the fail-fast startup check:

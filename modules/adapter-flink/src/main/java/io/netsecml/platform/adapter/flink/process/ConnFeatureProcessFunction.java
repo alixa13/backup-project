@@ -32,13 +32,24 @@ public final class ConnFeatureProcessFunction extends KeyedProcessFunction<Sourc
         // checkpoint plausibly exists. Paying for a correct name now is cheaper
         // than carrying a wrong one past the first deployment.
         //
-        // A restore across this change does NOT run cold -- it fails. The uid and
-        // the old state name would both still match, so Flink locates the state,
-        // finds a snapshot naming a class that no longer exists, and fails with
-        // StateMigrationException. --allowNonRestoredState does not cover a
-        // serializer incompatibility on matching state. Recovery is a fresh start,
-        // which replays from OffsetsInitializer.earliest(). Reasoned from
-        // documented restore semantics, not from an executed savepoint test.
+        // What a restore across this change actually does, which is NOT what the
+        // same-name rename would have done. Keyed state is addressed by (operator
+        // uid, state name). The uid is unchanged, but this name is new, so Flink
+        // finds nothing under "rolling-counters" and starts the window empty --
+        // a cold window for at most five minutes, which is the bounded cost.
+        // The old "source-window-state" entry stays in the checkpoint, orphaned
+        // and never read; unreferenced state WITHIN an operator that still exists
+        // is not an error, unlike a missing operator, which is what
+        // --allowNonRestoredState is actually for.
+        //
+        // Keeping the old name is the worse option, not the conservative one: the
+        // name would then match while the Kryo snapshot still named the deleted
+        // ConnWindowState class, so Flink would locate the state, resolve the
+        // serializer incompatible, and fail the restore with
+        // StateMigrationException -- the job would not start at all. Renaming the
+        // state alongside the type is what turns a hard failure into a cold start.
+        // Reasoned from documented restore semantics, not from an executed
+        // savepoint test.
         ValueStateDescriptor<RollingCounters> descriptor = new ValueStateDescriptor<>(
             "rolling-counters", TypeInformation.of(RollingCounters.class));
         windowState = getRuntimeContext().getState(descriptor);

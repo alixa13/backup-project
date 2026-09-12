@@ -22,6 +22,16 @@ import java.util.Objects;
 // scored before any snapshot exists. That is never an error condition; the
 // common tier's conn_enrichment_present feature (index 11) exists specifically
 // to let a model distinguish "no snapshot yet" from a genuine zero.
+//
+// This component is populated by no production code yet -- the conn.log join
+// operator arrives later in this same unit. That is a deliberate, narrow
+// exception to this codebase's rule that a field is added only once something
+// stands behind it (the rule LogType and NetworkEvent.permits state about
+// themselves). The rule exists so the compiler cannot advertise support that is
+// absent; a nullable field whose null case is already the designed-for path
+// advertises nothing. The alternative was to carry the join's result in a
+// separate stream type, which would break DataStream<NetworkEvent> and force a
+// third parameter onto BuildFeaturesUseCase for conn's sake as well.
 public record DnsEvent(EventEnvelope envelope, DnsQuery query, DnsResponse response,
                        String sourceIp, boolean isOrig, ConnSnapshotDelta enrichment)
         implements NetworkEvent {

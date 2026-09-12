@@ -41,14 +41,18 @@ class FeatureSchemaRegistryTest {
     // null return would let a misconfigured job start and fail later, per input,
     // instead of failing at startup.
     //
-    // This used "dns-feature-v1" as the unknown id until DNS's task registered
-    // it -- at that point this assertion would have started failing (byId would
-    // resolve rather than throw) rather than merely going stale, so the example
-    // id is now one that genuinely has no schema behind it yet.
+    // The example id must be one that can NEVER become a real schema. This test
+    // used "dns-feature-v1" until the DNS unit registered it, at which point byId
+    // resolved instead of throwing and the assertion failed -- loudly, but for a
+    // reason that had nothing to do with the behaviour under test. "http-feature-v1"
+    // would have repeated that exactly: PILOT_ARCHITECTURE.md names
+    // http-feature-schema-v1.json as a planned contract, so the HTTP unit would
+    // have tripped over this same line. Any "<protocol>-feature-v1" string is a
+    // future protocol's id; this one is not a protocol at all.
     @Test
     void throwsOnAnUnknownSchemaIdRatherThanReturningNull() {
         assertThrows(IllegalArgumentException.class,
-            () -> FeatureSchemaRegistry.byId("http-feature-v1"));
+            () -> FeatureSchemaRegistry.byId("no-such-schema-id"));
     }
 
     // Every LogType constant must resolve. This is the fail-fast startup check:

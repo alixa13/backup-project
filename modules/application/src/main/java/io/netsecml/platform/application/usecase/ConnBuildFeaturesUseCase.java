@@ -21,6 +21,15 @@ public final class ConnBuildFeaturesUseCase implements BuildFeaturesUseCase<Conn
     // Flink function field rather than being built in open().
     private final Clock clock;
 
+    // Resolved once, in the constructor, rather than per record inside build().
+    // Spec §6.1 calls byLogType "wiring, fail-fast startup checks" specifically
+    // so an unresolvable schema surfaces before traffic arrives rather than on
+    // the first record. ConnFeatureProcessFunction builds this in open(), so in
+    // practice that means the schema is now validated at task startup -- not at
+    // job-submission time, since open() runs per task once the job is already
+    // deployed, but still well before any record reaches build().
+    private final FeatureSchema schema;
+
     // Kept so ConnFeatureProcessFunction.open()'s existing no-arg construction
     // compiles unchanged.
     public ConnBuildFeaturesUseCase() {
@@ -30,7 +39,16 @@ public final class ConnBuildFeaturesUseCase implements BuildFeaturesUseCase<Conn
     // Overload used by callers (tests, and later tasks) that need a fixed or
     // fake Clock.
     public ConnBuildFeaturesUseCase(Clock clock) {
+        this(clock, FeatureSchemaRegistry.byLogType(LogType.CONN));
+    }
+
+    // Package-private: lets a test drive this at a width other than conn's 20,
+    // which is the only way to prove the width is read from the schema rather
+    // than baked in. NOT public -- production has exactly one correct schema for
+    // this class, and it is the registered one the public constructors resolve.
+    ConnBuildFeaturesUseCase(Clock clock, FeatureSchema schema) {
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.schema = Objects.requireNonNull(schema, "schema must not be null");
     }
 
     @Override
@@ -45,11 +63,13 @@ public final class ConnBuildFeaturesUseCase implements BuildFeaturesUseCase<Conn
         long bucketMinute = event.eventTime().getEpochSecond() / 60;
         ConnWindowState newState = currentState.record(bucketMinute, totalBytes, failed);
 
-        // The width comes from the schema rather than a literal, which is what
-        // lets a log type with a different feature count use this same shape. For
-        // conn the schema reports 20, so this produces exactly what the old
-        // new float[20] produced.
-        FeatureSchema schema = FeatureSchemaRegistry.byLogType(LogType.CONN);
+        // The width comes from the schema resolved in the constructor, not a
+        // literal. This does NOT make this class usable by another log type --
+        // the schema is pinned to LogType.CONN and the arraycopy plus indices
+        // 17-19 below are conn's own layout. It is the pattern each per-log-type
+        // implementation repeats with its own schema and its own layout, not a
+        // shared shape. For conn the schema reports 20, so this produces exactly
+        // what the old new float[20] produced.
         float[] values = new float[schema.featureCount()];
 
         // Indices 17-19 come from the window AFTER this event is folded in.

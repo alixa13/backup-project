@@ -133,13 +133,20 @@ class ArchiveJobE2ETest {
                     features.get(0).getLong("version"), "row_version is the producer's producedAt");
 
                 List<GenericRecord> invalid = awaitRows(query,
-                    "SELECT event_id, stage, reason_code, source_version FROM invalid_events");
+                    "SELECT event_id, stage, reason_code, source_version, log_type FROM invalid_events");
 
                 assertEquals(1, invalid.size(), "one rejected record must reach invalid_events");
                 assertEquals("PARSE", invalid.get(0).getString("stage"));
                 assertEquals("MALFORMED_JSON", invalid.get(0).getString("reason_code"));
                 assertEquals("zeek-conn-source-v1", invalid.get(0).getString("source_version"));
                 assertEquals("", invalid.get(0).getString("event_id"), "a parse-stage rejection has no identity");
+                // Proves the production binding end to end: build() -> dlqChain(CONN,
+                // dlqTopic) -> InvalidEventRowMapFunction(topic, CONN) -> open() ->
+                // mapper actually lands "conn" in the row. Nothing else on this branch
+                // runs a real map function against the wired log type, so a later
+                // refactor binding the wrong constant would otherwise pass every test.
+                assertEquals("conn", invalid.get(0).getString("log_type"),
+                    "the log type must arrive from the topic binding, through the real job graph");
             } finally {
                 job.cancel().get();
             }

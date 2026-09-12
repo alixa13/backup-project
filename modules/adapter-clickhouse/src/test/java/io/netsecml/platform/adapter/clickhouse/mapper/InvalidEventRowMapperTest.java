@@ -2,6 +2,7 @@ package io.netsecml.platform.adapter.clickhouse.mapper;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netsecml.platform.adapter.clickhouse.row.InvalidEventRow;
+import io.netsecml.platform.domain.event.LogType;
 import io.netsecml.platform.domain.event.ReasonCode;
 import io.netsecml.platform.domain.event.RejectedEvent;
 import org.junit.jupiter.api.Test;
@@ -13,7 +14,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class InvalidEventRowMapperTest {
     private static final String HASH = "a".repeat(64);
-    private final InvalidEventRowMapper mapper = new InvalidEventRowMapper();
+    // Conn is the only log type that exists today, so it is the fixed binding
+    // for every test here that isn't specifically exercising construction.
+    private final InvalidEventRowMapper mapper = new InvalidEventRowMapper(LogType.CONN);
 
     // A map-stage rejection parsed cleanly before domain validation refused it,
     // so it knows which event failed.
@@ -30,7 +33,7 @@ class InvalidEventRowMapperTest {
         assertEquals("port 70000 out of range", row.detail());
         assertEquals(HASH, row.rawPayloadHash());
         assertEquals("2026-08-27 10:03:11.250", row.receivedAt());
-        assertEquals(InvalidEventRowMapper.SOURCE_VERSION, row.sourceVersion());
+        assertEquals(mapper.sourceVersion(), row.sourceVersion());
     }
 
     // A parse-stage rejection never produced a DTO. event_id is the empty string
@@ -74,6 +77,49 @@ class InvalidEventRowMapperTest {
 
         assertEquals(new LinkedHashSet<>(List.of(
             "event_id", "event_time", "received_at", "stage", "reason_code",
-            "detail", "source_version", "raw_payload_hash")), emitted);
+            "detail", "source_version", "raw_payload_hash", "log_type")), emitted);
+    }
+
+    // The log type is supplied when the mapper is constructed, not read from the
+    // event. dlq-v1 is frozen and carries no protocol field: the archive job knows
+    // the log type from the topic it is reading, bound at wiring time.
+    @Test
+    void carriesTheConstructedLogTypeOntoTheRow() {
+        RejectedEvent event = new RejectedEvent("sensor-eu-1:abc", "f".repeat(64),
+            ReasonCode.MALFORMED_JSON, "unparseable", Instant.parse("2026-09-10T10:00:00Z"));
+
+        InvalidEventRow row = new InvalidEventRowMapper(LogType.CONN).toRow(event);
+
+        assertEquals("conn", row.logType(),
+            "the row must carry the wire form, matching feature_vectors.log_type");
+    }
+
+    // The wire form is lowercase, the same value the success path writes. A row
+    // reading "CONN" would be silently accepted by LowCardinality(String) and
+    // would not join against feature_vectors.
+    @Test
+    void usesTheWireFormNotTheEnumName() {
+        RejectedEvent event = new RejectedEvent("sensor-eu-1:abc", "f".repeat(64),
+            ReasonCode.MALFORMED_JSON, "unparseable", Instant.parse("2026-09-10T10:00:00Z"));
+
+        InvalidEventRow row = new InvalidEventRowMapper(LogType.CONN).toRow(event);
+
+        assertNotEquals(LogType.CONN.name(), row.logType());
+        assertEquals(LogType.CONN.wireName(), row.logType());
+    }
+
+    // A mapper without a log type cannot produce a diagnosable row, which is this
+    // unit's whole purpose, so it is a construction error rather than a default.
+    @Test
+    void rejectsANullLogType() {
+        assertThrows(IllegalArgumentException.class, () -> new InvalidEventRowMapper(null));
+    }
+
+    // SOURCE_VERSION is derived from the constructed log type rather than
+    // hardcoded, so it stays correct as more Zeek log types are added. This pins
+    // today's only value so existing behaviour does not silently drift.
+    @Test
+    void derivesSourceVersionFromTheLogType() {
+        assertEquals("zeek-conn-source-v1", new InvalidEventRowMapper(LogType.CONN).sourceVersion());
     }
 }

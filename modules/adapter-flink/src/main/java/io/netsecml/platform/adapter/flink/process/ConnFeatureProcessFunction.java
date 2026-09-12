@@ -1,11 +1,13 @@
 package io.netsecml.platform.adapter.flink.process;
 
-import io.netsecml.platform.application.usecase.BuildFeaturesUseCaseImpl;
+import io.netsecml.platform.application.usecase.ConnBuildFeaturesUseCase;
+import io.netsecml.platform.domain.event.ConnEvent;
 import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.feature.FeatureBuildResult;
 import io.netsecml.platform.domain.feature.FeatureVector;
+import io.netsecml.platform.domain.feature.ConnWindowState;
 import io.netsecml.platform.domain.feature.SourceKey;
-import io.netsecml.platform.domain.feature.SourceWindowState;
+import io.netsecml.platform.port.in.BuildFeaturesUseCase;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
@@ -14,25 +16,60 @@ import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.util.Collector;
 
 public final class ConnFeatureProcessFunction extends KeyedProcessFunction<SourceKey, NetworkEvent, FeatureVector> {
-    private transient ValueState<SourceWindowState> windowState;
-    private transient BuildFeaturesUseCaseImpl useCase;
+    private transient ValueState<ConnWindowState> windowState;
+    private transient BuildFeaturesUseCase<ConnEvent, ConnWindowState> useCase;
 
     @Override
     public void open(OpenContext openContext) {
-        ValueStateDescriptor<SourceWindowState> descriptor = new ValueStateDescriptor<>(
-            "source-window-state", TypeInformation.of(SourceWindowState.class));
+        // The state name stays "source-window-state" even though the type is now
+        // ConnWindowState. A state name is identity, the same as an operator uid,
+        // and this project's established position (see Unit 1's uid decisions) is
+        // that identity strings survive a naming-scheme change even when the type
+        // that outgrew its old name does not. The type rename alone already breaks
+        // restore for this state: the operator uid and this descriptor name both
+        // still match, so on restore Flink locates the checkpointed state and
+        // compares its Kryo serializer snapshot -- which still carries the old
+        // ...SourceWindowState class -- against the new ConnWindowState one,
+        // resolves them incompatible, and fails with a StateMigrationException.
+        // This is not a cold restore; the job does not start at all.
+        // --allowNonRestoredState does not rescue this -- that flag covers state
+        // with no matching operator, not a serializer incompatibility on state
+        // that does match. Recovery is a fresh job start, and OnlineFeatureJob
+        // uses OffsetsInitializer.earliest(), so a fresh start replays the whole
+        // topic and re-emits every vector. (Reasoned from Flink's documented
+        // restore semantics, not from an executed savepoint-restore test.)
+        // The decision to accept this break stands -- renaming this string too
+        // would compound an unavoidable break with an avoidable one, and would
+        // cost the ability to recognize this state in tooling and metrics across
+        // the change. Do not "tidy" this to match the type name.
+        ValueStateDescriptor<ConnWindowState> descriptor = new ValueStateDescriptor<>(
+            "source-window-state", TypeInformation.of(ConnWindowState.class));
         windowState = getRuntimeContext().getState(descriptor);
-        useCase = new BuildFeaturesUseCaseImpl();
+        useCase = new ConnBuildFeaturesUseCase();
     }
 
     @Override
     public void processElement(NetworkEvent event, Context ctx, Collector<FeatureVector> out) throws Exception {
-        SourceWindowState currentState = windowState.value();
+        ConnWindowState currentState = windowState.value();
         if (currentState == null) {
-            currentState = SourceWindowState.empty();
+            currentState = ConnWindowState.empty();
         }
 
-        FeatureBuildResult result = useCase.build(event, currentState);
+        // The stream is DataStream<NetworkEvent> and KeyedProcessFunction's input
+        // type follows it, so this cannot take ConnEvent directly the way the use
+        // case does -- same constraint as SourceKeySelector. It narrows here
+        // instead, and the compiler will flag this site when a second log type
+        // joins the hierarchy and this function has to decide what it means.
+        //
+        // Same rule as SourceKeySelector's switch: resolve a compile break here
+        // with an explicit case DnsEvent -> ... arm, NEVER with a `default ->`
+        // catch-all -- a default arm silently gives up the exhaustiveness check
+        // for every protocol after the next one, not just this one.
+        ConnEvent conn = switch (event) {
+            case ConnEvent c -> c;
+        };
+
+        FeatureBuildResult<ConnWindowState> result = useCase.build(conn, currentState);
         windowState.update(result.newState());
         out.collect(result.vector());
     }

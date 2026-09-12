@@ -53,12 +53,21 @@ domain → ports → application → adapters → bootstrap
 **Key invariants:**
 - Java package root: `io.netsecml.platform`
 - Java 21 throughout — use `record` for immutable data carriers, `sealed interface` + records + pattern-matching `switch` for closed hierarchies. Records with array components need defensive copies in compact constructor *and* in the accessor.
-- Feature vector: exactly 20 `float32` values, ordered per `contracts/features/conn-feature-schema-v1.json`. Feature order is frozen once defined — a change creates a new schema version.
+- Feature vector: exactly `schema.featureCount()` `float32` values, frozen per schema. Conn's registered schema reports 20, ordered per `contracts/features/conn-feature-schema-v1.json`. Feature order is frozen once defined — a change creates a new schema version.
 - CPU-only: no GPU, no CUDA, no deep-learning frameworks. ONNX Runtime Java with intra/inter-op threads pinned to 1 per subtask.
 - Model bundle is pinned in job config and loaded once in `open()`. No live hot reload.
 - ClickHouse is never on the online scoring path. Predictions go to Kafka first; the archive job writes to ClickHouse asynchronously.
 - ClickHouse inserts are idempotent (`ReplacingMergeTree`). Do not promise exactly-once for the archive sink.
 - Bounded per-`(sensor, sourceIp)` state only — no unbounded per-IP maps or event history.
+- `NetworkEvent` is a **sealed interface** over a shared `EventEnvelope`, with one record per log
+  type. `permits` lists only log types that have a parser, mapper and feature schema — adding a
+  record ahead of its implementation defeats the exhaustiveness checking that sealing buys.
+- Feature schemas resolve through `FeatureSchemaRegistry`, by `LogType` at wiring time or by
+  `schemaId` for an archived row. Both throw on an unknown key: an unresolvable schema is a
+  deployment error, not a runtime condition. A vector's width, id and content hash all come from
+  its registered schema, never from a literal.
+- `BuildFeaturesUseCase<E, S>` has one implementation per log type, so no implementation casts or
+  switches to discover what it was given.
 
 **Contracts (`contracts/`)** are immutable, content-hashed, and language-neutral. A schema change creates a new version (`-v2`), never edits an existing file.
 
@@ -107,6 +116,11 @@ Executed and green on `feat/clickhouse-archive-job`, against real containers:
 that a ClickHouse failure cannot stop feature production. It is OOM-killed during
 container startup (two Flink mini-clusters plus two containers do not fit in
 5.7 GiB) and has never run. It was deliberately not weakened to fit the machine.
+
+The common feature tier (`contracts/features/common-feature-tier-v1.json`) and
+its `conn.log` enrichment carrier are implemented, but no protocol consumes them
+yet — `conn-feature-v1` predates the tier and is frozen without it. The first
+consumer is the DNS unit.
 
 Not yet implemented: ONNX inference (Day 9), predictions and `netsec.prediction.v1`
 (Day 9), the model registry (Day 7), and the Python training project.

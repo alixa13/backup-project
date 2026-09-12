@@ -179,18 +179,42 @@ public sealed interface MappingResult<T> permits MappingResult.Valid, MappingRes
 
 ### 3.5 NetworkEvent
 
-The canonical domain event. A record that aggregates all parsed fields.
+The canonical domain event. A sealed interface over a shared `EventEnvelope`, with one record
+per log type. Currently permits only `ConnEvent` — the only protocol with a parser, mapper,
+and feature schema.
+
 ```java
-// All 6 fields are required — compact constructor calls Objects.requireNonNull on each
-// This is the only type that crosses from adapter-kafka into adapter-flink
-public record NetworkEvent(
-    EventId eventId,      // namespaced: "sensorId:upstreamId"
-    Instant eventTime,    // UTC, millisecond precision
-    SensorId sensor,      // which sensor produced this event
-    ConnectionTuple connection,        // 5-tuple + protocol + state
-    ConnectionMeasurements measurements, // traffic counters
-    ConnectionLocality locality          // optional local/remote flags
-)
+// A sealed interface rather than a record because log types genuinely differ in shape:
+// a conn record carries connection measurements, and a dns record carries none of those.
+// permits lists only implemented log types — adding a record ahead of its implementation
+// defeats the exhaustiveness checking that sealing buys.
+public sealed interface NetworkEvent permits ConnEvent {
+
+    // Shared identity block — every log type carries the same fields
+    EventEnvelope envelope();
+
+    // Delegating accessors expose envelope fields so call sites that read only identity
+    // and timing neither know nor care that the hierarchy exists
+    default EventId eventId() {
+        return envelope().eventId();
+    }
+
+    default Instant eventTime() {
+        return envelope().eventTime();
+    }
+
+    default SensorId sensor() {
+        return envelope().sensor();
+    }
+
+    default LogType logType() {
+        return envelope().logType();
+    }
+
+    default String connectionUid() {
+        return envelope().connectionUid();
+    }
+}
 ```
 
 ### 3.6 Feature Schema — `ConnFeatureSchemaV1`
@@ -216,32 +240,46 @@ This prevents silent training/serving skew.
 
 ### 3.7 FeatureVector
 
-The output of the feature extraction pipeline.
+The output of the feature extraction pipeline. Carries the frozen 20 float32 values plus the
+complete envelope that identifies and dates them.
 
 ```java
-public record FeatureVector(
-    String eventId,    // from NetworkEvent.eventId().value()
-    Instant eventTime, // from NetworkEvent.eventTime()
-    String schemaId,   // "conn-feature-v1"
-    String schemaHash, // ConnFeatureSchemaV1.CONTENT_HASH
-    float[] values,    // exactly 20 float32 values in schema order
-    int qualityFlags   // 0 = clean; future: bitmask for late/overflow/unknown-category
-) {
+public record FeatureVector(String eventId, Instant eventTime, SensorId sensor, LogType logType,
+                             String connectionUid, String schemaId, String schemaHash,
+                             float[] values, int qualityFlags, Instant producedAt) {
     public FeatureVector {
-        // Defensive copy on construction — caller's array cannot mutate our state
+        // Identity must be present — it is the ClickHouse ORDER BY key tail.
+        if (eventId == null || eventId.isBlank()) {
+            throw new IllegalArgumentException("eventId must not be blank");
+        }
+        if (values == null) {
+            throw new IllegalArgumentException("values must not be null");
+        }
+
+        // Both envelope components are structural; every row must say which sensor and Zeek log produced it.
+        Objects.requireNonNull(sensor, "sensor must not be null");
+        Objects.requireNonNull(logType, "logType must not be null");
+        Objects.requireNonNull(producedAt, "producedAt must not be null");
+
+        // A log type with no correlation uid yields "" rather than null.
+        connectionUid = connectionUid == null ? "" : connectionUid;
+
+        // Defensive copy in: the caller keeps no handle on our internal array.
         values = Arrays.copyOf(values, values.length);
     }
 
+    // Defensive copy out: callers cannot mutate our internal array either.
     @Override
     public float[] values() {
-        // Defensive copy on read — caller cannot mutate our internal array
         return Arrays.copyOf(values, values.length);
     }
 }
 ```
 
-Both copies are required. A record's accessor returns the field reference directly by default;
-overriding it is the only way to make `float[]` truly immutable.
+Defensive copies are required in both directions because a record's accessor returns the field
+reference directly by default; overriding it is the only way to make `float[]` truly immutable.
+`sensor` makes an archived row self-sufficient for training without joining the network events
+table. `producedAt` becomes the ClickHouse `row_version`, so "last emission wins" on replay.
 
 ### 3.8 SourceWindowState
 
@@ -333,15 +371,26 @@ public interface BuildFeaturesUseCase {
 
 ### 5.1 EventFeatureExtractor
 
-Computes the first 17 event-level features from a `NetworkEvent`. Pure Java, zero Flink.
+Computes the first 17 event-level features from a `ConnEvent`. Pure Java, zero Flink.
+Takes `ConnEvent` rather than the sealed `NetworkEvent` interface because every line reads
+`measurements()` or `connection()` — this is the conn-specific extractor. A later unit adds
+per-log-type extractors beside this one rather than branches inside it.
 
 ```java
 public final class EventFeatureExtractor {
 
     // Returns float[17] — indices 0-16 of the feature schema
-    public float[] extractEventLevel(NetworkEvent event) {
+    public float[] extractEventLevel(ConnEvent event) {
+        long durationMillis = event.measurements().durationMillis();
+        long originBytes = event.measurements().originBytes();
+        long responseBytes = event.measurements().responseBytes();
+        int originPackets = event.measurements().originPackets();
+        int responsePackets = event.measurements().responsePackets();
         long totalBytes = originBytes + responseBytes;
         int totalPackets = originPackets + responsePackets;
+        int destinationPort = event.connection().destinationPort();
+        Protocol protocol = event.connection().protocol();
+        ServiceCode service = event.connection().service();
 
         return new float[]{
             durationMillis,          // [0]  duration in ms
@@ -355,13 +404,13 @@ public final class EventFeatureExtractor {
             (float) totalBytes / Math.max(1, totalPackets),     // [7]  bytes_per_packet
             (float) responseBytes / Math.max(1, originBytes),   // [8]  response_origin_byte_ratio
             destinationPort,         // [9]  id_resp_p as float32
-            (destPort >= 1 && destPort <= 1023) ? 1f : 0f,     // [10] destination_is_well_known
-            protocol == TCP ? 1f : 0f,    // [11] protocol_tcp
-            protocol == UDP ? 1f : 0f,    // [12] protocol_udp
-            service == DNS  ? 1f : 0f,    // [13] service_dns
-            service == HTTP ? 1f : 0f,    // [14] service_http
-            service == SSL  ? 1f : 0f,    // [15] service_ssl
-            connState.isFailed() ? 1f : 0f  // [16] connection_failed (S0,REJ,RSTO,RSTR)
+            (destinationPort >= 1 && destinationPort <= 1023) ? 1f : 0f,     // [10] destination_is_well_known
+            protocol == Protocol.TCP ? 1f : 0f,    // [11] protocol_tcp
+            protocol == Protocol.UDP ? 1f : 0f,    // [12] protocol_udp
+            service == ServiceCode.DNS  ? 1f : 0f,    // [13] service_dns
+            service == ServiceCode.HTTP ? 1f : 0f,    // [14] service_http
+            service == ServiceCode.SSL  ? 1f : 0f,    // [15] service_ssl
+            event.connection().connectionState().isFailed() ? 1f : 0f  // [16] connection_failed (S0,REJ,RSTO,RSTR)
         };
     }
 }
@@ -370,41 +419,50 @@ public final class EventFeatureExtractor {
 ### 5.2 BuildFeaturesUseCaseImpl
 
 Assembles the full 20-value vector by combining event-level features (0–16) with
-window-state features (17–19).
+window-state features (17–19). Takes `NetworkEvent` but narrows to `ConnEvent` with a
+pattern switch — the single site that converts from the sealed interface to the concrete type.
 
 ```java
 public final class BuildFeaturesUseCaseImpl implements BuildFeaturesUseCase {
+    private final EventFeatureExtractor eventFeatureExtractor = new EventFeatureExtractor();
+    private final Clock clock;  // For deterministic producedAt timestamp
 
     @Override
     public FeatureBuildResult build(NetworkEvent event, SourceWindowState currentState) {
-        // Step 1: extract the 17 event-level features from the domain event
-        float[] eventLevel = eventFeatureExtractor.extractEventLevel(event);
+        // Pattern switch to narrow from sealed NetworkEvent to ConnEvent
+        ConnEvent conn = switch (event) {
+            case ConnEvent c -> c;
+        };
 
-        // Step 2: derive the bucket minute for this event's timestamp
-        // dividing epoch seconds by 60 gives the "minute bucket" index
-        long bucketMinute = event.eventTime().getEpochSecond() / 60;
+        // Step 1: extract the 17 event-level features
+        float[] eventLevel = eventFeatureExtractor.extractEventLevel(conn);
 
-        // Step 3: advance the window state with this event's data
+        // Step 2: advance the window state with this event's data
         // record() returns a NEW state — never mutates the current one
-        long totalBytes = originBytes + responseBytes;
-        boolean failed = connState.isFailed();
+        long totalBytes = conn.measurements().originBytes() + conn.measurements().responseBytes();
+        boolean failed = conn.connection().connectionState().isFailed();
+        long bucketMinute = event.eventTime().getEpochSecond() / 60;
         SourceWindowState newState = currentState.record(bucketMinute, totalBytes, failed);
 
-        // Step 4: assemble the final 20-value float[] in schema order
+        // Step 3: assemble the final 20-value float[] in schema order
         float[] values = new float[20];
         System.arraycopy(eventLevel, 0, values, 0, 17); // copy indices 0-16
         values[17] = newState.connectionCount5m();       // source_connections_5m
         values[18] = newState.byteSum5m();               // source_bytes_5m
         values[19] = newState.failedCount5m();           // source_failed_connections_5m
 
-        // Step 5: wrap in FeatureVector with frozen schema identity
+        // Step 4: wrap in FeatureVector with event identity and schema version
         FeatureVector vector = new FeatureVector(
             event.eventId().value(),
             event.eventTime(),
+            event.sensor(),
+            event.logType(),
+            event.connectionUid(),
             ConnFeatureSchemaV1.SCHEMA.id(),  // "conn-feature-v1"
             ConnFeatureSchemaV1.CONTENT_HASH, // SHA-256 of the JSON contract
             values,
-            0);  // qualityFlags = 0 (clean record)
+            0,  // qualityFlags = 0 (clean record)
+            clock.instant().truncatedTo(ChronoUnit.MILLIS)); // producedAt
 
         // Return both the vector and the new state — caller must update Flink state
         return new FeatureBuildResult(vector, newState);
@@ -469,8 +527,8 @@ public final class JsonZeekConnParser {
 
 ### 6.3 EventMapper
 
-Maps a successfully parsed `ZeekConnEvent` to a `NetworkEvent` with full domain validation.
-Uses `MappingResult<NetworkEvent>` for all failure paths.
+Maps a successfully parsed `ZeekConnEvent` to a `ConnEvent` (implementing `NetworkEvent`)
+with full domain validation. Uses `MappingResult<NetworkEvent>` for all failure paths.
 
 ```java
 public final class EventMapper {
@@ -509,7 +567,11 @@ public final class EventMapper {
         long originBytes    = dto.origBytes() == null ? 0L : dto.origBytes();
         // ... etc
 
-        return MappingResult.valid(new NetworkEvent(eventId, eventTime, sensor, tuple, measurements, locality));
+        // Wrap the identity envelope with conn-specific payload, returning a ConnEvent
+        // that implements the NetworkEvent sealed interface
+        EventEnvelope envelope = new EventEnvelope(eventId, eventTime, sensor, LogType.CONN, dto.id());
+        NetworkEvent event = new ConnEvent(envelope, tuple, measurements, locality);
+        return MappingResult.valid(event);
     }
 }
 ```
@@ -666,7 +728,12 @@ Extracts the Flink partitioning key from a `NetworkEvent`.
 public final class SourceKeySelector implements KeySelector<NetworkEvent, SourceKey> {
     @Override
     public SourceKey getKey(NetworkEvent event) {
-        return new SourceKey(event.sensor(), event.connection().sourceIp());
+        // NetworkEvent is sealed, and only ConnEvent is currently permitted.
+        // Pattern matching on the sealed interface extracts sourceIp from the connection.
+        String sourceIp = switch (event) {
+            case ConnEvent conn -> conn.connection().sourceIp();
+        };
+        return new SourceKey(event.sensor(), sourceIp);
     }
 }
 ```

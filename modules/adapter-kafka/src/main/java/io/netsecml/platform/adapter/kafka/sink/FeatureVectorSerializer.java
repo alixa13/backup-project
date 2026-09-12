@@ -37,7 +37,7 @@ public final class FeatureVectorSerializer implements Serializer<FeatureVector>,
             node.put("schemaId", vector.schemaId());
             node.put("schemaHash", vector.schemaHash());
 
-            // The 20 float32 values, in frozen schema order.
+            // The schema's float32 values, in frozen schema order.
             ArrayNode values = node.putArray("values");
             for (float v : vector.values()) {
                 values.add(v);

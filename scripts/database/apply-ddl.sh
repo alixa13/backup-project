@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Apply every ClickHouse DDL migration in lexical order.
 #
-# Idempotent: all statements are CREATE ... IF NOT EXISTS, so re-running is safe.
+# Idempotent: every statement is CREATE ... IF NOT EXISTS or ALTER ... ADD COLUMN
+# IF NOT EXISTS, so re-running is safe.
 # Reads the CLICKHOUSE_* variables documented in .env.example.
 set -euo pipefail
 

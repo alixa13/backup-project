@@ -45,9 +45,16 @@ public final class OnlineFeatureJob {
         // ConnFeatureProcessFunction holds keyed rolling-window state per
         // (sensor, sourceIp). Assigning uids now is a one-time cost -- it changes
         // operator identity, so an existing checkpoint/savepoint will not restore
-        // across this change -- but that cost is bounded (the keyed state carries a
-        // 30-minute TTL, so the worst case is a cold window, not a correctness bug)
-        // and strictly cheaper to pay now than after more state has accumulated.
+        // across this change -- and strictly cheaper to pay now than after more
+        // state has accumulated.
+        // KNOWN GAP: there is no TTL on this keyed state (grep StateTtlConfig /
+        // enableTimeToLive across modules/ -- nothing). Each state VALUE is
+        // bounded, at five one-minute buckets per key, but the KEY SET is not --
+        // every distinct (sensor, sourceIp) ever seen keeps its own state forever.
+        // That is in tension with CLAUDE.md's "Bounded per-(sensor, sourceIp)
+        // state only" invariant, which this satisfies per-value but not in
+        // aggregate. Adding a TTL is a separate design decision with its own
+        // trade-offs and is deliberately not made here.
         DataStream<byte[]> rawStream = env.fromSource(source, WatermarkStrategy.noWatermarks(), "conn-raw-source")
             .uid("conn-raw-source");
 

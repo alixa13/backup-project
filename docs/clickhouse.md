@@ -59,13 +59,51 @@ A different log type's schema is free to carry a different feature count in
 the same column; `schema_hash` identifies which schema a given row was written
 under.
 
+## The common feature tier
+
+Every per-protocol feature schema begins with the same 12 protocol-agnostic
+features, frozen at `contracts/features/common-feature-tier-v1.json` and mirrored
+in `CommonFeatureTierV1`. A protocol's own features start at index 12.
+
+Indices 0-5 come from the online job's own keyed state and are always populated.
+Indices 6-11 come from `conn.log` enrichment, which is a **non-blocking left
+join**: a connection's first `conn.log` snapshot does not exist until it has been
+alive five minutes, so those features are zero until one arrives. Index 11,
+`conn_enrichment_present`, is what distinguishes a genuinely idle connection from
+one whose snapshot has not yet been emitted — without it the two are identical to
+a model.
+
+`conn.log` counters are cumulative, so indices 6-9 carry the *delta* between
+consecutive snapshots rather than the raw totals.
+
+## The failure path is protocol-aware, without changing the DLQ contract
+
+`invalid_events` carries `log_type`, so rejections can be attributed to a
+protocol — "is the S7comm parser rejecting everything?" is answerable rather than
+lost in one undifferentiated pile.
+
+The value does **not** come from the message. `contracts/stream/dlq-v1.json` is
+frozen at six fields and carries no protocol identifier, deliberately. Each
+protocol has its own DLQ topic, and the archive job knows the log type from the
+topic it is reading, bound at wiring time — the same compile-time binding the
+input side uses. There is no runtime string parse of a topic name or payload.
+
+The column arrived in `002_add_invalid_events_log_type.sql` rather than an edit
+to `001_mvp_tables.sql`, which is immutable. It is `DEFAULT ''`, so rows written
+before the migration stay readable.
+
+The DDL directory is applied as an ordered migration sequence by both
+`scripts/database/apply-ddl.sh` and the Java test support. Reading only the base
+file would leave tests running against a schema missing whatever migrations add.
+
 ## Applying the schema
 
 ```sh
 CLICKHOUSE_HOST=localhost CLICKHOUSE_DATABASE=netsec_ml ./scripts/database/apply-ddl.sh
 ```
 
-Every statement is `CREATE ... IF NOT EXISTS`, so re-running is a no-op. The
+Every statement is `CREATE ... IF NOT EXISTS` or `ALTER ... ADD COLUMN IF NOT EXISTS`,
+so re-running is a no-op. The
 script creates the database first, then applies `infrastructure/clickhouse/ddl/*.sql`
 in lexical order. It reads the `CLICKHOUSE_*` variables documented in `.env.example`.
 

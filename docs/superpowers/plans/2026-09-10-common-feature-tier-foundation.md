@@ -36,10 +36,11 @@
 | File | Responsibility |
 |---|---|
 | `modules/domain/.../feature/ConnSnapshot.java` | One `conn.log` observation: cumulative counters plus the connection's start time. Pure value. |
+| `modules/domain/.../feature/ConnSnapshotDelta.java` | The per-interval difference between two consecutive snapshots. A distinct type so a delta and an absolute observation are not interchangeable at compile time. |
 | `modules/domain/.../feature/RecordTimingState.java` | Bounded inter-arrival statistics for one key, via Welford. Holds no timestamp history. |
 | `modules/domain/.../feature/CommonFeatureTierV1.java` | The frozen name and order of the 12 common features, and its content hash. |
 | `contracts/features/common-feature-tier-v1.json` | Language-neutral contract for the same, read by the Python side. |
-| `modules/application/.../feature/CommonFeatureExtractor.java` | Turns `SourceWindowState` + `RecordTimingState` + optional `ConnSnapshot` into `float[12]`. |
+| `modules/application/.../feature/CommonFeatureExtractor.java` | Turns `SourceWindowState` + `RecordTimingState` + optional `ConnSnapshotDelta` into `float[12]`. |
 | `modules/bootstrap-archive-job/.../ArchiveJob.java` | Chain loop over registered log types, replacing two hand-written chains. |
 
 ---
@@ -54,7 +55,7 @@
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `record ConnSnapshot(String connectionUid, Instant connectionStart, Instant observedAt, long origBytes, long respBytes, long origPkts, long respPkts)`, with `ConnSnapshot deltaFrom(ConnSnapshot previous)` and `long ageSeconds()`.
+- Produces: `record ConnSnapshot(String connectionUid, Instant connectionStart, Instant observedAt, long origBytes, long respBytes, long origPkts, long respPkts)`, with `ConnSnapshotDelta deltaFrom(ConnSnapshot previous)` and `long ageSeconds()` (clamped to zero when `observedAt` precedes `connectionStart`).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -432,6 +433,13 @@ The tier is shared by every per-protocol schema (spec §3), so its names and ord
 - Create: `modules/domain/src/main/java/io/netsecml/platform/domain/feature/CommonFeatureTierV1.java`
 - Create: `contracts/features/common-feature-tier-v1.json`
 - Test: `modules/domain/src/test/java/io/netsecml/platform/domain/feature/CommonFeatureTierV1Test.java`
+- Test: `modules/adapter-kafka/src/test/java/io/netsecml/platform/adapter/kafka/sink/CommonFeatureTierContractDriftTest.java`
+
+**Why the drift test lives in `adapter-kafka`, not `domain`:** the `domain` module's pom carries
+only `junit-jupiter` — Jackson was deliberately removed from its test scope in commit `88285d6`,
+and the Global Constraints forbid framework imports there. `adapter-kafka` already hosts
+`StreamContractDriftTest`, which reads `contracts/` with Jackson and imports domain types, so the
+drift check follows that established pattern. The three pure-Java assertions stay in `domain`.
 
 **Interfaces:**
 - Consumes: nothing.
@@ -444,12 +452,7 @@ The tier is shared by every per-protocol schema (spec §3), so its names and ord
 ```java
 package io.netsecml.platform.domain.feature;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -482,23 +485,6 @@ class CommonFeatureTierV1Test {
     void featureCountMatchesTheNameList() {
         assertEquals(12, CommonFeatureTierV1.FEATURE_COUNT);
         assertEquals(CommonFeatureTierV1.FEATURE_NAMES.size(), CommonFeatureTierV1.FEATURE_COUNT);
-    }
-
-    // The Java constant and the shipped contract must not drift. Training reads
-    // the JSON; the online job reads the constant. If they disagree, feature i
-    // means two different things on the two sides and nothing errors.
-    @Test
-    void javaConstantMatchesTheShippedContract() throws Exception {
-        Path contract = Path.of("..", "..", "contracts", "features", "common-feature-tier-v1.json");
-        JsonNode root = new ObjectMapper().readTree(Files.readString(contract));
-
-        assertEquals(CommonFeatureTierV1.SCHEMA_ID, root.get("id").asText());
-
-        List<String> fromContract = new ArrayList<>();
-        root.get("features").forEach(feature -> fromContract.add(feature.get("name").asText()));
-
-        assertEquals(CommonFeatureTierV1.FEATURE_NAMES, fromContract,
-            "the contract file and the Java constant must list the same features in the same order");
     }
 
     // The list is handed to callers that build vectors; an accidental mutation
@@ -593,17 +579,85 @@ public final class CommonFeatureTierV1 {
 }
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [ ] **Step 5: Run the domain test to verify it passes**
 
 Run: `./mvnw test -pl modules/domain -am -Dtest=CommonFeatureTierV1Test`
-Expected: PASS, 4 tests run.
+Expected: PASS, 3 tests run.
 
 **If the contract test fails on the path**, check the working directory assumption: Maven runs a module's tests with that module's directory as CWD, and every module lives at `modules/<name>`, so `../..` reaches the repo root. This matches `ClickHouseTestSupport.repoPath`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Write the contract-drift test in `adapter-kafka`**
+
+`modules/adapter-kafka/src/test/java/io/netsecml/platform/adapter/kafka/sink/CommonFeatureTierContractDriftTest.java`:
+
+```java
+package io.netsecml.platform.adapter.kafka.sink;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.netsecml.platform.domain.feature.CommonFeatureTierV1;
+import org.junit.jupiter.api.Test;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
+import static org.junit.jupiter.api.Assertions.*;
+
+// The Java constant and the shipped contract must not drift. Training reads the
+// JSON; the online job reads the constant. If they disagree, feature i means two
+// different things on the two sides and nothing errors anywhere.
+//
+// This lives here rather than in domain because domain's test classpath carries
+// only junit-jupiter -- Jackson was deliberately removed from it -- and because
+// StreamContractDriftTest in this same package already does exactly this job for
+// the stream contracts.
+class CommonFeatureTierContractDriftTest {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    // This module lives at modules/adapter-kafka, so the repo root is two up.
+    private Path contract() {
+        return Paths.get("..", "..", "contracts", "features", "common-feature-tier-v1.json");
+    }
+
+    @Test
+    void javaConstantMatchesTheShippedContract() throws Exception {
+        JsonNode root = MAPPER.readTree(contract().toFile());
+
+        assertEquals(CommonFeatureTierV1.SCHEMA_ID, root.get("id").asText());
+
+        List<String> fromContract = new ArrayList<>();
+        root.get("features").forEach(feature -> fromContract.add(feature.get("name").asText()));
+
+        assertEquals(CommonFeatureTierV1.FEATURE_NAMES, fromContract,
+            "the contract file and the Java constant must list the same features in the same order");
+    }
+
+    // Index is the vector position, so a contract whose declared indices do not
+    // ascend from zero would misplace every feature after the gap.
+    @Test
+    void contractIndicesAscendFromZero() throws Exception {
+        JsonNode features = MAPPER.readTree(contract().toFile()).get("features");
+
+        for (int i = 0; i < features.size(); i++) {
+            assertEquals(i, features.get(i).get("index").asInt(),
+                "feature at position " + i + " must declare index " + i);
+        }
+    }
+}
+```
+
+- [ ] **Step 7: Run both test classes**
+
+Run: `./mvnw test -pl modules/adapter-kafka -am -Dtest='CommonFeatureTierV1Test+CommonFeatureTierContractDriftTest'`
+Expected: PASS, 5 tests run total (3 in domain, 2 in adapter-kafka). Confirm the real count — a
+zero-test run reports BUILD SUCCESS.
+
+- [ ] **Step 8: Commit**
 
 ```bash
-git add contracts/features/common-feature-tier-v1.json \
+git add modules/adapter-kafka/src/test/java/io/netsecml/platform/adapter/kafka/sink/CommonFeatureTierContractDriftTest.java \
+        contracts/features/common-feature-tier-v1.json \
         modules/domain/src/main/java/io/netsecml/platform/domain/feature/CommonFeatureTierV1.java \
         modules/domain/src/test/java/io/netsecml/platform/domain/feature/CommonFeatureTierV1Test.java
 git commit -m "feat(contracts): freeze the common feature tier shared by all protocols"
@@ -622,8 +676,8 @@ The `conn.log` join is **non-blocking** (spec §6.2): an absent snapshot yields 
 - Test: `modules/application/src/test/java/io/netsecml/platform/application/feature/CommonFeatureExtractorTest.java`
 
 **Interfaces:**
-- Consumes: `SourceWindowState.connectionCount5m()`, `byteSum5m()`, `failedCount5m()`; `RecordTimingState.meanIntervalMillis()`, `stddevIntervalMillis()`; `ConnSnapshot` and its `ageSeconds()`.
-- Produces: `static float[] extract(SourceWindowState window, RecordTimingState timing, boolean isOrig, ConnSnapshot enrichmentDelta)` returning exactly `CommonFeatureTierV1.FEATURE_COUNT` values. `enrichmentDelta` is nullable and null means "no snapshot available".
+- Consumes: `SourceWindowState.connectionCount5m()`, `byteSum5m()`, `failedCount5m()`; `RecordTimingState.meanIntervalMillis()`, `stddevIntervalMillis()`; `ConnSnapshotDelta` and its `origBytes()`, `respBytes()`, `origPkts()`, `respPkts()`, `ageSeconds()`.
+- Produces: `static float[] extract(SourceWindowState window, RecordTimingState timing, boolean isOrig, ConnSnapshotDelta enrichmentDelta)` returning exactly `CommonFeatureTierV1.FEATURE_COUNT` values. `enrichmentDelta` is nullable and null means "no snapshot available".
 
 - [ ] **Step 1: Write the failing test**
 
@@ -633,7 +687,7 @@ The `conn.log` join is **non-blocking** (spec §6.2): an absent snapshot yields 
 package io.netsecml.platform.application.feature;
 
 import io.netsecml.platform.domain.feature.CommonFeatureTierV1;
-import io.netsecml.platform.domain.feature.ConnSnapshot;
+import io.netsecml.platform.domain.feature.ConnSnapshotDelta;
 import io.netsecml.platform.domain.feature.RecordTimingState;
 import io.netsecml.platform.domain.feature.SourceWindowState;
 import org.junit.jupiter.api.Test;
@@ -706,7 +760,7 @@ class CommonFeatureExtractorTest {
     // snapshot has not been emitted yet.
     @Test
     void presentEnrichmentPopulatesItsIndicesAndSetsTheFlag() {
-        ConnSnapshot delta = new ConnSnapshot("Cabc", START, START.plusSeconds(600), 500L, 600L, 4L, 7L);
+        ConnSnapshotDelta delta = new ConnSnapshotDelta(500L, 600L, 4L, 7L, 600L);
 
         float[] values = CommonFeatureExtractor.extract(
             windowWithThreeRecords(), evenlySpacedTiming(), true, delta);
@@ -724,7 +778,7 @@ class CommonFeatureExtractorTest {
     // for, so it is asserted directly rather than implied.
     @Test
     void aZeroValuedSnapshotIsDistinguishableFromAnAbsentOne() {
-        ConnSnapshot idle = new ConnSnapshot("Cabc", START, START.plusSeconds(600), 0L, 0L, 0L, 0L);
+        ConnSnapshotDelta idle = new ConnSnapshotDelta(0L, 0L, 0L, 0L, 600L);
 
         float[] present = CommonFeatureExtractor.extract(
             windowWithThreeRecords(), evenlySpacedTiming(), true, idle);
@@ -754,8 +808,10 @@ class CommonFeatureExtractorTest {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `./mvnw test -pl modules/application -am -Dtest=CommonFeatureExtractorTest`
+Run: `./mvnw test -pl modules/application -am`
 Expected: FAIL — compilation error, `CommonFeatureExtractor` does not exist.
+
+**Do not add `-Dtest=CommonFeatureExtractorTest`.** With `-am`, Surefire fails hard on the first upstream module that has tests but none matching the pattern (`domain`), and the only suppression flag is forbidden by the Global Constraints because it hides zero-test runs. Run the module's whole suite and read the line for the class you care about.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -765,7 +821,7 @@ Expected: FAIL — compilation error, `CommonFeatureExtractor` does not exist.
 package io.netsecml.platform.application.feature;
 
 import io.netsecml.platform.domain.feature.CommonFeatureTierV1;
-import io.netsecml.platform.domain.feature.ConnSnapshot;
+import io.netsecml.platform.domain.feature.ConnSnapshotDelta;
 import io.netsecml.platform.domain.feature.RecordTimingState;
 import io.netsecml.platform.domain.feature.SourceWindowState;
 
@@ -787,7 +843,7 @@ public final class CommonFeatureExtractor {
     // connection's first snapshot does not exist until it has been alive five
     // minutes, and waiting for it would stall every record from a new connection.
     public static float[] extract(SourceWindowState window, RecordTimingState timing,
-                                  boolean isOrig, ConnSnapshot enrichmentDelta) {
+                                  boolean isOrig, ConnSnapshotDelta enrichmentDelta) {
         if (window == null || timing == null) {
             throw new IllegalArgumentException("window and timing must not be null");
         }
@@ -831,8 +887,8 @@ public final class CommonFeatureExtractor {
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Run: `./mvnw test -pl modules/application -am -Dtest=CommonFeatureExtractorTest`
-Expected: PASS, 6 tests run.
+Run: `./mvnw test -pl modules/application -am`
+Expected: PASS. Confirm the line `Tests run: 6 ... in ...CommonFeatureExtractorTest` specifically — a green module build does not by itself prove your class ran.
 
 - [ ] **Step 5: Commit**
 
@@ -942,8 +998,8 @@ class ArchiveJobTopologyTest {
 
 - [ ] **Step 2: Run the test to verify the current topology already satisfies it**
 
-Run: `./mvnw test -pl modules/bootstrap-archive-job -am -Dtest=ArchiveJobTopologyTest`
-Expected: **PASS, 3 tests run.** This test characterises the *existing* behaviour before the refactor, so it passes first and then guards the change. If it fails, the assumption about `getStreamGraph` is wrong — fix the test against the real API before touching `ArchiveJob`.
+Run: `./mvnw test -pl modules/bootstrap-archive-job -am`
+Expected: **`Tests run: 3 ... in ...ArchiveJobTopologyTest`.** Do not add `-Dtest=` — with `-am` it fails on upstream modules lacking a match, and the suppression flag is forbidden. This test characterises the *existing* behaviour before the refactor, so it passes first and then guards the change. If it fails, the assumption about `getStreamGraph` is wrong — fix the test against the real API before touching `ArchiveJob`.
 
 - [ ] **Step 3: Refactor `build` into a loop**
 
@@ -1018,8 +1074,8 @@ import java.util.List;
 
 - [ ] **Step 4: Run the topology test to verify the refactor preserved every uid**
 
-Run: `./mvnw test -pl modules/bootstrap-archive-job -am -Dtest=ArchiveJobTopologyTest`
-Expected: PASS, 3 tests run — the same six uids as before the refactor.
+Run: `./mvnw test -pl modules/bootstrap-archive-job -am`
+Expected: `Tests run: 3 ... in ...ArchiveJobTopologyTest` — the same six uids as before the refactor.
 
 If `everyOperatorCarriesAnExplicitUid` fails, a `ChainSpec` entry carries a different uid than the original topology used. **Do not change the test to match the code** — the historical uids are checkpoint state identity. Fix the `ChainSpec` entry.
 
@@ -1038,11 +1094,47 @@ git commit -m "refactor(bootstrap-archive-job): wire archive chains from a regis
 
 ---
 
-## Task 6: Document the foundation
+## Task 6: Document the foundation and clear Task 5's residue
 
 **Files:**
 - Modify: `docs/clickhouse.md`
 - Modify: `CLAUDE.md`
+- Modify: `modules/bootstrap-archive-job/src/main/java/io/netsecml/platform/bootstrap/archive/ArchiveJob.java`
+
+- [ ] **Step 0: Clear two Minor findings left by Task 5**
+
+Task 5's review left two Minors in `ArchiveJob.java`. They are folded in here rather than deferred,
+because both are one-line changes in code the same reviewer just read.
+
+**0a — remove two now-dead imports.** Before the refactor, `ClickHouseBatchSink<FeatureVectorRow>`
+and `ClickHouseBatchSink<InvalidEventRow>` named their type arguments explicitly. The generic
+`wire()` now infers `T`, so these two imports are unused:
+
+```java
+import io.netsecml.platform.adapter.clickhouse.row.FeatureVectorRow;
+import io.netsecml.platform.adapter.clickhouse.row.InvalidEventRow;
+```
+
+Delete both. No checkstyle is configured for this module, so nothing fails today — that is why it
+needs doing deliberately rather than being caught by the build.
+
+**0b — restore reasoning the refactor dropped.** The original comment explained not just why UIDs
+matter but why assigning them *now* was safe. That specific argument did not survive. Add it to the
+`wire()` method's comment, after the existing explanation of UID identity:
+
+```java
+    // The one-time cost of assigning uids was judged acceptable when they were
+    // introduced: this job carries no keyed state -- only the source's committed
+    // offset position and the sink's in-flight batch, both of which replay safely
+    // from Kafka -- so a checkpoint that fails to restore across the change loses
+    // nothing that Kafka cannot re-deliver.
+```
+
+Verify it still compiles and the topology test still passes:
+
+Run: `./mvnw install -DskipTests -q -o && ./mvnw test -pl modules/bootstrap-archive-job -o -Dtest=ArchiveJobTopologyTest`
+Expected: `Tests run: 3, Failures: 0, Errors: 0`.
+
 
 - [ ] **Step 1: Add a common-tier section to `docs/clickhouse.md`**
 
@@ -1097,7 +1189,7 @@ git commit -m "docs: describe the common feature tier and its conn.log enrichmen
 
 **Deliberate deferral.** Spec §6.1's protocol-internal merge is S7comm-only and belongs to Unit 7, not here.
 
-**Type consistency.** `ConnSnapshot` accessors (`origBytes`, `respBytes`, `origPkts`, `respPkts`, `ageSeconds`) are used identically in Tasks 1 and 4. `RecordTimingState.meanIntervalMillis`/`stddevIntervalMillis` match between Tasks 2 and 4. `CommonFeatureTierV1.FEATURE_COUNT` is used in Tasks 3 and 4. `SourceWindowState.connectionCount5m`/`byteSum5m`/`failedCount5m` match the existing class exactly.
+**Type consistency.** `ConnSnapshotDelta` accessors (`origBytes`, `respBytes`, `origPkts`, `respPkts`, `ageSeconds`) are produced by Task 1's `deltaFrom` and consumed identically in Task 4. `RecordTimingState.meanIntervalMillis`/`stddevIntervalMillis` match between Tasks 2 and 4. `CommonFeatureTierV1.FEATURE_COUNT` is used in Tasks 3 and 4. `SourceWindowState.connectionCount5m`/`byteSum5m`/`failedCount5m` match the existing class exactly.
 
 **Known risk carried into Task 5.** The two pre-existing chains name their operators inconsistently (`feature-vector-source` but `invalid-event-row` under a `dlq` source, and a pluralised `feature-vectors-clickhouse-sink`). `ChainSpec` stores all three uids explicitly rather than deriving them, because a uid change orphans checkpoint state and any generating rule would be more intricate than the six literal names. Task 5 Step 4 explicitly forbids fixing the test instead of the code. A reviewer may reasonably dislike the inconsistent names; a reviewer must not propose renaming them.
 

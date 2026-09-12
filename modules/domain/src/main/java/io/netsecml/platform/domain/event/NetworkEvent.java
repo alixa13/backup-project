@@ -1,25 +1,45 @@
 package io.netsecml.platform.domain.event;
 
 import java.time.Instant;
-import java.util.Objects;
 
-public record NetworkEvent(EventId eventId, Instant eventTime, SensorId sensor, LogType logType,
-                            String connectionUid, ConnectionTuple connection,
-                            ConnectionMeasurements measurements, ConnectionLocality locality) {
-    public NetworkEvent {
-        Objects.requireNonNull(eventId, "eventId must not be null");
-        Objects.requireNonNull(eventTime, "eventTime must not be null");
-        Objects.requireNonNull(sensor, "sensor must not be null");
+// One parsed, validated Zeek record, whatever log produced it.
+//
+// A sealed interface rather than a record because the log types genuinely differ
+// in shape: a conn record carries a connection's duration and byte counts, and a
+// dns record carries none of those. Modelling that as one record with nullable
+// conn fields is the "generic event" PILOT_ARCHITECTURE rejects -- every consumer
+// would have to know which fields are meaningful for which log type, and the
+// compiler could not help.
+//
+// permits lists ONLY implemented log types. A record is added when a protocol has
+// a parser, a mapper and a feature schema behind it, never before -- the same
+// rule LogType states about its own constants. Sealing then makes the compiler
+// flag every non-exhaustive switch the moment a real second protocol arrives.
+public sealed interface NetworkEvent permits ConnEvent {
 
-        // logType is structural: every event must say which Zeek log produced it.
-        Objects.requireNonNull(logType, "logType must not be null");
+    // Every log type carries the same identity block; only the payload differs.
+    EventEnvelope envelope();
 
-        Objects.requireNonNull(connection, "connection must not be null");
-        Objects.requireNonNull(measurements, "measurements must not be null");
-        Objects.requireNonNull(locality, "locality must not be null");
+    // The shared fields are exposed directly, delegating to the envelope, so the
+    // many call sites that read only identity and timing neither know nor care
+    // that the hierarchy exists.
+    default EventId eventId() {
+        return envelope().eventId();
+    }
 
-        // A log type carrying no correlation uid (Modbus/S7comm may not) yields ""
-        // rather than null, matching the convention RejectedEvent.eventId already uses.
-        connectionUid = connectionUid == null ? "" : connectionUid;
+    default Instant eventTime() {
+        return envelope().eventTime();
+    }
+
+    default SensorId sensor() {
+        return envelope().sensor();
+    }
+
+    default LogType logType() {
+        return envelope().logType();
+    }
+
+    default String connectionUid() {
+        return envelope().connectionUid();
     }
 }

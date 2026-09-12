@@ -20,8 +20,9 @@ class ConnFeatureProcessFunctionTest {
         // LogType.CONN and a non-blank uid are required positional components now;
         // this harness test only exercises per-key windowing, so a fixed constant
         // and the same composite string used to derive eventId are enough.
-        return new NetworkEvent(EventId.derive(sensor, eventTime.toString() + sourceIp), eventTime, sensor,
-            LogType.CONN, eventTime.toString() + sourceIp, tuple, measurements, new ConnectionLocality(null, null));
+        String uid = eventTime.toString() + sourceIp;
+        EventEnvelope envelope = new EventEnvelope(EventId.derive(sensor, uid), eventTime, sensor, LogType.CONN, uid);
+        return new ConnEvent(envelope, tuple, measurements, new ConnectionLocality(null, null));
     }
 
     @Test

@@ -8,9 +8,12 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 class EventFeatureExtractorTest {
     private final EventFeatureExtractor extractor = new EventFeatureExtractor();
 
-    private NetworkEvent event(Protocol proto, ServiceCode service, ConnectionState state,
-                                long durationMillis, long originBytes, long responseBytes,
-                                int originPackets, int responsePackets, int destinationPort) {
+    // Returns ConnEvent, not NetworkEvent: EventFeatureExtractor now takes
+    // ConnEvent directly (ruling 1 -- it reads conn state on nearly every line),
+    // so this fixture builder matches the type the method under test expects.
+    private ConnEvent event(Protocol proto, ServiceCode service, ConnectionState state,
+                             long durationMillis, long originBytes, long responseBytes,
+                             int originPackets, int responsePackets, int destinationPort) {
         SensorId sensor = new SensorId("sensor-eu-1");
         ConnectionTuple tuple = new ConnectionTuple("10.0.0.5", 51820, "93.184.216.34", destinationPort,
             proto, service, state);
@@ -19,13 +22,14 @@ class EventFeatureExtractorTest {
         // LogType.CONN and a non-blank uid are required positional components now;
         // this extractor only cares about event-level feature math, not log type or
         // correlation, so a fixed constant and the same "abc" id used above are enough.
-        return new NetworkEvent(EventId.derive(sensor, "abc"), Instant.now(), sensor, LogType.CONN, "abc",
-            tuple, measurements, new ConnectionLocality(null, null));
+        EventEnvelope envelope = new EventEnvelope(
+            EventId.derive(sensor, "abc"), Instant.now(), sensor, LogType.CONN, "abc");
+        return new ConnEvent(envelope, tuple, measurements, new ConnectionLocality(null, null));
     }
 
     @Test
     void extractsNormalTcpSslConnection() {
-        NetworkEvent e = event(Protocol.TCP, ServiceCode.SSL, ConnectionState.SF, 1500, 2048, 4096, 10, 12, 443);
+        ConnEvent e = event(Protocol.TCP, ServiceCode.SSL, ConnectionState.SF, 1500, 2048, 4096, 10, 12, 443);
         float[] v = extractor.extractEventLevel(e);
         assertArrayEquals(new float[]{
             1500f,   // 0 duration_ms
@@ -50,7 +54,7 @@ class EventFeatureExtractorTest {
 
     @Test
     void extractsZeroPacketConnectionWithoutDivideByZero() {
-        NetworkEvent e = event(Protocol.UDP, ServiceCode.DNS, ConnectionState.S0, 0, 0, 0, 0, 0, 53);
+        ConnEvent e = event(Protocol.UDP, ServiceCode.DNS, ConnectionState.S0, 0, 0, 0, 0, 0, 53);
         float[] v = extractor.extractEventLevel(e);
         assertArrayEquals(new float[]{
             0f, 0f, 0f, 0f, 0f,
@@ -70,7 +74,7 @@ class EventFeatureExtractorTest {
 
     @Test
     void nonWellKnownHighPortIsZero() {
-        NetworkEvent e = event(Protocol.TCP, ServiceCode.UNKNOWN, ConnectionState.SF, 100, 10, 10, 1, 1, 51820);
+        ConnEvent e = event(Protocol.TCP, ServiceCode.UNKNOWN, ConnectionState.SF, 100, 10, 10, 1, 1, 51820);
         float[] v = extractor.extractEventLevel(e);
         assertArrayEquals(new float[]{
             100f, 10f, 10f, 1f, 1f,

@@ -1,11 +1,12 @@
 package io.netsecml.platform.bootstrap.archive;
 
-import io.netsecml.platform.adapter.clickhouse.row.FeatureVectorRow;
 import io.netsecml.platform.adapter.clickhouse.row.InvalidEventRow;
 import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseBatchSink;
 import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseConfig;
 import io.netsecml.platform.adapter.flink.source.RawBytesDeserializationSchema;
+import io.netsecml.platform.domain.event.LogType;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestartStrategyOptions;
 import org.apache.flink.connector.kafka.source.KafkaSource;
@@ -14,69 +15,133 @@ import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import java.time.Duration;
+import java.util.List;
 
 // The independent Kafka-to-ClickHouse archive job.
 //
-// Two source-to-sink chains in one job. The Flink job graph IS the routing, which
-// is why there is no ArchiveRouter class: a router on top of a topology that
-// already routes would be an abstraction with no behaviour.
+// One source-to-sink chain per registered log type, in one job. The Flink job
+// graph IS the routing, which is why there is no ArchiveRouter class: a router
+// on top of a topology that already routes would be an abstraction with no
+// behaviour.
 //
-// The two chains share checkpoint fate deliberately. Both write to the same
-// ClickHouse, so if it is unreachable both should stall and let Kafka lag grow
-// rather than one quietly racing ahead.
+// All chains share checkpoint fate deliberately. They all write to the same
+// ClickHouse, so if it is unreachable every chain should stall and let Kafka lag
+// grow rather than one quietly racing ahead.
 //
 // This job must never be able to stop online feature production. That is why it
 // is a separate deployment with its own restart strategy and its own lag.
 public final class ArchiveJob {
 
-    // One consumer group for both topics: this is one logical archiver.
+    // One consumer group for every topic: this is one logical archiver.
     public static final String CONSUMER_GROUP = "conn-archive-job";
 
     // Non-instantiable: every member here is static.
     private ArchiveJob() {
     }
 
-    // Builds both chains on the given environment. Package-visible from main()
-    // below and called directly by tests so a test can inject a short checkpoint
-    // interval and a Testcontainers-backed bootstrapServers/clickHouse before the
-    // environment is executed.
+    // One archive chain: a Kafka topic, the map function that turns its raw bytes
+    // into a ClickHouse row, the target table, and the three operator uids.
+    //
+    // Public so a caller assembling the parameterised build() below can register
+    // its own log type without reaching into this class's internals -- Spec §6.3
+    // requires build() to take the set of log types as a parameter, and adding a
+    // log type must be one entry in a list, not a new String parameter.
+    //
+    // The uids are stored explicitly rather than derived from the chain name. They
+    // are checkpoint state identity, and the two pre-existing chains named their
+    // operators inconsistently -- "feature-vector-source" but "invalid-event-row"
+    // under a "dlq" source, and two pluralised sinks. Any rule that generated
+    // those six names would be more intricate than the names themselves, so they
+    // are data here, on this record. That is not a blanket argument against
+    // generating uids anywhere: dlqChain below IS a generation rule, but only for
+    // the DLQ family, whose six per-protocol variants follow one regular pattern
+    // that the mismatched feature-vector uids never did. The six existing uid
+    // strings below are unchanged from before this type was made public --
+    // changing any of them would make Flink silently discard that operator's
+    // checkpoint state on restore.
+    public record LogTypeChain<T>(String topic, RichMapFunction<byte[], T> rowMapper, String table,
+                                  String sourceUid, String mapUid, String sinkUid) {
+    }
+
+    // Builds one chain per registered log type on the given environment. Called
+    // from main() below, and directly by tests so a test can inject a short
+    // checkpoint interval and a Testcontainers-backed bootstrapServers/clickHouse
+    // before the environment is executed.
+    //
+    // This is the parameterised form Spec §6.3 requires: the set of log types is
+    // the chains list, so a sixth log type is a sixth list entry, never a
+    // thirteenth String parameter.
+    public static void build(StreamExecutionEnvironment env, String bootstrapServers,
+                             List<LogTypeChain<?>> chains, ClickHouseConfig clickHouse) {
+        for (LogTypeChain<?> chain : chains) {
+            wire(env, bootstrapServers, clickHouse, chain);
+        }
+    }
+
+    // The original two-topic overload, kept so main() and the existing topology
+    // and E2E tests keep compiling and passing unchanged. Delegates into the
+    // parameterised form above with the same two chains and the same six uids
+    // this job has always used.
     public static void build(StreamExecutionEnvironment env, String bootstrapServers,
                              String featureVectorTopic, String dlqTopic, ClickHouseConfig clickHouse) {
+        build(env, bootstrapServers, List.of(
+            // Chain 1 -- feature vectors. The required Day 6 path: a versioned
+            // vector observable in Kafka must become queryable in ClickHouse.
+            new LogTypeChain<>(featureVectorTopic,
+                new FeatureVectorRowMapFunction(featureVectorTopic), "feature_vectors",
+                "feature-vector-source", "feature-vector-row", "feature-vectors-clickhouse-sink"),
+            // Chain 2 -- rejected records. Low volume, and duplicates after a
+            // replay are expected rather than prevented. Built through dlqChain so
+            // there is exactly one place in this class that knows the conn uids.
+            dlqChain(LogType.CONN, dlqTopic)),
+            clickHouse);
+    }
 
-        // Every operator and sink below gets an explicit, stable .uid(). Without
-        // one Flink derives the operator ID from the topology hash, so ANY future
-        // edit to this graph (adding/removing/reordering an operator) silently
-        // discards state on restore-from-checkpoint instead of failing loudly.
-        // Assigning uids now is a one-time cost: it changes operator identity, so
-        // an existing checkpoint/savepoint will not restore across this change.
-        // That cost is bounded -- this job carries no keyed state, only the
-        // source's committed-offset position and the sink's in-flight batch, both
-        // of which replay safely from Kafka -- and it is strictly cheaper to pay
-        // now than after this job has run longer in production.
+    // One DLQ chain for a log type. A factory rather than six literal strings at
+    // each call site, because the uids are checkpoint state identity and hand-
+    // writing them per protocol is how a typo silently orphans state.
+    //
+    // CONN keeps the uids it has always had. They predate any per-protocol naming
+    // pattern and cannot be regularised: a running job restores state by looking
+    // them up verbatim. Every other log type gets the pattern.
+    public static LogTypeChain<InvalidEventRow> dlqChain(LogType logType, String topic) {
+        // prefix is the whole of the CONN/non-CONN distinction: empty for conn,
+        // "<wirename>-" for everything else. Conn's three uids therefore fall out
+        // of the same concatenation as every other log type's -- they are the
+        // unprefixed case, not a special case.
+        String prefix = logType == LogType.CONN ? "" : logType.wireName() + "-";
+        String sourceUid = prefix + "dlq-source";
+        String mapUid = prefix + "invalid-event-row";
+        String sinkUid = prefix + "invalid-events-clickhouse-sink";
 
-        // Chain 1 — feature vectors. The required Day 6 path: a versioned vector
-        // observable in Kafka must become queryable in ClickHouse.
-        env.fromSource(source(bootstrapServers, featureVectorTopic),
-                WatermarkStrategy.noWatermarks(), "feature-vector-source")
-            .uid("feature-vector-source")
-            .map(new FeatureVectorRowMapFunction(featureVectorTopic))
-            .name("feature-vector-row")
-            .uid("feature-vector-row")
-            .sinkTo(new ClickHouseBatchSink<FeatureVectorRow>("feature_vectors", clickHouse))
-            .name("feature-vectors-clickhouse-sink")
-            .uid("feature-vectors-clickhouse-sink");
+        return new LogTypeChain<>(topic, new InvalidEventRowMapFunction(topic, logType),
+            "invalid_events", sourceUid, mapUid, sinkUid);
+    }
 
-        // Chain 2 — rejected records. Low volume, and duplicates after a replay
-        // are expected rather than prevented.
-        env.fromSource(source(bootstrapServers, dlqTopic),
-                WatermarkStrategy.noWatermarks(), "dlq-source")
-            .uid("dlq-source")
-            .map(new InvalidEventRowMapFunction(dlqTopic))
-            .name("invalid-event-row")
-            .uid("invalid-event-row")
-            .sinkTo(new ClickHouseBatchSink<InvalidEventRow>("invalid_events", clickHouse))
-            .name("invalid-events-clickhouse-sink")
-            .uid("invalid-events-clickhouse-sink");
+    // Wires one chain. Generic so the row type flows from the map function to the
+    // sink without a cast.
+    //
+    // Every operator gets its explicit, stable uid. Without one Flink derives the
+    // operator ID from the topology hash, so ANY future edit to this graph
+    // silently discards state on restore-from-checkpoint instead of failing
+    // loudly -- and a generated topology can collide uids in a way a hand-written
+    // one cannot, which ArchiveJobTopologyTest guards.
+    // The one-time cost of assigning uids was judged acceptable when they were
+    // introduced: this job carries no keyed state -- only the source's committed
+    // offset position and the sink's in-flight batch, both of which replay safely
+    // from Kafka -- so a checkpoint that fails to restore across the change loses
+    // nothing that Kafka cannot re-deliver.
+    private static <T> void wire(StreamExecutionEnvironment env, String bootstrapServers,
+                                 ClickHouseConfig clickHouse, LogTypeChain<T> chain) {
+        env.fromSource(source(bootstrapServers, chain.topic()),
+                WatermarkStrategy.noWatermarks(), chain.sourceUid())
+            .uid(chain.sourceUid())
+            .map(chain.rowMapper())
+            .name(chain.mapUid())
+            .uid(chain.mapUid())
+            .sinkTo(new ClickHouseBatchSink<T>(chain.table(), clickHouse))
+            .name(chain.sinkUid())
+            .uid(chain.sinkUid());
     }
 
     // No watermarks: nothing downstream is event-time windowed. The archive job

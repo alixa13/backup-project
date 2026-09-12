@@ -3,10 +3,10 @@ package io.netsecml.platform.domain.feature;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
-class SourceWindowStateTest {
+class ConnWindowStateTest {
     @Test
     void emptyStateHasZeroSums() {
-        SourceWindowState state = SourceWindowState.empty();
+        ConnWindowState state = ConnWindowState.empty();
         assertEquals(0, state.connectionCount5m());
         assertEquals(0, state.byteSum5m());
         assertEquals(0, state.failedCount5m());
@@ -14,7 +14,7 @@ class SourceWindowStateTest {
 
     @Test
     void recordAccumulatesWithinFiveMinuteWindow() {
-        SourceWindowState state = SourceWindowState.empty();
+        ConnWindowState state = ConnWindowState.empty();
         long minute = 1000L;
         state = state.record(minute, 500, false);
         state = state.record(minute, 300, true);
@@ -26,15 +26,15 @@ class SourceWindowStateTest {
 
     @Test
     void recordIsImmutable() {
-        SourceWindowState original = SourceWindowState.empty();
-        SourceWindowState updated = original.record(1000L, 500, false);
+        ConnWindowState original = ConnWindowState.empty();
+        ConnWindowState updated = original.record(1000L, 500, false);
         assertEquals(0, original.connectionCount5m(), "original state must not be mutated");
         assertEquals(1, updated.connectionCount5m());
     }
 
     @Test
     void bucketsOlderThanFiveMinutesRollOff() {
-        SourceWindowState state = SourceWindowState.empty();
+        ConnWindowState state = ConnWindowState.empty();
         state = state.record(1000L, 999, false);
         state = state.record(1006L, 1, false);
         assertEquals(1, state.connectionCount5m(), "bucket from minute 1000 is 6 minutes behind minute 1006 and must roll off");

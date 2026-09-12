@@ -60,6 +60,11 @@ public final class ConnFeatureProcessFunction extends KeyedProcessFunction<Sourc
         // case does -- same constraint as SourceKeySelector. It narrows here
         // instead, and the compiler will flag this site when a second log type
         // joins the hierarchy and this function has to decide what it means.
+        //
+        // Same rule as SourceKeySelector's switch: resolve a compile break here
+        // with an explicit case DnsEvent -> ... arm, NEVER with a `default ->`
+        // catch-all -- a default arm silently gives up the exhaustiveness check
+        // for every protocol after the next one, not just this one.
         ConnEvent conn = switch (event) {
             case ConnEvent c -> c;
         };

@@ -18,6 +18,14 @@ import java.util.Objects;
 // refactor affecting 13 files across 4 modules. Until that work completes, SourceKeySelector
 // pattern-switches to reach sourceIp, and each new protocol will require an additional case in that
 // switch—costs that would vanish once Endpoints is properly defined on the envelope.
+//
+// There are now TWO such switch sites, not one, and they would not both go away
+// the same way: SourceKeySelector's switch exists only to reach sourceIp, so an
+// Endpoints component would delete it outright (envelope().endpoints().sourceIp()
+// needs no narrowing). ConnFeatureProcessFunction.processElement's switch narrows
+// NetworkEvent to ConnEvent for a structurally different reason -- it must call a
+// ConnEvent-typed BuildFeaturesUseCase -- and would still need to narrow even with
+// Endpoints on the envelope. Endpoints removes one switch, not both.
 public record EventEnvelope(EventId eventId, Instant eventTime, SensorId sensor,
                             LogType logType, String connectionUid) {
 

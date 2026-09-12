@@ -25,13 +25,23 @@ public final class ConnFeatureProcessFunction extends KeyedProcessFunction<Sourc
         // ConnWindowState. A state name is identity, the same as an operator uid,
         // and this project's established position (see Unit 1's uid decisions) is
         // that identity strings survive a naming-scheme change even when the type
-        // that outgrew its old name does not. The type rename alone already
-        // invalidates Kryo-serialized checkpoint state for this key (accepted: the
-        // window is five one-minute buckets, so a restore is cold for at most five
-        // minutes, not wrong). Renaming this string too would compound that
-        // unavoidable break with an avoidable one, and would cost the ability to
-        // recognize this state in tooling and metrics across the change. Do not
-        // "tidy" this to match the type name.
+        // that outgrew its old name does not. The type rename alone already breaks
+        // restore for this state: the operator uid and this descriptor name both
+        // still match, so on restore Flink locates the checkpointed state and
+        // compares its Kryo serializer snapshot -- which still carries the old
+        // ...SourceWindowState class -- against the new ConnWindowState one,
+        // resolves them incompatible, and fails with a StateMigrationException.
+        // This is not a cold restore; the job does not start at all.
+        // --allowNonRestoredState does not rescue this -- that flag covers state
+        // with no matching operator, not a serializer incompatibility on state
+        // that does match. Recovery is a fresh job start, and OnlineFeatureJob
+        // uses OffsetsInitializer.earliest(), so a fresh start replays the whole
+        // topic and re-emits every vector. (Reasoned from Flink's documented
+        // restore semantics, not from an executed savepoint-restore test.)
+        // The decision to accept this break stands -- renaming this string too
+        // would compound an unavoidable break with an avoidable one, and would
+        // cost the ability to recognize this state in tooling and metrics across
+        // the change. Do not "tidy" this to match the type name.
         ValueStateDescriptor<ConnWindowState> descriptor = new ValueStateDescriptor<>(
             "source-window-state", TypeInformation.of(ConnWindowState.class));
         windowState = getRuntimeContext().getState(descriptor);

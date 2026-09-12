@@ -15,7 +15,7 @@ import java.util.Objects;
 // logType records which Zeek log produced this vector, and connectionUid carries
 // Zeek's cross-protocol correlation key (a correlation key only, never an
 // identity — see LogType and NetworkEvent). None of these fields affects the
-// 20 values, their order, or the frozen schema hash.
+// values, their order, or the frozen schema hash.
 public record FeatureVector(String eventId, Instant eventTime, SensorId sensor, LogType logType,
                              String connectionUid, String schemaId, String schemaHash, float[] values,
                              int qualityFlags, Instant producedAt) {

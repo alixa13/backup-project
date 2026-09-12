@@ -6,8 +6,8 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.Objects;
 
-// One scored-ready feature vector: the frozen 20 float32 values plus the
-// envelope that identifies and dates them.
+// One scored-ready feature vector: the schema's float32 values, in frozen
+// schema order, plus the envelope that identifies and dates them.
 //
 // sensor makes an archived row self-sufficient for training without joining to
 // the optional network_events table. producedAt is the emission timestamp and

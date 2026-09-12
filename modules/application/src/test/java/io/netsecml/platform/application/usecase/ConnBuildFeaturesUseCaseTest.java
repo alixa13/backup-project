@@ -3,6 +3,7 @@ package io.netsecml.platform.application.usecase;
 import io.netsecml.platform.domain.event.*;
 import io.netsecml.platform.domain.feature.ConnWindowState;
 import io.netsecml.platform.domain.feature.FeatureBuildResult;
+import io.netsecml.platform.domain.feature.FeatureDefinition;
 import io.netsecml.platform.domain.feature.FeatureSchema;
 import io.netsecml.platform.domain.feature.FeatureSchemaRegistry;
 import org.junit.jupiter.api.Test;
@@ -10,6 +11,8 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ConnBuildFeaturesUseCaseTest {
@@ -116,5 +119,34 @@ class ConnBuildFeaturesUseCaseTest {
         FeatureSchema schema = FeatureSchemaRegistry.byLogType(LogType.CONN);
         assertEquals(schema.id(), result.vector().schemaId());
         assertEquals(schema.contentHash(), result.vector().schemaHash());
+    }
+
+    // The only test in this file that fails if the width is hardcoded again.
+    // A synthetic schema 25 wide is not a real conn schema and must never be
+    // registered -- it exists to prove build() reads featureCount() rather than
+    // a literal. conn's own indices 0-19 must still be populated exactly as
+    // before, because this class writes conn's frozen layout into whatever width
+    // the schema declares.
+    @Test
+    void vectorWidthFollowsASchemaWiderThanConns() {
+        List<FeatureDefinition> definitions = new ArrayList<>();
+        for (int i = 0; i < 25; i++) {
+            definitions.add(new FeatureDefinition(i, "synthetic_" + i, "count",
+                FeatureDefinition.MissingPolicy.DEFAULT_ZERO, "synthetic"));
+        }
+        FeatureSchema wide = new FeatureSchema("synthetic-25", "1.0.0", "0".repeat(64), definitions);
+
+        FeatureBuildResult<ConnWindowState> result =
+            new ConnBuildFeaturesUseCase(Clock.systemUTC(), wide)
+                .build(event(Instant.ofEpochSecond(60_000), 100, 200, false), ConnWindowState.empty());
+
+        assertEquals(25, result.vector().values().length,
+            "width must follow the schema, not a hardcoded 20");
+        assertEquals(300f, result.vector().values()[18],
+            "conn's index 18 must still be the window byte sum");
+        assertEquals(0f, result.vector().values()[24],
+            "indices past conn's layout stay zero");
+        assertEquals("synthetic-25", result.vector().schemaId(),
+            "identity must follow the same schema the width came from");
     }
 }

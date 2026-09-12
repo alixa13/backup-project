@@ -53,7 +53,7 @@ domain → ports → application → adapters → bootstrap
 **Key invariants:**
 - Java package root: `io.netsecml.platform`
 - Java 21 throughout — use `record` for immutable data carriers, `sealed interface` + records + pattern-matching `switch` for closed hierarchies. Records with array components need defensive copies in compact constructor *and* in the accessor.
-- Feature vector: exactly 20 `float32` values, ordered per `contracts/features/conn-feature-schema-v1.json`. Feature order is frozen once defined — a change creates a new schema version.
+- Feature vector: exactly `schema.featureCount()` `float32` values, frozen per schema. Conn's registered schema reports 20, ordered per `contracts/features/conn-feature-schema-v1.json`. Feature order is frozen once defined — a change creates a new schema version.
 - CPU-only: no GPU, no CUDA, no deep-learning frameworks. ONNX Runtime Java with intra/inter-op threads pinned to 1 per subtask.
 - Model bundle is pinned in job config and loaded once in `open()`. No live hot reload.
 - ClickHouse is never on the online scoring path. Predictions go to Kafka first; the archive job writes to ClickHouse asynchronously.

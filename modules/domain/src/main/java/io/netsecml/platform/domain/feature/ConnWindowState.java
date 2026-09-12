@@ -13,6 +13,12 @@ import java.util.Arrays;
  * possible generalizations trades away something real, and there is no second
  * consumer yet to say which trade is right.
  *
+ * That second consumer already exists in the code, even without a second log
+ * type: {@code CommonFeatureExtractor.extract} takes this class as its window
+ * parameter to populate the protocol-agnostic tier's indices 0-2, and DNS is
+ * that tier's first consumer. The extraction trigger this javadoc describes
+ * fires exactly there.
+ *
  * Bounded by construction: exactly 5 longs per array, never a per-IP set or
  * list. See PILOT_ARCHITECTURE.md section 6 for the design rationale.
  */

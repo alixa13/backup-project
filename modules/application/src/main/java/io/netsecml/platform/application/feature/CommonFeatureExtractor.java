@@ -12,6 +12,16 @@ import io.netsecml.platform.domain.feature.RecordTimingState;
 // every per-protocol schema appends its own features after FEATURE_COUNT. An
 // index error in this class therefore misaligns every protocol at once, which
 // is why each position is asserted individually in the tests.
+//
+// NOT actually protocol-agnostic yet: extract()'s signature takes a
+// ConnWindowState, whose own javadoc says the ring mechanics are worth
+// extracting into a shared RollingCounters type "when a second log type
+// actually needs a rolling window." This class's indices 0-2 need exactly that
+// rolling window, and DNS is this tier's first consumer -- so this IS
+// spec section 6.5's named extraction trigger firing. It has zero production
+// callers today, so nothing is broken; but the DNS unit must either pass a
+// ConnWindowState into a DNS build path (wrong name, wrong content) or extract
+// RollingCounters here first. Recorded, not resolved, in this fix wave.
 public final class CommonFeatureExtractor {
 
     // Non-instantiable: every member is static.

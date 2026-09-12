@@ -36,14 +36,19 @@ class NetworkEventSurfaceTest {
     // permits is the guest list, and it must name only log types with a parser,
     // mapper and feature schema behind them. A record added ahead of its
     // implementation lets code compile against a protocol that does not exist.
+    // This is not a switch, so it did not break when DnsEvent joined permits --
+    // it stayed green with a stale expectation until updated here, which is
+    // worth noting: the compiler's exhaustiveness alarm covers switches, not
+    // this reflective assertion.
     @Test
     void permitsListsOnlyImplementedLogTypes() {
         List<String> permitted = Arrays.stream(NetworkEvent.class.getPermittedSubclasses())
             .map(Class::getSimpleName)
             .toList();
 
-        assertEquals(List.of("ConnEvent"), permitted,
-            "only conn has a parser, mapper and schema today; add a record when its protocol lands");
+        assertEquals(List.of("ConnEvent", "DnsEvent"), permitted,
+            "conn and dns are the only log types with a parser/event, mapper and schema today; "
+            + "add a record when the next protocol lands");
     }
 
     // Sealing is what makes the compiler flag an unhandled case later. An

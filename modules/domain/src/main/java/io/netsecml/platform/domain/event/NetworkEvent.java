@@ -15,7 +15,15 @@ import java.time.Instant;
 // a parser, a mapper and a feature schema behind it, never before -- the same
 // rule LogType states about its own constants. Sealing then makes the compiler
 // flag every non-exhaustive switch the moment a real second protocol arrives.
-public sealed interface NetworkEvent permits ConnEvent {
+//
+// That happened when DnsEvent joined the permits clause below. It flagged four
+// pattern-switch sites -- SourceKeySelector.getKey, ConnFeatureProcessFunction.
+// processElement, and one exhaustiveness-proving switch each in NetworkEventTest
+// and EventMapperTest -- and all four were resolved with an explicit case
+// DnsEvent arm, never a default. NetworkEventSurfaceTest's permittedSubclasses
+// assertion also had to change, though it is a reflective assertion rather than
+// a switch, so it did not fail until run rather than at compile time.
+public sealed interface NetworkEvent permits ConnEvent, DnsEvent {
 
     // Every log type carries the same identity block; only the payload differs.
     EventEnvelope envelope();

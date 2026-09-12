@@ -1,6 +1,7 @@
 package io.netsecml.platform.adapter.flink.process;
 
 import io.netsecml.platform.domain.event.ConnEvent;
+import io.netsecml.platform.domain.event.DnsEvent;
 import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.feature.SourceKey;
 import org.apache.flink.api.java.functions.KeySelector;
@@ -23,6 +24,11 @@ public final class SourceKeySelector implements KeySelector<NetworkEvent, Source
         // one protocol addition unless every future editor is told this.
         String sourceIp = switch (event) {
             case ConnEvent conn -> conn.connection().sourceIp();
+            // Resolved with an explicit arm, per the comment above -- never a
+            // default. DnsEvent carries sourceIp directly (no ConnectionTuple to
+            // narrow through), so this arm is a plain accessor call rather than
+            // the narrowing conn's arm needs.
+            case DnsEvent dns -> dns.sourceIp();
         };
         return new SourceKey(event.sensor(), sourceIp);
     }

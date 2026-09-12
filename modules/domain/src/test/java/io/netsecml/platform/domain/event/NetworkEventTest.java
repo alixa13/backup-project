@@ -108,21 +108,35 @@ class NetworkEventTest {
         assertEquals("Cabc", event.connectionUid());
     }
 
-    // permits lists only implemented log types, so a switch over NetworkEvent is
-    // exhaustive with a single case today. When a real second protocol lands, the
-    // compiler flags every switch that did not grow with it -- which is the whole
-    // reason for sealing rather than leaving the interface open.
+    // permits used to list only ConnEvent, so a switch over NetworkEvent was
+    // exhaustive with a single case. DnsEvent joining permits broke this exact
+    // switch at compile time -- one of the four sites the sealed hierarchy's
+    // exhaustiveness alarm flagged (see NetworkEvent's javadoc) -- and it is
+    // fixed here with an explicit case DnsEvent arm, never a default. The test
+    // now exercises both branches so it proves the switch handles either shape,
+    // not merely that it compiles.
     @Test
     void aSwitchOverTheHierarchyIsExhaustiveWithoutADefaultBranch() {
-        NetworkEvent event = new ConnEvent(
+        NetworkEvent connEvent = new ConnEvent(
             new EventEnvelope(EventId.derive(new SensorId("s"), "C"),
                 Instant.parse("2026-09-11T10:00:00Z"), new SensorId("s"), LogType.CONN, "C"),
             TUPLE, MEASUREMENTS, LOCALITY);
 
-        String described = switch (event) {
+        NetworkEvent dnsEvent = new DnsEvent(
+            new EventEnvelope(EventId.derive(new SensorId("s"), "D"),
+                Instant.parse("2026-09-11T10:00:00Z"), new SensorId("s"), LogType.DNS, "D"),
+            new DnsQuery("example.com", DnsQType.A, 1), null, "10.0.0.5", true, null);
+
+        String describedConn = switch (connEvent) {
             case ConnEvent conn -> "conn:" + conn.connection().sourceIp();
+            case DnsEvent dns -> "dns:" + dns.sourceIp();
+        };
+        String describedDns = switch (dnsEvent) {
+            case ConnEvent conn -> "conn:" + conn.connection().sourceIp();
+            case DnsEvent dns -> "dns:" + dns.sourceIp();
         };
 
-        assertTrue(described.startsWith("conn:"));
+        assertTrue(describedConn.startsWith("conn:"));
+        assertTrue(describedDns.startsWith("dns:"));
     }
 }

@@ -30,8 +30,14 @@ class EventMapperTest {
 
         // EventMapper handles conn.log exclusively, so its output is always a
         // ConnEvent; this switch reaches the conn-specific fields to assert on.
+        // DnsEvent joining NetworkEvent's permits broke this switch at compile
+        // time -- it is resolved with an explicit arm, never a default, that
+        // fails loudly rather than silently narrowing to null: EventMapper
+        // producing a DnsEvent would be a wiring bug this test should catch, not
+        // paper over.
         ConnEvent conn = switch (event) {
             case ConnEvent c -> c;
+            case DnsEvent d -> throw new AssertionError("EventMapper maps conn.log exclusively; got a DnsEvent");
         };
         assertEquals(Protocol.TCP, conn.connection().protocol());
         assertEquals(ServiceCode.SSL, conn.connection().service());
@@ -57,8 +63,13 @@ class EventMapperTest {
     void defaultsMissingOptionalNumericFieldsToZero() throws IOException {
         MappingResult<NetworkEvent> result = mapper.map(fixture("valid-udp-dns.json"), sensor);
         assertTrue(result.isValid());
+        // Same compile break, same fix, as mapsValidFixtureToNetworkEvent above:
+        // this fixture is named for the UDP/DNS *service* the conn record
+        // observed, not a dns.log record -- EventMapper still only ever produces
+        // a ConnEvent here.
         ConnEvent conn = switch (result.value()) {
             case ConnEvent c -> c;
+            case DnsEvent d -> throw new AssertionError("EventMapper maps conn.log exclusively; got a DnsEvent");
         };
         assertEquals(0L, conn.measurements().durationMillis(), "duration was absent in this fixture");
         assertEquals(0L, conn.measurements().missedBytes(), "missed_bytes was absent in this fixture");

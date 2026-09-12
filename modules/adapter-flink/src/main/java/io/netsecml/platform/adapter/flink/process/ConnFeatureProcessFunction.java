@@ -2,6 +2,7 @@ package io.netsecml.platform.adapter.flink.process;
 
 import io.netsecml.platform.application.usecase.ConnBuildFeaturesUseCase;
 import io.netsecml.platform.domain.event.ConnEvent;
+import io.netsecml.platform.domain.event.DnsEvent;
 import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.feature.FeatureBuildResult;
 import io.netsecml.platform.domain.feature.FeatureVector;
@@ -67,6 +68,15 @@ public final class ConnFeatureProcessFunction extends KeyedProcessFunction<Sourc
         // for every protocol after the next one, not just this one.
         ConnEvent conn = switch (event) {
             case ConnEvent c -> c;
+            // Resolving this compile break with an explicit arm rather than a
+            // default, per the comment above: a DnsEvent reaching this function
+            // is a wiring error (the DNS chain is a separate pipeline per spec
+            // section 6.3, never routed through ConnFeatureProcessFunction), not
+            // a runtime condition to degrade gracefully from -- so it throws
+            // rather than being silently skipped or defaulted.
+            case DnsEvent ignored -> throw new IllegalStateException(
+                "ConnFeatureProcessFunction received a DnsEvent; the DNS chain is separate by design "
+                + "(spec section 6.3) and this is a wiring error, not a runtime condition");
         };
 
         FeatureBuildResult<ConnWindowState> result = useCase.build(conn, currentState);

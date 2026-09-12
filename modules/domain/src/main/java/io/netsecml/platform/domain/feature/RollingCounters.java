@@ -2,27 +2,20 @@ package io.netsecml.platform.domain.feature;
 
 import java.util.Arrays;
 
-/**
- * Five fixed one-minute buckets holding rolling connection-count/byte-sum/
- * failed-count totals for a single (sensor, sourceIp) key.
- *
- * Named for conn deliberately. These three counters are connection concepts: a
- * DNS window would want NXDOMAIN counts and an SSH window would want auth
- * failures. The ring mechanics are worth extracting when a second log type
- * actually needs a rolling window -- not before, because each of the three
- * possible generalizations trades away something real, and there is no second
- * consumer yet to say which trade is right.
- *
- * That second consumer already exists in the code, even without a second log
- * type: {@code CommonFeatureExtractor.extract} takes this class as its window
- * parameter to populate the protocol-agnostic tier's indices 0-2, and DNS is
- * that tier's first consumer. The extraction trigger this javadoc describes
- * fires exactly there.
- *
- * Bounded by construction: exactly 5 longs per array, never a per-IP set or
- * list. See PILOT_ARCHITECTURE.md section 6 for the design rationale.
- */
-public final class ConnWindowState {
+// A bounded five-bucket, one-minute rolling window of three counters for a
+// single key: how many records, how many bytes, how many failures.
+//
+// Extracted from ConnWindowState, which named conn in a type the protocol-
+// agnostic common tier depends on. What "bytes" and "failed" MEAN is the
+// caller's decision, and that is the whole point of the extraction: conn passes
+// total_bytes and a failed conn_state; DNS passes 0 bytes (dns.log carries no
+// byte counts) and rcode != NOERROR. The three frozen common-tier names --
+// record_count_5m, byte_sum_5m, failed_count_5m -- are already generic, so this
+// type now matches the contract it feeds.
+//
+// Deliberately holds no timestamps: RecordTimingState owns inter-arrival shape,
+// and the bounded-state invariant forbids keeping a record history here.
+public final class RollingCounters {
     private static final int BUCKET_COUNT = 5;
 
     // Ring-buffer style parallel arrays: each index is a one-minute bucket slot,
@@ -32,7 +25,7 @@ public final class ConnWindowState {
     private final long[] byteSums;
     private final long[] failedCounts;
 
-    private ConnWindowState(long[] bucketMinutes, long[] connectionCounts, long[] byteSums, long[] failedCounts) {
+    private RollingCounters(long[] bucketMinutes, long[] connectionCounts, long[] byteSums, long[] failedCounts) {
         this.bucketMinutes = bucketMinutes;
         this.connectionCounts = connectionCounts;
         this.byteSums = byteSums;
@@ -41,16 +34,16 @@ public final class ConnWindowState {
 
     // Fresh window: every bucket slot is unset (Long.MIN_VALUE sentinel) so the
     // first record into any slot is always treated as a new bucket.
-    public static ConnWindowState empty() {
+    public static RollingCounters empty() {
         long[] minutes = new long[BUCKET_COUNT];
         Arrays.fill(minutes, Long.MIN_VALUE);
-        return new ConnWindowState(minutes, new long[BUCKET_COUNT], new long[BUCKET_COUNT], new long[BUCKET_COUNT]);
+        return new RollingCounters(minutes, new long[BUCKET_COUNT], new long[BUCKET_COUNT], new long[BUCKET_COUNT]);
     }
 
     // Folds one record into its bucket, returning a new immutable state. If the
     // target slot belongs to a different (older) minute, it is reset to zero
     // before accumulating -- this is how stale buckets roll off the window.
-    public ConnWindowState record(long bucketEpochMinute, long bytes, boolean failed) {
+    public RollingCounters record(long bucketEpochMinute, long bytes, boolean failed) {
         long[] minutes = Arrays.copyOf(bucketMinutes, BUCKET_COUNT);
         long[] counts = Arrays.copyOf(connectionCounts, BUCKET_COUNT);
         long[] sums = Arrays.copyOf(byteSums, BUCKET_COUNT);
@@ -68,7 +61,7 @@ public final class ConnWindowState {
         if (failed) {
             fails[slot] += 1;
         }
-        return new ConnWindowState(minutes, counts, sums, fails);
+        return new RollingCounters(minutes, counts, sums, fails);
     }
 
     // Sums only the buckets still within the 5-minute window relative to the
@@ -95,7 +88,7 @@ public final class ConnWindowState {
         return latest;
     }
 
-    public long connectionCount5m() {
+    public long recordCount5m() {
         return sumWithinWindow(connectionCounts, latestBucketMinute());
     }
 

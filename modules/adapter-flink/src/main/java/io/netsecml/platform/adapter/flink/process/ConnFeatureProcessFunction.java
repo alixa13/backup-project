@@ -6,7 +6,7 @@ import io.netsecml.platform.domain.event.DnsEvent;
 import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.feature.FeatureBuildResult;
 import io.netsecml.platform.domain.feature.FeatureVector;
-import io.netsecml.platform.domain.feature.ConnWindowState;
+import io.netsecml.platform.domain.feature.RollingCounters;
 import io.netsecml.platform.domain.feature.SourceKey;
 import io.netsecml.platform.port.in.BuildFeaturesUseCase;
 import org.apache.flink.api.common.state.ValueState;
@@ -17,43 +17,39 @@ import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.util.Collector;
 
 public final class ConnFeatureProcessFunction extends KeyedProcessFunction<SourceKey, NetworkEvent, FeatureVector> {
-    private transient ValueState<ConnWindowState> windowState;
-    private transient BuildFeaturesUseCase<ConnEvent, ConnWindowState> useCase;
+    private transient ValueState<RollingCounters> windowState;
+    private transient BuildFeaturesUseCase<ConnEvent, RollingCounters> useCase;
 
     @Override
     public void open(OpenContext openContext) {
-        // The state name stays "source-window-state" even though the type is now
-        // ConnWindowState. A state name is identity, the same as an operator uid,
-        // and this project's established position (see Unit 1's uid decisions) is
-        // that identity strings survive a naming-scheme change even when the type
-        // that outgrew its old name does not. The type rename alone already breaks
-        // restore for this state: the operator uid and this descriptor name both
-        // still match, so on restore Flink locates the checkpointed state and
-        // compares its Kryo serializer snapshot -- which still carries the old
-        // ...SourceWindowState class -- against the new ConnWindowState one,
-        // resolves them incompatible, and fails with a StateMigrationException.
-        // This is not a cold restore; the job does not start at all.
-        // --allowNonRestoredState does not rescue this -- that flag covers state
-        // with no matching operator, not a serializer incompatibility on state
-        // that does match. Recovery is a fresh job start, and OnlineFeatureJob
-        // uses OffsetsInitializer.earliest(), so a fresh start replays the whole
-        // topic and re-emits every vector. (Reasoned from Flink's documented
-        // restore semantics, not from an executed savepoint-restore test.)
-        // The decision to accept this break stands -- renaming this string too
-        // would compound an unavoidable break with an avoidable one, and would
-        // cost the ability to recognize this state in tooling and metrics across
-        // the change. Do not "tidy" this to match the type name.
-        ValueStateDescriptor<ConnWindowState> descriptor = new ValueStateDescriptor<>(
-            "source-window-state", TypeInformation.of(ConnWindowState.class));
+        // The state name changes to match the type this time, unlike the
+        // ConnWindowState rename that kept "source-window-state". That rename
+        // gained nothing by breaking the name, so it kept it. This extraction
+        // breaks checkpoint compatibility anyway -- Kryo embeds the class name,
+        // and RollingCounters is a different class -- and it is being taken while
+        // the break is free: main cannot run this job, the branch chain is
+        // unmerged, and production is air-gapped and not deployed, so no
+        // checkpoint plausibly exists. Paying for a correct name now is cheaper
+        // than carrying a wrong one past the first deployment.
+        //
+        // A restore across this change does NOT run cold -- it fails. The uid and
+        // the old state name would both still match, so Flink locates the state,
+        // finds a snapshot naming a class that no longer exists, and fails with
+        // StateMigrationException. --allowNonRestoredState does not cover a
+        // serializer incompatibility on matching state. Recovery is a fresh start,
+        // which replays from OffsetsInitializer.earliest(). Reasoned from
+        // documented restore semantics, not from an executed savepoint test.
+        ValueStateDescriptor<RollingCounters> descriptor = new ValueStateDescriptor<>(
+            "rolling-counters", TypeInformation.of(RollingCounters.class));
         windowState = getRuntimeContext().getState(descriptor);
         useCase = new ConnBuildFeaturesUseCase();
     }
 
     @Override
     public void processElement(NetworkEvent event, Context ctx, Collector<FeatureVector> out) throws Exception {
-        ConnWindowState currentState = windowState.value();
+        RollingCounters currentState = windowState.value();
         if (currentState == null) {
-            currentState = ConnWindowState.empty();
+            currentState = RollingCounters.empty();
         }
 
         // The stream is DataStream<NetworkEvent> and KeyedProcessFunction's input
@@ -79,7 +75,7 @@ public final class ConnFeatureProcessFunction extends KeyedProcessFunction<Sourc
                 + "(spec section 6.3) and this is a wiring error, not a runtime condition");
         };
 
-        FeatureBuildResult<ConnWindowState> result = useCase.build(conn, currentState);
+        FeatureBuildResult<RollingCounters> result = useCase.build(conn, currentState);
         windowState.update(result.newState());
         out.collect(result.vector());
     }

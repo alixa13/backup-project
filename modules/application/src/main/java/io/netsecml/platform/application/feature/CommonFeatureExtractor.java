@@ -2,7 +2,7 @@ package io.netsecml.platform.application.feature;
 
 import io.netsecml.platform.domain.feature.CommonFeatureTierV1;
 import io.netsecml.platform.domain.feature.ConnSnapshotDelta;
-import io.netsecml.platform.domain.feature.ConnWindowState;
+import io.netsecml.platform.domain.feature.RollingCounters;
 import io.netsecml.platform.domain.feature.RecordTimingState;
 
 // Builds the protocol-agnostic feature tier that leads every per-protocol
@@ -13,15 +13,10 @@ import io.netsecml.platform.domain.feature.RecordTimingState;
 // index error in this class therefore misaligns every protocol at once, which
 // is why each position is asserted individually in the tests.
 //
-// NOT actually protocol-agnostic yet: extract()'s signature takes a
-// ConnWindowState, whose own javadoc says the ring mechanics are worth
-// extracting into a shared RollingCounters type "when a second log type
-// actually needs a rolling window." This class's indices 0-2 need exactly that
-// rolling window, and DNS is this tier's first consumer -- so this IS
-// spec section 6.5's named extraction trigger firing. It has zero production
-// callers today, so nothing is broken; but the DNS unit must either pass a
-// ConnWindowState into a DNS build path (wrong name, wrong content) or extract
-// RollingCounters here first. Recorded, not resolved, in this fix wave.
+// Spec section 6.5's named extraction trigger fired here: this class always
+// needed a protocol-agnostic window type, and DNS becoming a second consumer
+// is what settled it. It now takes RollingCounters, not the conn-specific type
+// that used to sit in this signature.
 public final class CommonFeatureExtractor {
 
     // Non-instantiable: every member is static.
@@ -32,7 +27,7 @@ public final class CommonFeatureExtractor {
     // for this connection yet". The join is deliberately non-blocking: a
     // connection's first snapshot does not exist until it has been alive five
     // minutes, and waiting for it would stall every record from a new connection.
-    public static float[] extract(ConnWindowState window, RecordTimingState timing,
+    public static float[] extract(RollingCounters window, RecordTimingState timing,
                                   boolean isOrig, ConnSnapshotDelta enrichmentDelta) {
         if (window == null || timing == null) {
             throw new IllegalArgumentException("window and timing must not be null");
@@ -42,7 +37,7 @@ public final class CommonFeatureExtractor {
 
         // Indices 0-2: the rolling window this platform already maintains per
         // (sensor, sourceIp). Always populated.
-        values[0] = window.connectionCount5m();
+        values[0] = window.recordCount5m();
         values[1] = window.byteSum5m();
         values[2] = window.failedCount5m();
 

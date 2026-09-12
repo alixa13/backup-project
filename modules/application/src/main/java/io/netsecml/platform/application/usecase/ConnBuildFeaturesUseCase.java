@@ -3,17 +3,17 @@ package io.netsecml.platform.application.usecase;
 import io.netsecml.platform.application.feature.EventFeatureExtractor;
 import io.netsecml.platform.domain.event.ConnEvent;
 import io.netsecml.platform.domain.event.LogType;
-import io.netsecml.platform.domain.feature.ConnWindowState;
 import io.netsecml.platform.domain.feature.FeatureBuildResult;
 import io.netsecml.platform.domain.feature.FeatureSchema;
 import io.netsecml.platform.domain.feature.FeatureSchemaRegistry;
 import io.netsecml.platform.domain.feature.FeatureVector;
+import io.netsecml.platform.domain.feature.RollingCounters;
 import io.netsecml.platform.port.in.BuildFeaturesUseCase;
 import java.time.Clock;
 import java.time.temporal.ChronoUnit;
 import java.util.Objects;
 
-public final class ConnBuildFeaturesUseCase implements BuildFeaturesUseCase<ConnEvent, ConnWindowState> {
+public final class ConnBuildFeaturesUseCase implements BuildFeaturesUseCase<ConnEvent, RollingCounters> {
     private final EventFeatureExtractor eventFeatureExtractor = new EventFeatureExtractor();
 
     // Injected so producedAt is deterministic under test. Clock's JDK
@@ -52,7 +52,7 @@ public final class ConnBuildFeaturesUseCase implements BuildFeaturesUseCase<Conn
     }
 
     @Override
-    public FeatureBuildResult<ConnWindowState> build(ConnEvent event, ConnWindowState currentState) {
+    public FeatureBuildResult<RollingCounters> build(ConnEvent event, RollingCounters currentState) {
         // Indices 0-16: deterministic, event-local features.
         float[] eventLevel = eventFeatureExtractor.extractEventLevel(event);
 
@@ -61,7 +61,7 @@ public final class ConnBuildFeaturesUseCase implements BuildFeaturesUseCase<Conn
         long totalBytes = event.measurements().originBytes() + event.measurements().responseBytes();
         boolean failed = event.connection().connectionState().isFailed();
         long bucketMinute = event.eventTime().getEpochSecond() / 60;
-        ConnWindowState newState = currentState.record(bucketMinute, totalBytes, failed);
+        RollingCounters newState = currentState.record(bucketMinute, totalBytes, failed);
 
         // The width comes from the schema resolved in the constructor, not a
         // literal. This does NOT make this class usable by another log type --
@@ -77,7 +77,7 @@ public final class ConnBuildFeaturesUseCase implements BuildFeaturesUseCase<Conn
         // implementation and is entitled to know conn's frozen 20-wide layout.
         // Only the array's width and the schema identity below become dynamic.
         System.arraycopy(eventLevel, 0, values, 0, 17);
-        values[17] = newState.connectionCount5m();
+        values[17] = newState.recordCount5m();
         values[18] = newState.byteSum5m();
         values[19] = newState.failedCount5m();
 

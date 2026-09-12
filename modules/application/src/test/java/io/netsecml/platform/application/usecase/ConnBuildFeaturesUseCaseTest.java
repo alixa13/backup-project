@@ -1,11 +1,11 @@
 package io.netsecml.platform.application.usecase;
 
 import io.netsecml.platform.domain.event.*;
-import io.netsecml.platform.domain.feature.ConnWindowState;
 import io.netsecml.platform.domain.feature.FeatureBuildResult;
 import io.netsecml.platform.domain.feature.FeatureDefinition;
 import io.netsecml.platform.domain.feature.FeatureSchema;
 import io.netsecml.platform.domain.feature.FeatureSchemaRegistry;
+import io.netsecml.platform.domain.feature.RollingCounters;
 import org.junit.jupiter.api.Test;
 import java.time.Clock;
 import java.time.Instant;
@@ -42,7 +42,7 @@ class ConnBuildFeaturesUseCaseTest {
     @Test
     void producesTwentyValueVectorWithFrozenSchemaIdentity() {
         ConnEvent e = event(Instant.ofEpochSecond(60_000), 100, 200, false);
-        FeatureBuildResult<ConnWindowState> result = useCase.build(e, ConnWindowState.empty());
+        FeatureBuildResult<RollingCounters> result = useCase.build(e, RollingCounters.empty());
         assertEquals(20, result.vector().values().length);
         assertEquals("conn-feature-v1", result.vector().schemaId());
         assertEquals("f42fb1bebb2efe3acc5de634c6a7bb3d6f97fc021207f75d77652533b1c01e1b", result.vector().schemaHash());
@@ -51,16 +51,16 @@ class ConnBuildFeaturesUseCaseTest {
 
     @Test
     void windowedFeaturesAccumulateAcrossCallsForSameKey() {
-        ConnWindowState state = ConnWindowState.empty();
+        RollingCounters state = RollingCounters.empty();
 
         ConnEvent first = event(Instant.ofEpochSecond(60_000), 100, 200, false);
-        FeatureBuildResult<ConnWindowState> r1 = useCase.build(first, state);
+        FeatureBuildResult<RollingCounters> r1 = useCase.build(first, state);
         assertEquals(1f, r1.vector().values()[17], "source_connections_5m after first event");
         assertEquals(300f, r1.vector().values()[18], "source_bytes_5m after first event (total_bytes=100+200)");
         assertEquals(0f, r1.vector().values()[19], "source_failed_connections_5m, first event was not failed");
 
         ConnEvent second = event(Instant.ofEpochSecond(60_030), 50, 50, true);
-        FeatureBuildResult<ConnWindowState> r2 = useCase.build(second, r1.newState());
+        FeatureBuildResult<RollingCounters> r2 = useCase.build(second, r1.newState());
         assertEquals(2f, r2.vector().values()[17], "source_connections_5m after second event, same minute bucket");
         assertEquals(400f, r2.vector().values()[18], "300 + total_bytes(50+50)=100 = 400");
         assertEquals(1f, r2.vector().values()[19], "second event was failed (S0)");
@@ -75,7 +75,7 @@ class ConnBuildFeaturesUseCaseTest {
             new ConnBuildFeaturesUseCase(Clock.fixed(fixed, ZoneOffset.UTC));
 
         ConnEvent e = event(Instant.ofEpochSecond(60_000), 100, 200, false);
-        FeatureBuildResult<ConnWindowState> result = fixedClockUseCase.build(e, ConnWindowState.empty());
+        FeatureBuildResult<RollingCounters> result = fixedClockUseCase.build(e, RollingCounters.empty());
 
         assertEquals(fixed, result.vector().producedAt());
         assertEquals(e.sensor(), result.vector().sensor(), "sensor must propagate from the event");
@@ -89,8 +89,8 @@ class ConnBuildFeaturesUseCaseTest {
         ConnBuildFeaturesUseCase fixedClockUseCase =
             new ConnBuildFeaturesUseCase(Clock.fixed(subMilli, ZoneOffset.UTC));
 
-        FeatureBuildResult<ConnWindowState> result = fixedClockUseCase.build(
-            event(Instant.ofEpochSecond(60_000), 100, 200, false), ConnWindowState.empty());
+        FeatureBuildResult<RollingCounters> result = fixedClockUseCase.build(
+            event(Instant.ofEpochSecond(60_000), 100, 200, false), RollingCounters.empty());
 
         assertEquals(subMilli.truncatedTo(ChronoUnit.MILLIS), result.vector().producedAt());
     }
@@ -100,8 +100,8 @@ class ConnBuildFeaturesUseCaseTest {
     // point is where the number comes from, not what it is.
     @Test
     void vectorLengthComesFromTheRegisteredSchema() {
-        FeatureBuildResult<ConnWindowState> result =
-            useCase.build(event(Instant.ofEpochSecond(60_000), 100, 200, false), ConnWindowState.empty());
+        FeatureBuildResult<RollingCounters> result =
+            useCase.build(event(Instant.ofEpochSecond(60_000), 100, 200, false), RollingCounters.empty());
 
         assertEquals(FeatureSchemaRegistry.byLogType(LogType.CONN).featureCount(),
             result.vector().values().length);
@@ -113,8 +113,8 @@ class ConnBuildFeaturesUseCaseTest {
     // too, so a vector can never claim a schema its values do not match.
     @Test
     void vectorCarriesTheRegisteredSchemasIdentity() {
-        FeatureBuildResult<ConnWindowState> result =
-            useCase.build(event(Instant.ofEpochSecond(60_000), 100, 200, false), ConnWindowState.empty());
+        FeatureBuildResult<RollingCounters> result =
+            useCase.build(event(Instant.ofEpochSecond(60_000), 100, 200, false), RollingCounters.empty());
 
         FeatureSchema schema = FeatureSchemaRegistry.byLogType(LogType.CONN);
         assertEquals(schema.id(), result.vector().schemaId());
@@ -136,9 +136,9 @@ class ConnBuildFeaturesUseCaseTest {
         }
         FeatureSchema wide = new FeatureSchema("synthetic-25", "1.0.0", "0".repeat(64), definitions);
 
-        FeatureBuildResult<ConnWindowState> result =
+        FeatureBuildResult<RollingCounters> result =
             new ConnBuildFeaturesUseCase(Clock.systemUTC(), wide)
-                .build(event(Instant.ofEpochSecond(60_000), 100, 200, false), ConnWindowState.empty());
+                .build(event(Instant.ofEpochSecond(60_000), 100, 200, false), RollingCounters.empty());
 
         assertEquals(25, result.vector().values().length,
             "width must follow the schema, not a hardcoded 20");

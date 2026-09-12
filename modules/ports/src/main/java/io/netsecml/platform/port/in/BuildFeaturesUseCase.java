@@ -8,8 +8,9 @@ import io.netsecml.platform.domain.feature.FeatureBuildResult;
 //
 // Generic in BOTH the event and the state, because they vary together: a DNS
 // implementation takes a DnsEvent and whatever window state DNS needs, and
-// neither is a ConnEvent or a ConnWindowState. One implementation per log type,
-// so no implementation ever casts or switches to discover what it was given.
+// neither is a ConnEvent or the conn use case's RollingCounters. One
+// implementation per log type, so no implementation ever casts or switches to
+// discover what it was given.
 public interface BuildFeaturesUseCase<E extends NetworkEvent, S> {
     FeatureBuildResult<S> build(E event, S currentState);
 }

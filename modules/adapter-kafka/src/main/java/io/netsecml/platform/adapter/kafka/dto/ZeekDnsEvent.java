@@ -11,10 +11,10 @@ public record ZeekDnsEvent(
     @JsonProperty(value = "id_resp_h", required = true) String idRespH,
     @JsonProperty(value = "id_resp_p", required = true) int idRespP,
     // trans_id is REQUIRED because it is half of this log type's event identity
-    // (sensor:uid:trans_id). A resolver reuses one connection for many queries,
-    // so several dns.log records legitimately share a uid; without trans_id a
-    // record cannot be given a unique id, so its absence is a MAP-stage
-    // rejection, not a defaulted field.
+    // (sensor:uid:trans_id, spec section 5). A resolver reuses one connection for
+    // many queries, so several dns.log records legitimately share a uid; without
+    // trans_id a record cannot be given a unique id, so its absence is a
+    // MAP-stage rejection, not a defaulted field.
     @JsonProperty(value = "trans_id", required = true) int transId,
     @JsonProperty(value = "query", required = true) String query,
     @JsonProperty("qtype") Integer qtype,

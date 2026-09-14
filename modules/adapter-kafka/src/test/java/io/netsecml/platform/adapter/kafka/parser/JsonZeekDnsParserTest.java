@@ -54,9 +54,13 @@ class JsonZeekDnsParserTest {
     // preserve the empty list rather than collapsing it to null. Collapsing the
     // two would make an empty list indistinguishable from absent, and a naive
     // get(0) on a genuinely empty (not null) list throws where get(0)-on-absent
-    // (guarded by a null check) would not.
+    // (guarded by a null check) would not. The fixture gives answers the same
+    // empty-array treatment (a realistic NOERROR/NODATA response), so this is
+    // also checked here rather than left to look untested: both list fields go
+    // through the identical Jackson mapping, and TTLs is merely the one Task 8
+    // depends on.
     @Test
-    void emptyTtlsArrayParsesAsEmptyListNotNull() throws IOException {
+    void emptyListFieldsParseAsEmptyNotNull() throws IOException {
         MappingResult<ZeekDnsEvent> result = parser.parse(fixture("ttls-empty.json"));
         assertTrue(result.isValid());
         ZeekDnsEvent dto = result.value();

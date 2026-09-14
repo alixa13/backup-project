@@ -1,0 +1,16 @@
+{
+  "id": "Cdns004JKL",
+  "ts": 1786608130.0,
+  "id_orig_h": "10.0.0.5",
+  "id_orig_p": 53424,
+  "id_resp_h": "8.8.8.8",
+  "id_resp_p": 53,
+  "query": "example.net",
+  "qtype": 1,
+  "rcode": 0,
+  "AA": false,
+  "RA": true,
+  "TC": false,
+  "answers": ["203.0.113.10"],
+  "TTLs": [300.0]
+}

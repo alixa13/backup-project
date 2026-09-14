@@ -65,12 +65,21 @@ class DnsFeatureExtractorTest {
         assertEquals(0f, values[11], "dns_hyphen_ratio is computed from the query regardless (no hyphens present)");
     }
 
-    // Full-array pin against index transposition. Every value is chosen to be
-    // pairwise distinct from its neighbours (rcode=3, qtype=28, answerCount=7,
-    // ttl=300, qnameLength=11, labelCount=2, digit/hyphen ratios differ) so that
-    // swapping any two indices -- not just using a wrong value -- produces a
-    // visible mismatch. It is not meant to be a realistic Zeek response (NXDOMAIN
-    // with seven answers does not occur on real traffic).
+    // Full-array pin against index transposition. The non-boolean values are
+    // chosen pairwise distinct (rcode=3, qtype=28, answerCount=7, ttl=300,
+    // qnameLength=11, labelCount=2, and two different ratios) so that swapping
+    // any two of them -- not merely computing one wrongly -- produces a visible
+    // mismatch.
+    //
+    // It canNOT catch a swap between indices 2 and 4, because both are booleans
+    // set true and a boolean carries only 0f or 1f: no choice of fixture makes
+    // two true flags distinguishable by value. That gap is closed by
+    // authoritativeRecursionAvailableAndTruncatedMapToDistinctIndices below,
+    // which sets one flag at a time so each position is identified alone.
+    // Neither test covers the booleans on its own; the pair does.
+    //
+    // It is not meant to be a realistic Zeek response -- NXDOMAIN with seven
+    // answers does not occur on real traffic.
     @Test
     void respondedQueryPopulatesAllTwelveIndicesInSchemaOrder() {
         String qname = "ab12-cd.com";

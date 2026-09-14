@@ -1,10 +1,9 @@
 package io.netsecml.platform.application.feature;
 
-import java.util.HashMap;
-import java.util.Map;
+import java.util.Arrays;
 
 // DNS query name features derived from the string's statistical properties.
-// These measurements isolate the shape of a domain name without storing it—
+// These measurements isolate the shape of a domain name without storing it --
 // the raw string is excluded from every schema because it is user-identifying
 // and cannot be frozen. A DGA-generated name and a human-chosen one differ
 // sharply in entropy and digit ratio, and that is the signal.
@@ -28,18 +27,29 @@ public final class QnameFeatures {
             return 0.0;
         }
 
-        // Count occurrences of each character.
-        Map<Character, Integer> frequencies = new HashMap<>();
-        for (char c : qname.toCharArray()) {
-            frequencies.put(c, frequencies.getOrDefault(c, 0) + 1);
-        }
+        // Sort a copy and count runs, rather than tallying into a Map. This runs
+        // once per DNS record on the online scoring path, and a
+        // Map<Character, Integer> boxes a Character and an Integer for every
+        // character of every name queried. Sorting is O(n log n) against the
+        // Map's O(n), but n is a domain name -- 253 characters at the absolute
+        // limit -- so the constant factor of boxing and hashing dominates the
+        // asymptotics at every size that actually occurs. A fixed-size frequency
+        // array would be faster still, but only by assuming an alphabet; this
+        // stays correct for any char.
+        char[] sorted = qname.toCharArray();
+        Arrays.sort(sorted);
 
-        // Compute Shannon entropy in base 2.
         double entropy = 0.0;
-        int length = qname.length();
-        for (int count : frequencies.values()) {
-            double probability = (double) count / length;
-            entropy -= probability * (Math.log(probability) / Math.log(2));
+        int length = sorted.length;
+        int runStart = 0;
+        for (int i = 1; i <= length; i++) {
+            // A run ends at the first different character, and at the end of the
+            // array.
+            if (i == length || sorted[i] != sorted[runStart]) {
+                double probability = (double) (i - runStart) / length;
+                entropy -= probability * (Math.log(probability) / Math.log(2));
+                runStart = i;
+            }
         }
 
         return entropy;
@@ -74,9 +84,16 @@ public final class QnameFeatures {
         return dotCount + 1;
     }
 
-    // Fraction of the string that is digits (0-9), as a ratio of total length.
+    // Fraction of the string that is ASCII digits, as a ratio of total length.
     // Returns 0.0 for empty strings to avoid NaN, which would poison any model
     // that sees it in the feature vector.
+    //
+    // Deliberately NOT Character.isDigit, which also matches Devanagari and
+    // Arabic-Indic digits. DNS labels are LDH-restricted to ASCII and an
+    // internationalised name arrives Punycode-encoded, so a Unicode digit
+    // reaching this method is malformed input -- which is exactly the traffic
+    // this platform exists to score. A frozen feature must behave the same way
+    // on adversarial input as on ordinary input, so the range is explicit.
     public static double digitRatio(String qname) {
         if (qname.isEmpty()) {
             return 0.0;
@@ -84,7 +101,7 @@ public final class QnameFeatures {
 
         int digitCount = 0;
         for (char c : qname.toCharArray()) {
-            if (Character.isDigit(c)) {
+            if (c >= '0' && c <= '9') {
                 digitCount++;
             }
         }

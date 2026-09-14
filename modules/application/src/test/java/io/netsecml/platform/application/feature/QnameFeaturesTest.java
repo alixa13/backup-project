@@ -43,5 +43,15 @@ class QnameFeaturesTest {
         // poisons any model that sees it. Empty is not reachable today (DnsEvent
         // requires a query) but the guard is one line and the failure is silent.
         assertEquals(0.0, QnameFeatures.digitRatio(""), 1e-9);
+
+        // Both ratios, because the test's name says "ratios" -- asserting only
+        // digitRatio would leave hyphenRatio's guard unproven while the name
+        // claimed otherwise.
+        assertEquals(0.0, QnameFeatures.hyphenRatio(""), 1e-9);
+
+        // Character.isDigit would count this Arabic-Indic digit; the frozen
+        // feature counts ASCII only, so a non-ASCII digit is not a digit here.
+        assertEquals(0.0, QnameFeatures.digitRatio("\u0661\u0662"), 1e-9,
+            "digitRatio is ASCII-only by design");
     }
 }

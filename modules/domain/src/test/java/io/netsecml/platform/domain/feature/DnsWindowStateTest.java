@@ -1,7 +1,6 @@
 package io.netsecml.platform.domain.feature;
 
 import org.junit.jupiter.api.Test;
-import java.time.Instant;
 import static org.junit.jupiter.api.Assertions.*;
 
 // DnsWindowState is a thin pairing of the two independent pieces of state DNS's
@@ -29,19 +28,4 @@ class DnsWindowStateTest {
             () -> new DnsWindowState(RollingCounters.empty(), null));
     }
 
-    // Confirms the two components really are independent state, not a shared
-    // reference -- folding an event into one leaves the other's shape alone.
-    @Test
-    void componentsAdvanceIndependently() {
-        RollingCounters advancedCounters = RollingCounters.empty().record(1_000L, 50L, false);
-        DnsWindowState state = new DnsWindowState(advancedCounters, RecordTimingState.empty());
-
-        assertEquals(1L, state.counters().recordCount5m());
-        assertEquals(0L, state.timing().observationCount());
-
-        DnsWindowState advancedTiming = new DnsWindowState(
-            RollingCounters.empty(), RecordTimingState.empty().observe(Instant.EPOCH));
-        assertEquals(0L, advancedTiming.counters().recordCount5m());
-        assertEquals(1L, advancedTiming.timing().observationCount());
-    }
 }

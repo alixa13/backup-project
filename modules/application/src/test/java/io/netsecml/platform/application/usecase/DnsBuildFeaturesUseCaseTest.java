@@ -131,6 +131,32 @@ class DnsBuildFeaturesUseCaseTest {
             "answered NOERROR query does not set DNS_RESPONSE_ABSENT");
     }
 
+    // Both absence bits from ONE build() call. Tests 3 and 4 each vary a single
+    // absence with the other held fixed, so neither ever observes the combined
+    // case -- and the two flags are set by two separate, unconditional ifs. A
+    // regression that made them mutually exclusive (an `else if`) would leave
+    // tests 3 and 4 green while silently dropping one bit whenever both apply,
+    // which is the ordinary state for an unanswered query in a connection's
+    // first five minutes. The exact-equality asserts are deliberate here: this
+    // test IS about the whole int, unlike test 3's bitmask.
+    @Test
+    void bothAbsenceBitsAreSetTogetherAndNeitherWhenBothArePresent() {
+        DnsEvent bothAbsent = dnsEvent(Instant.ofEpochSecond(60_000), null, null);
+        DnsEvent bothPresent = dnsEvent(Instant.ofEpochSecond(60_000),
+            new DnsResponse(DnsRcode.NOERROR, false, true, false, 1, 300L),
+            new ConnSnapshotDelta(100L, 200L, 3L, 4L, 60L));
+
+        int absentFlags = new DnsBuildFeaturesUseCase(FIXED_CLOCK)
+            .build(bothAbsent, DnsWindowState.empty()).vector().qualityFlags();
+        int presentFlags = new DnsBuildFeaturesUseCase(FIXED_CLOCK)
+            .build(bothPresent, DnsWindowState.empty()).vector().qualityFlags();
+
+        assertEquals(QualityFlags.CONN_ENRICHMENT_ABSENT | QualityFlags.DNS_RESPONSE_ABSENT, absentFlags,
+            "no response and no conn.log snapshot must set BOTH bits, not whichever is checked first");
+        assertEquals(QualityFlags.NONE, presentFlags,
+            "a fully observed record carries no absence bits at all");
+    }
+
     // Test 4: enrichment absence/presence must control both the flag and indices
     // 6-10, the same pairing CommonFeatureExtractorTest already proves for conn;
     // this confirms DnsBuildFeaturesUseCase actually wires enrichment through

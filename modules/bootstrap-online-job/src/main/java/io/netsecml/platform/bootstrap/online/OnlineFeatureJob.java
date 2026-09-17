@@ -36,57 +36,18 @@ import java.time.Duration;
 
 public final class OnlineFeatureJob {
 
-    // The conn-only topology, unchanged since before this task. Kept building
-    // EXACTLY as it always has -- same uids, same group id, same delivery
-    // guarantee -- because OnlineFeatureJobE2ETest and ClickHouseOutageTest (in
-    // the separate bootstrap-archive-job module) both call this exact five-
-    // argument overload directly and must keep compiling and passing unchanged
-    // (Task 12 binding ruling 12a). The two-protocol overload below is
-    // additive, not a replacement.
+    // The conn-only topology: delegates entirely into connChain below, so
+    // conn's wiring is defined in exactly one place -- the same method the
+    // two-protocol overload calls for its own conn half, below. Kept as its
+    // own entry point rather than folded away because OnlineFeatureJobE2ETest
+    // and ClickHouseOutageTest (in the separate bootstrap-archive-job module)
+    // both call this exact five-argument signature directly and must keep
+    // compiling and passing against exactly today's conn-only topology. The
+    // returned parsed-conn stream is discarded here; only the two-protocol
+    // overload needs it, to feed dns's join.
     public static void build(StreamExecutionEnvironment env, String bootstrapServers, String inputTopic,
                               String featureVectorTopic, String dlqTopic, SensorId sensor) {
-        // Every operator and sink below gets an explicit, stable .uid(). Without one
-        // Flink derives the operator ID from the topology hash, so ANY future edit to
-        // this graph silently discards state on restore-from-checkpoint instead of
-        // failing loudly -- and THIS job is the one where that risk is real:
-        // ConnFeatureProcessFunction holds keyed rolling-window state per
-        // (sensor, sourceIp). Assigning uids now is a one-time cost -- it changes
-        // operator identity, so an existing checkpoint/savepoint will not restore
-        // across this change -- and strictly cheaper to pay now than after more
-        // state has accumulated.
-        // KNOWN GAP: there is still no TTL on either feature process function's
-        // keyed rolling-window state. grep StateTtlConfig / enableTimeToLive
-        // across modules/ no longer comes back empty -- ConnSnapshotJoinFunction's
-        // "conn-enrichment" state (see that class's open()) added this codebase's
-        // first TTL -- but that TTL belongs to a DIFFERENT operator's DIFFERENT
-        // state, the conn.log enrichment join, not to the windows below.
-        // ConnFeatureProcessFunction's "rolling-counters" and
-        // DnsFeatureProcessFunction's "dns-window-state" (wired in the
-        // two-protocol overload below) are each still untouched: every state
-        // VALUE is bounded, at five one-minute buckets per key, but the KEY SET
-        // is not -- every distinct (sensor, sourceIp) ever seen, for either
-        // protocol, keeps its own state forever. That is in tension with
-        // CLAUDE.md's "Bounded per-(sensor, sourceIp) state only" invariant,
-        // which this satisfies per-value but not in aggregate. Adding a TTL to
-        // these two is a separate design decision with its own trade-offs and is
-        // deliberately not made here.
-        DataStream<byte[]> rawStream = rawSource(env, bootstrapServers, inputTopic, "conn-online-job",
-            "conn-raw-source");
-
-        SingleOutputStreamOperator<NetworkEvent> parsed = rawStream
-            .process(new ConnParseMapValidateFunction(sensor))
-            .name("parse-map-validate")
-            .uid("parse-map-validate");
-
-        DataStream<FeatureVector> featureVectors = parsed
-            .keyBy(new SourceKeySelector())
-            .process(new ConnFeatureProcessFunction())
-            .name("conn-feature-extraction")
-            .uid("conn-feature-extraction");
-        sinkFeatureVectors(featureVectors, bootstrapServers, featureVectorTopic, "feature-vector-sink");
-
-        DataStream<RejectedRecord> rejected = parsed.getSideOutput(ParseMapValidateFunction.REJECTED_TAG);
-        sinkRejected(rejected, bootstrapServers, dlqTopic, "dlq-sink");
+        connChain(env, bootstrapServers, new ProtocolTopics(inputTopic, featureVectorTopic, dlqTopic), sensor);
     }
 
     // One protocol's three Kafka topic names, grouped so the two-protocol
@@ -97,62 +58,60 @@ public final class OnlineFeatureJob {
     public record ProtocolTopics(String input, String featureVector, String dlq) {
     }
 
-    // The two-protocol topology (this unit's task-12 brief pipeline diagram):
-    // conn and dns each get their own source -> parse -> ... -> sink chain, the
-    // two joined only by the conn.log enrichment snapshot stream that flows
-    // from the conn chain into the dns chain's join stage. A second overload
-    // rather than a replacement of the one above -- the same pattern
-    // ArchiveJob.build already uses for its own two overloads (see that
-    // class's comment on why): the conn-only overload must keep building
-    // exactly today's topology for its two existing callers, so a genuinely
-    // different topology (two sources, a cross-protocol join) gets its own
-    // entry point instead of a growing parameter list on the old one.
+    // The two-protocol topology: conn and dns each get their own source ->
+    // parse -> ... -> sink chain, the two joined only by the conn.log
+    // enrichment snapshot stream that flows from the conn chain into the dns
+    // chain's join stage. A second overload rather than a replacement of the
+    // one above, because the conn-only overload's two existing callers
+    // (OnlineFeatureJobE2ETest, and ClickHouseOutageTest in the separate
+    // bootstrap-archive-job module) must keep building exactly today's
+    // conn-only topology. Both overloads assemble conn's chain through the
+    // SAME connChain(...) helper below, so the two topologies cannot drift
+    // apart from each other -- there is exactly one place that wires conn's
+    // source, parse, feature extraction and sinks.
     //
-    // Per ruling 12c, only the three shapes conn and dns genuinely share --
-    // the Kafka source, the feature-vector sink, and the DLQ sink -- are
-    // factored into the private helpers below. Each protocol's middle stages
-    // (parse, feature extraction, and dns's join) stay written out here:
-    // dns has a join stage with no conn counterpart, and forcing both into one
-    // generic chain method would hide that difference rather than express it.
+    // Only the three shapes conn and dns genuinely share -- the Kafka source,
+    // the feature-vector sink, and the DLQ sink -- are factored into private
+    // helpers. Each protocol's middle stages (parse, feature extraction, and
+    // dns's join) stay written out: dns has a join stage with no conn
+    // counterpart, and folding both into one generic chain method would hide
+    // that difference rather than express it.
+    //
+    // KNOWN GAP: neither ConnFeatureProcessFunction's "rolling-counters" state
+    // nor DnsFeatureProcessFunction's "dns-window-state" carries a TTL -- the
+    // two rolling-window stages this overload puts on the graph, one via
+    // connChain below and one wired directly further down. grep
+    // StateTtlConfig / enableTimeToLive across modules/ no longer comes back
+    // empty -- ConnSnapshotJoinFunction's "conn-enrichment" state (see that
+    // class's open()) added this codebase's first TTL -- but that TTL belongs
+    // to a DIFFERENT operator's DIFFERENT state, the conn.log enrichment
+    // join, not to either window here. Each window's state VALUE is bounded,
+    // at five one-minute buckets per key, but the KEY SET is not -- every
+    // distinct (sensor, sourceIp) ever seen, for either protocol, keeps its
+    // own state forever. That is in tension with CLAUDE.md's "Bounded
+    // per-(sensor, sourceIp) state only" invariant, which this satisfies
+    // per-value but not in aggregate. Adding a TTL to these two is a separate
+    // design decision with its own trade-offs and is deliberately not made
+    // here.
     public static void build(StreamExecutionEnvironment env, String bootstrapServers,
                               ProtocolTopics conn, ProtocolTopics dns, SensorId sensor) {
-        // ---- conn chain: source -> parse -> feature extraction -> sink, plus
-        // the DLQ side output and the conn.log snapshot extraction that feeds
-        // the dns chain's join below. Identical in shape to the conn-only
-        // overload above -- same uids -- because it IS the same chain; the only
-        // addition is the snapshot branch dns needs.
-        DataStream<byte[]> connRaw = rawSource(env, bootstrapServers, conn.input(), "conn-online-job",
-            "conn-raw-source");
-
-        SingleOutputStreamOperator<NetworkEvent> connParsed = connRaw
-            .process(new ConnParseMapValidateFunction(sensor))
-            .name("parse-map-validate")
-            .uid("parse-map-validate");
-
-        DataStream<FeatureVector> connFeatureVectors = connParsed
-            .keyBy(new SourceKeySelector())
-            .process(new ConnFeatureProcessFunction())
-            .name("conn-feature-extraction")
-            .uid("conn-feature-extraction");
-        sinkFeatureVectors(connFeatureVectors, bootstrapServers, conn.featureVector(), "feature-vector-sink");
-
-        DataStream<RejectedRecord> connRejected = connParsed.getSideOutput(ParseMapValidateFunction.REJECTED_TAG);
-        sinkRejected(connRejected, bootstrapServers, conn.dlq(), "dlq-sink");
+        SingleOutputStreamOperator<NetworkEvent> connParsed = connChain(env, bootstrapServers, conn, sensor);
 
         // The conn.log enrichment producer
         // (docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md
-        // section 6.2): reads the SAME parsed conn stream the feature chain
-        // above reads, so one parsed conn record feeds both the feature sink
-        // and this extraction independently -- neither branch feeds the other.
+        // section 6.2): reads the SAME parsed conn stream connChain returns,
+        // so one parsed conn record feeds both the feature sink inside
+        // connChain and this extraction independently -- neither branch feeds
+        // the other.
         DataStream<ConnSnapshot> connSnapshots = connParsed
             .flatMap(new ConnSnapshotExtractFunction())
             .name("conn-snapshot-extract")
             .uid("conn-snapshot-extract");
 
-        // ---- dns chain: its own source and parse stage, then the enrichment
-        // join against the conn snapshots above, then feature extraction and
-        // sink -- the shape the pipeline diagram in this unit's task-12 brief
-        // draws as two sources converging on one join.
+        // dns's own source and parse stage, then the enrichment join against
+        // the conn snapshots above, then feature extraction and sink -- two
+        // sources converging on one join; conn's own chain has no join stage
+        // at all.
         DataStream<byte[]> dnsRaw = rawSource(env, bootstrapServers, dns.input(), "dns-online-job",
             "dns-raw-source");
 
@@ -181,21 +140,57 @@ public final class OnlineFeatureJob {
             .uid("dns-feature-extraction");
         sinkFeatureVectors(dnsFeatureVectors, bootstrapServers, dns.featureVector(), "dns-feature-vector-sink");
 
-        // dns's own rejects, from the dns parse stage's side output. This reads
-        // the SAME static REJECTED_TAG the conn chain read above, but a side
-        // output is scoped to the OPERATOR INSTANCE it is read from, not
-        // globally by tag, so this is dns's rejects only -- never a mix of both
-        // chains' -- exactly as the pipeline diagram shows two separate DLQ
-        // arrows, one per parse stage.
+        // dns's own rejects, from the dns parse stage's side output. This
+        // reads the SAME static REJECTED_TAG connChain's conn parse stage
+        // reads from too, but a side output is scoped to the OPERATOR
+        // INSTANCE it is read from, not globally by tag, so this is dns's
+        // rejects only -- never a mix of both chains'.
         DataStream<RejectedRecord> dnsRejected = dnsParsed.getSideOutput(ParseMapValidateFunction.REJECTED_TAG);
         sinkRejected(dnsRejected, bootstrapServers, dns.dlq(), "dns-dlq-sink");
     }
 
-    // Shared shape 1 of 3 (ruling 12c): a byte[] Kafka source differing only in
-    // topic, consumer group and uid. Both protocols read raw Zeek JSON lines
-    // off an external topic identically -- there is no protocol-specific
-    // behaviour here to hide by extracting it, unlike the parse/feature/join
-    // stages above, which stay written out per protocol.
+    // Builds conn's entire chain -- source, parse, feature extraction, the
+    // feature-vector sink, and the DLQ side output plus sink -- and returns
+    // the parsed stream so a caller that needs to branch off it (the
+    // two-protocol overload above, for dns's join) can. The conn-only
+    // overload above calls this too and discards the return value. One
+    // method assembling conn's chain for both overloads is what keeps them
+    // from drifting apart from each other.
+    //
+    // Every operator and sink assigned a uid here gets an explicit, stable
+    // one. Without one, Flink derives the operator id from the topology hash,
+    // so ANY future edit to this graph silently discards state on restore-
+    // from-checkpoint instead of failing loudly -- and this is the one chain
+    // in this job where that risk is concrete: ConnFeatureProcessFunction
+    // holds keyed rolling-window state per (sensor, sourceIp).
+    private static SingleOutputStreamOperator<NetworkEvent> connChain(StreamExecutionEnvironment env,
+            String bootstrapServers, ProtocolTopics conn, SensorId sensor) {
+        DataStream<byte[]> connRaw = rawSource(env, bootstrapServers, conn.input(), "conn-online-job",
+            "conn-raw-source");
+
+        SingleOutputStreamOperator<NetworkEvent> connParsed = connRaw
+            .process(new ConnParseMapValidateFunction(sensor))
+            .name("parse-map-validate")
+            .uid("parse-map-validate");
+
+        DataStream<FeatureVector> connFeatureVectors = connParsed
+            .keyBy(new SourceKeySelector())
+            .process(new ConnFeatureProcessFunction())
+            .name("conn-feature-extraction")
+            .uid("conn-feature-extraction");
+        sinkFeatureVectors(connFeatureVectors, bootstrapServers, conn.featureVector(), "feature-vector-sink");
+
+        DataStream<RejectedRecord> connRejected = connParsed.getSideOutput(ParseMapValidateFunction.REJECTED_TAG);
+        sinkRejected(connRejected, bootstrapServers, conn.dlq(), "dlq-sink");
+
+        return connParsed;
+    }
+
+    // Shared shape 1 of 3: a byte[] Kafka source differing only in topic,
+    // consumer group and uid. Both protocols read raw Zeek JSON lines off an
+    // external topic identically -- there is no protocol-specific behaviour
+    // here to hide by extracting it, unlike the parse/feature/join stages
+    // above, which stay written out per protocol.
     private static DataStream<byte[]> rawSource(StreamExecutionEnvironment env, String bootstrapServers,
                                                   String topic, String groupId, String uid) {
         KafkaSource<byte[]> source = KafkaSource.<byte[]>builder()
@@ -300,9 +295,9 @@ public final class OnlineFeatureJob {
         String sensorId = System.getenv().getOrDefault("SENSOR_ID", "sensor-default");
 
         // CONN_INPUT_TOPIC, FEATURE_VECTOR_TOPIC and DLQ_TOPIC keep their
-        // pre-DNS names and meanings (ruling 12f) -- renaming them would break
-        // any deployment's existing configuration for no benefit, since they
-        // were never protocol-qualified to begin with.
+        // pre-DNS names and meanings -- renaming them would break any
+        // deployment's existing configuration for no benefit, since they were
+        // never protocol-qualified to begin with.
         ProtocolTopics conn = new ProtocolTopics(
             System.getenv().getOrDefault("CONN_INPUT_TOPIC", "conn"),
             System.getenv().getOrDefault("FEATURE_VECTOR_TOPIC", "netsec.conn.feature-vector.v1"),

@@ -24,10 +24,10 @@ class OnlineFeatureJobTopologyTest {
         return env;
     }
 
-    // Task 12 binding ruling 12b's table, verbatim. Conn's five are marked
+    // Every uid this job's conn chain assigns. Conn's five are marked
     // separately below because they must be BYTE-IDENTICAL to what shipped
-    // before this task -- a changed uid here silently discards that operator's
-    // checkpoint state on restore.
+    // before DNS was wired in -- a changed uid here silently discards that
+    // operator's checkpoint state on restore.
     private static final Set<String> CONN_UIDS = Set.of(
         "conn-raw-source", "parse-map-validate", "conn-feature-extraction",
         "feature-vector-sink", "dlq-sink");
@@ -38,19 +38,21 @@ class OnlineFeatureJobTopologyTest {
 
     // conn's five plus dns's seven (dns-parse, the join, dns-feature-extraction,
     // dns's two sinks, PLUS conn-snapshot-extract -- the extra branch dns's join
-    // needs off the conn chain) is twelve, matching ruling 12b's table exactly.
+    // needs off the conn chain) is twelve -- every operator uid the two-protocol
+    // topology assigns.
     private static Set<String> allTwelveUids() {
         Set<String> all = new HashSet<>(CONN_UIDS);
         all.addAll(DNS_UIDS);
         return all;
     }
 
-    // All twelve of ruling 12b's uids must exist somewhere in the graph.
+    // All twelve operator uids the two-protocol topology assigns must exist
+    // somewhere in the graph.
     @Test
     void allTwelveOperatorUidsArePresent() {
         Set<String> uids = operatorUids();
         assertTrue(uids.containsAll(allTwelveUids()),
-            "expected all twelve uids from ruling 12b, found: " + uids);
+            "expected all twelve operator uids, found: " + uids);
     }
 
     // Conn's five predate this task and are checkpoint state identity for a
@@ -66,6 +68,37 @@ class OnlineFeatureJobTopologyTest {
         Set<String> uids = operatorUids();
         assertTrue(uids.containsAll(CONN_UIDS),
             "conn's five historical uids must survive unchanged, found: " + uids);
+    }
+
+    // Pins the conn-only overload's own topology, independently of the
+    // two-protocol one buildJob() above exercises. EXACT set equality, not
+    // containsAll: a superset would still satisfy containsAll even if a dns
+    // operator or the conn-snapshot-extract branch leaked into this overload,
+    // so only equality actually proves this overload wires conn ALONE. The
+    // two extra members are the Flink-derived committer uids
+    // noStreamNodeLacksAUid's comment below documents observing for the
+    // feature-vector and DLQ sinks.
+    @Test
+    void connOnlyOverloadWiresExactlyConnsFiveOperatorsAndTheirTwoCommitters() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        OnlineFeatureJob.build(env, "localhost:9092", "conn", "netsec.conn.feature-vector.v1",
+            "netsec.conn.dlq.v1", new SensorId("sensor-eu-1"));
+
+        Set<String> uids = new HashSet<>();
+        env.getStreamGraph(false).getStreamNodes().forEach(node -> {
+            if (node.getTransformationUID() != null) {
+                uids.add(node.getTransformationUID());
+            }
+        });
+
+        Set<String> expected = new HashSet<>(CONN_UIDS);
+        expected.add("Sink Committer: feature-vector-sink");
+        expected.add("Sink Committer: dlq-sink");
+
+        assertEquals(expected, uids,
+            "the conn-only overload must wire EXACTLY conn's five operators and their two sink "
+            + "committers -- no dns operator and no snapshot-extraction branch, found: " + uids);
     }
 
     // Every operator and sink-writer uid across the WHOLE topology must be
@@ -103,7 +136,7 @@ class OnlineFeatureJobTopologyTest {
     //     uid this class passed to .uid(...), e.g. "feature-vector-sink"; and
     //   - a "<uid>: Committer" node whose getTransformationUID() is Flink's own
     //     "Sink Committer: <uid>" string -- DERIVED from, not equal to, the uid
-    //     this class assigned, exactly as ruling 12b warned it might be.
+    //     this class assigned.
     // Both nodes carried a non-null uid in every case observed -- Flink derives
     // the committer's uid automatically rather than leaving it null -- so the
     // assertion below holds for this topology as built today. If a future sink

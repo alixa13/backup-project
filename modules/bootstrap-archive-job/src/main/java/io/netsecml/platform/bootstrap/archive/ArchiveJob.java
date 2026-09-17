@@ -125,9 +125,9 @@ public final class ArchiveJob {
         String sourceUid = prefix + "feature-vector-source";
         String mapUid = prefix + "feature-vector-row";
         // Plural ("...-vectors-...") where every other uid in this class is
-        // singular. That mismatch predates this method -- Task 12 mirrors it
-        // verbatim rather than correcting it, because correcting it would
-        // rename a running job's checkpoint state for a purely cosmetic reason.
+        // singular. That mismatch predates this method and is mirrored
+        // verbatim rather than corrected, because correcting it would rename
+        // a running job's checkpoint state for a purely cosmetic reason.
         String sinkUid = prefix + "feature-vectors-clickhouse-sink";
 
         // FeatureVectorRowMapFunction is log-type agnostic already (it reads
@@ -233,8 +233,8 @@ public final class ArchiveJob {
 
         // Same variable names the online job reads, all documented in .env.example.
         // FEATURE_VECTOR_TOPIC and DLQ_TOPIC keep their pre-DNS names and
-        // meanings (ruling 12f) -- they were never protocol-qualified, so
-        // renaming them now would break an existing deployment for no benefit.
+        // meanings -- they were never protocol-qualified, so renaming them
+        // now would break an existing deployment for no benefit.
         String bootstrapServers = System.getenv().getOrDefault("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092");
         String featureTopic = System.getenv().getOrDefault("FEATURE_VECTOR_TOPIC", "netsec.conn.feature-vector.v1");
         String dlqTopic = System.getenv().getOrDefault("DLQ_TOPIC", "netsec.conn.dlq.v1");

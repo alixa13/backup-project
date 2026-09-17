@@ -99,14 +99,17 @@ public final class DnsEventMapper {
             boolean truncated = dto.tc() != null && dto.tc();
             int answerCount = dto.answers() == null ? 0 : dto.answers().size();
 
-            // firstTtlSeconds is 0 both when TTLs is absent (null) AND when it
-            // is present but empty -- two different wire states (see
-            // JsonZeekDnsParserTest), but a naive ttls.get(0) throws
-            // IndexOutOfBoundsException on the empty-but-non-null case, so both
-            // are guarded explicitly rather than relying on a null check alone.
-            long firstTtlSeconds = (dto.ttls() == null || dto.ttls().isEmpty())
-                ? 0L
-                : Math.round(dto.ttls().get(0));
+            // firstTtlSeconds is 0 in THREE wire states, each guarded separately
+            // because each fails differently: TTLs absent (null), TTLs present
+            // but empty (a naive get(0) throws IndexOutOfBoundsException), and
+            // TTLs whose first element is itself null. Jackson accepts
+            // "TTLs": [null] by default, and unboxing that element to double
+            // throws NullPointerException -- which would escape map() and
+            // crash-loop the Flink subtask on a single record. dns_ttl is
+            // DEFAULT_ZERO in the frozen contract, so an unusable value is
+            // "not observed", not a rejection.
+            Double firstTtl = (dto.ttls() == null || dto.ttls().isEmpty()) ? null : dto.ttls().get(0);
+            long firstTtlSeconds = firstTtl == null ? 0L : Math.round(firstTtl);
 
             response = new DnsResponse(DnsRcode.fromCode(dto.rcode()), authoritative, recursionAvailable,
                 truncated, answerCount, firstTtlSeconds);

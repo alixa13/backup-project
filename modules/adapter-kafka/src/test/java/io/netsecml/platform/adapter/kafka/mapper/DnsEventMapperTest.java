@@ -240,4 +240,43 @@ class DnsEventMapperTest {
         };
         assertNull(dns.response());
     }
+
+    // A null INSIDE the TTLs array. Jackson accepts "TTLs": [null] by default and
+    // hands back a list whose first element is null, so the empty-list guard
+    // does not catch it: get(0) returns null and unboxing it to double throws a
+    // NullPointerException out of map(). That is the one input the mapper's
+    // no-exception-escapes invariant missed, found by the task review. Driven
+    // through the real parser rather than a hand-built DTO, so this proves the
+    // wire format actually produces the null rather than assuming it does.
+    @Test
+    void aNullFirstTtlDefaultsToZeroInsteadOfThrowing() {
+        String json = "{\"id\":\"Cdns001ABC\",\"ts\":1786608100.5,\"id_orig_h\":\"10.0.0.5\","
+            + "\"id_orig_p\":53421,\"id_resp_h\":\"8.8.8.8\",\"id_resp_p\":53,\"trans_id\":4242,"
+            + "\"query\":\"example.com\",\"qtype\":1,\"rcode\":0,\"TTLs\":[null]}";
+        ZeekDnsEvent parsed = parser.parse(json.getBytes(java.nio.charset.StandardCharsets.UTF_8)).value();
+
+        MappingResult<NetworkEvent> result =
+            assertDoesNotThrow(() -> mapper.map(parsed, sensor),
+                "a null TTL element must not escape map() and crash-loop the Flink subtask");
+
+        assertTrue(result.isValid(), () -> "expected a valid event, got " + result);
+        DnsEvent event = (DnsEvent) result.value();
+        assertEquals(0L, event.response().firstTtlSeconds(),
+            "dns_ttl is DEFAULT_ZERO in the frozen contract, so an unusable value defaults to 0");
+    }
+
+    // eventTime becomes the ClickHouse partition key, so a negative timestamp
+    // must be rejected at MAP rather than written into a partition decades in
+    // the past. EventMapperTest has no equivalent test either; that gap is not
+    // a reason to leave this one open.
+    @Test
+    void aNegativeTimestampIsRejectedAsInvalidTimestamp() {
+        ZeekDnsEvent negative = new ZeekDnsEvent("Cdns001ABC", -1.0, "10.0.0.5", 53421, "8.8.8.8", 53,
+            4242, "example.com", 1, 0, false, true, false, List.of("93.184.216.34"), List.of(299.0));
+
+        MappingResult<NetworkEvent> result = mapper.map(negative, sensor);
+
+        assertFalse(result.isValid());
+        assertEquals(ReasonCode.INVALID_TIMESTAMP, result.reason());
+    }
 }

@@ -1,0 +1,21 @@
+{
+  "id": "Cdef456UVW",
+  "ts": 1786608011.0,
+  "id_orig_h": "10.0.0.5",
+  "id_orig_p": 53421,
+  "id_resp_h": "8.8.8.8",
+  "id_resp_p": 53,
+  "trans_id": 9001,
+  "query": "resolve.example.com",
+  "qtype": 1,
+  "rcode": 0,
+  "AA": false,
+  "RA": true,
+  "TC": false,
+  "answers": ["93.184.216.34"],
+  "TTLs": [300.0],
+  "rejected": false,
+  "rtt": 0.018,
+  "qclass": 1,
+  "Z": 0
+}

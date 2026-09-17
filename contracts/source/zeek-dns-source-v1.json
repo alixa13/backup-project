@@ -1,0 +1,24 @@
+{
+  "id": "zeek-dns-source-v1",
+  "description": "Required and optional fields for a Zeek dns.log record delivered as one Kafka JSON message.",
+  "requiredFields": [
+    { "name": "id", "type": "string", "notes": "Zeek uid; with trans_id and the sensor it forms the event id sensor:uid:trans_id" },
+    { "name": "ts", "type": "number", "notes": "epoch seconds, fractional part allowed; negative rejected; stored at millisecond precision" },
+    { "name": "id_orig_h", "type": "string", "notes": "the querier's address; part of the rolling window's key, together with the sensor and log type" },
+    { "name": "id_orig_p", "type": "integer", "notes": "the querier's port; not range-validated" },
+    { "name": "id_resp_h", "type": "string", "notes": "the resolver's address" },
+    { "name": "id_resp_p", "type": "integer", "notes": "the resolver's port; not range-validated" },
+    { "name": "trans_id", "type": "integer", "notes": "disambiguates records that legitimately share a uid when a resolver reuses one connection for many queries" },
+    { "name": "query", "type": "string", "notes": "blank rejected; never stored raw, only derived into numeric features" },
+    { "name": "qtype", "type": "integer", "notes": "IANA RR type code; absent rejected; an unrecognised code maps to OTHER" }
+  ],
+  "optionalFields": [
+    { "name": "rcode", "type": "integer", "notes": "absent means no response was seen" },
+    { "name": "AA", "type": "boolean", "notes": "authoritative-answer flag; Zeek writes AA, RA and TC as false whether or not a response occurred, so only rcode indicates a response was seen" },
+    { "name": "RA", "type": "boolean", "notes": "recursion-available flag; same caveat as AA" },
+    { "name": "TC", "type": "boolean", "notes": "truncated flag; same caveat as AA" },
+    { "name": "answers", "type": "array", "notes": "array of strings, one per answer record; only the count is used" },
+    { "name": "TTLs", "type": "array", "notes": "array of numbers, in seconds; null elements tolerated; only the first element is used" }
+  ],
+  "invalidRecordPolicy": "Malformed JSON or a missing required field routes to netsec.dns.dlq.v1 with a reason code; unknown additive fields are tolerated and ignored."
+}

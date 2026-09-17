@@ -6,6 +6,9 @@ import io.netsecml.platform.domain.event.LogType;
 import io.netsecml.platform.domain.event.ReasonCode;
 import io.netsecml.platform.domain.event.RejectedEvent;
 import org.junit.jupiter.api.Test;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -121,5 +124,19 @@ class InvalidEventRowMapperTest {
     @Test
     void derivesSourceVersionFromTheLogType() {
         assertEquals("zeek-conn-source-v1", new InvalidEventRowMapper(LogType.CONN).sourceVersion());
+    }
+
+    // The guard that fails the next time a LogType is added without shipping the
+    // contracts/source/<name>.json file its own sourceVersion() names. DNS itself
+    // was exactly this gap: every DNS rejection archived a source_version of
+    // "zeek-dns-source-v1" naming a file that did not exist on disk.
+    @Test
+    void everyLogTypeHasASourceContractFileOnDisk() {
+        Path sourceContracts = Paths.get("..", "..", "contracts", "source");
+        for (LogType type : LogType.values()) {
+            Path contractPath = sourceContracts.resolve(new InvalidEventRowMapper(type).sourceVersion() + ".json");
+            assertTrue(Files.exists(contractPath),
+                () -> "LogType." + type + " has no source contract at " + contractPath);
+        }
     }
 }

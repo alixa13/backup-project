@@ -18,14 +18,14 @@ import java.util.Collection;
 import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
-class ParseMapValidateFunctionTest {
+class ConnParseMapValidateFunctionTest {
     private byte[] fixture(String name) throws IOException {
         return Files.readAllBytes(Paths.get("..", "..", "tests", "fixtures", "zeek_conn", name));
     }
 
     @Test
     void validRecordReachesMainOutput() throws Exception {
-        ParseMapValidateFunction function = new ParseMapValidateFunction(new SensorId("sensor-eu-1"));
+        ConnParseMapValidateFunction function = new ConnParseMapValidateFunction(new SensorId("sensor-eu-1"));
         OneInputStreamOperatorTestHarness<byte[], NetworkEvent> harness =
             ProcessFunctionTestHarnesses.forProcessFunction(function);
 
@@ -40,7 +40,7 @@ class ParseMapValidateFunctionTest {
 
     @Test
     void malformedRecordGoesToRejectedSideOutputAndJobKeepsRunning() throws Exception {
-        ParseMapValidateFunction function = new ParseMapValidateFunction(new SensorId("sensor-eu-1"));
+        ConnParseMapValidateFunction function = new ConnParseMapValidateFunction(new SensorId("sensor-eu-1"));
         OneInputStreamOperatorTestHarness<byte[], NetworkEvent> harness =
             ProcessFunctionTestHarnesses.forProcessFunction(function);
 
@@ -58,7 +58,7 @@ class ParseMapValidateFunctionTest {
 
     @Test
     void invalidPortGoesToRejectedSideOutputWithReasonCode() throws Exception {
-        ParseMapValidateFunction function = new ParseMapValidateFunction(new SensorId("sensor-eu-1"));
+        ConnParseMapValidateFunction function = new ConnParseMapValidateFunction(new SensorId("sensor-eu-1"));
         OneInputStreamOperatorTestHarness<byte[], NetworkEvent> harness =
             ProcessFunctionTestHarnesses.forProcessFunction(function);
 
@@ -78,8 +78,8 @@ class ParseMapValidateFunctionTest {
     @Test
     void stampsReceivedAtAtTheMomentOfRejection() throws Exception {
         Instant fixed = Instant.parse("2026-08-27T10:03:11.250Z");
-        ParseMapValidateFunction function =
-            new ParseMapValidateFunction(new SensorId("sensor-eu-1"), Clock.fixed(fixed, ZoneOffset.UTC));
+        ConnParseMapValidateFunction function =
+            new ConnParseMapValidateFunction(new SensorId("sensor-eu-1"), Clock.fixed(fixed, ZoneOffset.UTC));
         OneInputStreamOperatorTestHarness<byte[], NetworkEvent> harness =
             ProcessFunctionTestHarnesses.forProcessFunction(function);
 
@@ -95,7 +95,7 @@ class ParseMapValidateFunctionTest {
     // A parse-stage failure never produced a DTO, so there is no identity to carry.
     @Test
     void parseStageRejectionCarriesNoEventId() throws Exception {
-        ParseMapValidateFunction function = new ParseMapValidateFunction(new SensorId("sensor-eu-1"));
+        ConnParseMapValidateFunction function = new ConnParseMapValidateFunction(new SensorId("sensor-eu-1"));
         OneInputStreamOperatorTestHarness<byte[], NetworkEvent> harness =
             ProcessFunctionTestHarnesses.forProcessFunction(function);
 
@@ -113,7 +113,7 @@ class ParseMapValidateFunctionTest {
     // row joinable to feature_vectors.event_id.
     @Test
     void mapStageRejectionCarriesTheDerivedEventId() throws Exception {
-        ParseMapValidateFunction function = new ParseMapValidateFunction(new SensorId("sensor-eu-1"));
+        ConnParseMapValidateFunction function = new ConnParseMapValidateFunction(new SensorId("sensor-eu-1"));
         OneInputStreamOperatorTestHarness<byte[], NetworkEvent> harness =
             ProcessFunctionTestHarnesses.forProcessFunction(function);
 
@@ -146,7 +146,7 @@ class ParseMapValidateFunctionTest {
             + "\"id_orig_p\": 51820, \"id_resp_h\": \"93.184.216.34\", \"id_resp_p\": 443, "
             + "\"proto\": \"tcp\", \"conn_state\": \"SF\" }").getBytes(StandardCharsets.UTF_8);
 
-        ParseMapValidateFunction function = new ParseMapValidateFunction(new SensorId("sensor-eu-1"));
+        ConnParseMapValidateFunction function = new ConnParseMapValidateFunction(new SensorId("sensor-eu-1"));
         OneInputStreamOperatorTestHarness<byte[], NetworkEvent> harness =
             ProcessFunctionTestHarnesses.forProcessFunction(function);
 

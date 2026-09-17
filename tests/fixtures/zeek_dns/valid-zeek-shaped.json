@@ -1,0 +1,21 @@
+{
+  "id": "Cdns005ZEK",
+  "ts": 1786608160.5,
+  "id_orig_h": "10.0.0.5",
+  "id_orig_p": 53426,
+  "id_resp_h": "8.8.8.8",
+  "id_resp_p": 53,
+  "trans_id": 4242,
+  "query": "example.com",
+  "qtype": 1,
+  "rcode": 0,
+  "AA": false,
+  "RA": true,
+  "TC": false,
+  "answers": ["93.184.216.34"],
+  "TTLs": [299.0],
+  "rejected": false,
+  "rtt": 0.021,
+  "qclass": 1,
+  "Z": 0
+}

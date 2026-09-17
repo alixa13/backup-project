@@ -1,6 +1,7 @@
 package io.netsecml.platform.bootstrap.online;
 
 import io.netsecml.platform.adapter.flink.process.ConnFeatureProcessFunction;
+import io.netsecml.platform.adapter.flink.process.ConnParseMapValidateFunction;
 import io.netsecml.platform.adapter.flink.process.ParseMapValidateFunction;
 import io.netsecml.platform.adapter.flink.process.RejectedRecord;
 import io.netsecml.platform.adapter.flink.process.SourceKeySelector;
@@ -59,7 +60,7 @@ public final class OnlineFeatureJob {
             .uid("conn-raw-source");
 
         SingleOutputStreamOperator<NetworkEvent> parsed = rawStream
-            .process(new ParseMapValidateFunction(sensor))
+            .process(new ConnParseMapValidateFunction(sensor))
             .name("parse-map-validate")
             .uid("parse-map-validate");
 

@@ -837,7 +837,9 @@ Extract the shared chain-building into a private method taking the log type, top
 ```bash
 ./mvnw install -DskipTests -q -o
 ./mvnw test -pl modules/bootstrap-archive-job -o
-git add -A
+# Scoped, never `git add -A`: the repo root holds ~139 MB of untracked model
+# binaries (new-models/, modbus_rf_attack_type_v1/) that an unscoped add sweeps in.
+git add modules/bootstrap-online-job modules/bootstrap-archive-job .env.example
 git commit -m "feat(bootstrap): wire the DNS chains in both jobs"
 ```
 
@@ -869,7 +871,8 @@ Update **Implementation state** and **Verification state** — both have been st
 - [ ] **Step 3: Commit**
 
 ```bash
-git add -A
+# Scoped, never `git add -A` -- see Task 11's note on the untracked model binaries.
+git add CLAUDE.md modules/bootstrap-online-job
 git commit -m "docs: record DNS as the second implemented protocol"
 ```
 

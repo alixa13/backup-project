@@ -4,6 +4,7 @@ import io.netsecml.platform.domain.event.*;
 import io.netsecml.platform.domain.feature.ConnSnapshot;
 import io.netsecml.platform.domain.feature.ConnSnapshotDelta;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.java.typeutils.PojoTypeInfo;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
 import org.apache.flink.streaming.api.operators.co.KeyedCoProcessOperator;
 import org.apache.flink.streaming.util.KeyedTwoInputStreamOperatorTestHarness;
@@ -308,5 +309,24 @@ class ConnSnapshotJoinFunctionTest {
             "the restored ConnEnrichment must carry the same delta the pre-restore state held");
 
         harnessB.close();
+    }
+
+    // Which serializer Flink picks for the join's keyed state is invisible at
+    // runtime and decides whether a later field change can be restored at all.
+    // TypeExtractor checks Modifier.isPublic BEFORE its record branch, so a
+    // non-public record silently falls back to GenericTypeInfo -> Kryo, which
+    // gives Flink no state schema evolution: adding a field to ConnEnrichment,
+    // ConnSnapshot or ConnSnapshotDelta would then break restore from an older
+    // savepoint. As a public record whose components are records of basic types,
+    // it gets the POJO/record serializer, which can migrate. This test turns that
+    // invisible choice into a failure the moment someone makes the record
+    // non-public again or gives it a field Flink cannot analyse as a POJO.
+    @Test
+    void enrichmentStateUsesThePojoSerializerNotKryo() {
+        TypeInformation<ConnEnrichment> typeInfo = TypeInformation.of(ConnEnrichment.class);
+
+        assertInstanceOf(PojoTypeInfo.class, typeInfo,
+            "ConnEnrichment must be analysed as a POJO/record type; got " + typeInfo.getClass().getSimpleName()
+            + ", which serializes with Kryo and forfeits state schema evolution");
     }
 }

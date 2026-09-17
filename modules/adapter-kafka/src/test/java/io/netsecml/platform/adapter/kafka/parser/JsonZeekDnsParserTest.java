@@ -4,6 +4,7 @@ import io.netsecml.platform.adapter.kafka.dto.ZeekDnsEvent;
 import io.netsecml.platform.domain.event.MappingResult;
 import io.netsecml.platform.domain.event.ReasonCode;
 import org.junit.jupiter.api.Test;
+import java.nio.charset.StandardCharsets;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -92,5 +93,27 @@ class JsonZeekDnsParserTest {
         MappingResult<ZeekDnsEvent> result = parser.parse(fixture("malformed.json"));
         assertFalse(result.isValid());
         assertEquals(ReasonCode.MALFORMED_JSON, result.reason());
+    }
+
+    // Zeek emits "rejected" on EVERY dns.log record, along with rtt, qclass and
+    // Z, none of which this DTO declares. Without ignoreUnknown the parser threw
+    // UnrecognizedPropertyException on the first real record and routed all of
+    // production to the DLQ as MALFORMED_JSON. Every other fixture here is
+    // synthesised to match the DTO exactly, which is precisely why that went
+    // unnoticed -- this is the only test that feeds the parser a record shaped
+    // the way Zeek actually writes one.
+    @Test
+    void toleratesRejectedAndTheOtherColumnsZeekAlwaysEmits() {
+        String json = "{\"id\":\"CXWv6p\",\"ts\":1756290191.402,\"id_orig_h\":\"10.0.0.5\","
+            + "\"id_orig_p\":51820,\"id_resp_h\":\"10.0.0.53\",\"id_resp_p\":53,"
+            + "\"trans_id\":4242,\"query\":\"example.com\",\"qtype\":1,\"rcode\":0,"
+            + "\"rejected\":false,\"rtt\":0.021,\"qclass\":1,\"Z\":0}";
+
+        MappingResult<ZeekDnsEvent> result =
+            new JsonZeekDnsParser().parse(json.getBytes(StandardCharsets.UTF_8));
+
+        assertTrue(result.isValid(), () -> "rejected a real dns.log record: " + result.detail());
+        assertEquals(4242, result.value().transId());
+        assertEquals("example.com", result.value().query());
     }
 }

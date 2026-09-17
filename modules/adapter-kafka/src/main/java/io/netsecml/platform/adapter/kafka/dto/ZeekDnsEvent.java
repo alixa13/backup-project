@@ -1,8 +1,17 @@
 package io.netsecml.platform.adapter.kafka.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 
+// Zeek emits more dns.log columns than this platform reads -- rejected, rtt,
+// qclass, Z and others -- and emits them on every record. Unknown fields are
+// IGNORED, not rejected, matching the promise
+// contracts/source/zeek-conn-source-v1.json makes for conn: "unknown additive
+// fields are tolerated and ignored". Without this a bare ObjectMapper throws
+// UnrecognizedPropertyException on the first real record and every one of them
+// lands in the DLQ as MALFORMED_JSON.
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record ZeekDnsEvent(
     @JsonProperty(value = "id", required = true) String id,
     @JsonProperty(value = "ts", required = true) double ts,

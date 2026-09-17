@@ -4,10 +4,11 @@ package io.netsecml.platform.domain.event;
 // The archive job writes stage() into invalid_events.stage, so the mapping is
 // domain knowledge rather than something an adapter re-derives from the name.
 public enum ReasonCode {
-    // PARSE: JsonZeekConnParser is the only PARSE-stage producer, and
-    // MALFORMED_JSON is the only reason it ever returns — a structurally
-    // invalid payload and one missing a Jackson-required field both surface as
-    // the same Jackson exception, so no ZeekConnEvent was produced either way.
+    // PARSE: one parser per log type -- JsonZeekConnParser and JsonZeekDnsParser
+    // today -- and MALFORMED_JSON is the only reason any of them ever returns.
+    // A structurally invalid payload and one missing a Jackson-required field
+    // both surface as the same Jackson exception, so no DTO was produced either
+    // way, which is what distinguishes this stage from MAP below.
     MALFORMED_JSON(Stage.PARSE),
 
     // MAP: the DTO parsed cleanly, so everything below is raised by domain

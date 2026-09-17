@@ -16,6 +16,14 @@ import io.netsecml.platform.domain.event.DnsResponse;
 // below are transcribed from that file, not from the order fields appear in
 // DnsQuery/DnsResponse, which is a different order.
 public final class DnsFeatureExtractor {
+    // The width of the array extractProtocolTier returns. DnsBuildFeaturesUseCase
+    // checks the registered schema against CommonFeatureTierV1.FEATURE_COUNT +
+    // this constant, once, in its own constructor -- so this number and the
+    // twelve entries in the array literal below must never drift apart.
+    // DnsFeatureExtractorTest.featureCountConstantMatchesTheLengthOfTheArrayItDescribes
+    // is the guard.
+    public static final int FEATURE_COUNT = 12;
+
     public float[] extractProtocolTier(DnsEvent event) {
         DnsQuery query = event.query();
         DnsResponse response = event.response();

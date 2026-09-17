@@ -128,4 +128,16 @@ class DnsFeatureExtractorTest {
         assertArrayEquals(new float[]{0f, 0f, 1f}, new float[]{c[2], c[3], c[4]}, 0f,
             "truncated alone sets only index 4");
     }
+
+    // FEATURE_COUNT is what DnsBuildFeaturesUseCase's constructor checks the
+    // registered schema against instead of a literal 12. If this array's actual
+    // length ever drifted from the constant, every other test in this file would
+    // still pass (they all index into the real array, never the constant), so
+    // this is the only test that would catch that drift.
+    @Test
+    void featureCountConstantMatchesTheLengthOfTheArrayItDescribes() {
+        DnsEvent event = dnsEvent("example.com", DnsQType.A, 1, null);
+
+        assertEquals(DnsFeatureExtractor.FEATURE_COUNT, extractor.extractProtocolTier(event).length);
+    }
 }

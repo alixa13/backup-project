@@ -1,5 +1,6 @@
 package io.netsecml.platform.bootstrap.archive;
 
+import io.netsecml.platform.adapter.clickhouse.row.FeatureVectorRow;
 import io.netsecml.platform.adapter.clickhouse.row.InvalidEventRow;
 import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseBatchSink;
 import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseConfig;
@@ -51,14 +52,18 @@ public final class ArchiveJob {
     // are checkpoint state identity, and the two pre-existing chains named their
     // operators inconsistently -- "feature-vector-source" but "invalid-event-row"
     // under a "dlq" source, and two pluralised sinks. Any rule that generated
-    // those six names would be more intricate than the names themselves, so they
-    // are data here, on this record. That is not a blanket argument against
-    // generating uids anywhere: dlqChain below IS a generation rule, but only for
-    // the DLQ family, whose six per-protocol variants follow one regular pattern
-    // that the mismatched feature-vector uids never did. The six existing uid
-    // strings below are unchanged from before this type was made public --
-    // changing any of them would make Flink silently discard that operator's
-    // checkpoint state on restore.
+    // those six names together would be more intricate than the names
+    // themselves, so they are data here, on this record. That is not a blanket
+    // argument against generating uids anywhere: dlqChain and featureVectorChain
+    // below ARE generation rules, one per family -- DLQ and feature-vector --
+    // each covering that family's six per-protocol variants under its OWN
+    // regular pattern, with CONN folded in as the unprefixed case rather than a
+    // special one (see either method's own comment). The two families' patterns
+    // are independent of each other precisely because the mismatched pair of
+    // conn uids they each start from never matched. The existing uid strings
+    // are unchanged from before this type was made public, wherever they are now
+    // assembled -- changing any of them would make Flink silently discard that
+    // operator's checkpoint state on restore.
     public record LogTypeChain<T>(String topic, RichMapFunction<byte[], T> rowMapper, String table,
                                   String sourceUid, String mapUid, String sinkUid) {
     }
@@ -87,14 +92,51 @@ public final class ArchiveJob {
         build(env, bootstrapServers, List.of(
             // Chain 1 -- feature vectors. The required Day 6 path: a versioned
             // vector observable in Kafka must become queryable in ClickHouse.
-            new LogTypeChain<>(featureVectorTopic,
-                new FeatureVectorRowMapFunction(featureVectorTopic), "feature_vectors",
-                "feature-vector-source", "feature-vector-row", "feature-vectors-clickhouse-sink"),
+            // Built through featureVectorChain so there is exactly one place in
+            // this class that knows the conn uids -- the same reason chain 2
+            // below is built through dlqChain rather than written out here.
+            featureVectorChain(LogType.CONN, featureVectorTopic),
             // Chain 2 -- rejected records. Low volume, and duplicates after a
             // replay are expected rather than prevented. Built through dlqChain so
             // there is exactly one place in this class that knows the conn uids.
             dlqChain(LogType.CONN, dlqTopic)),
             clickHouse);
+    }
+
+    // One feature-vector chain for a log type. Mirrors dlqChain immediately
+    // below -- a factory rather than three literal strings at each call site,
+    // because the uids are checkpoint state identity and hand-writing them per
+    // protocol is how a typo silently orphans state.
+    //
+    // CONN keeps the uids it has always had -- feature-vector-source,
+    // feature-vector-row and feature-vectors-clickhouse-sink -- predating any
+    // per-protocol naming pattern and not regularised: a running job restores
+    // state by looking them up verbatim. Every other log type gets the same
+    // prefix pattern dlqChain uses.
+    public static LogTypeChain<FeatureVectorRow> featureVectorChain(LogType logType, String topic) {
+        // prefix is the whole of the CONN/non-CONN distinction, exactly as in
+        // dlqChain below: empty for conn, "<wirename>-" for everything else.
+        // Conn's three uids fall out of the same concatenation as every other
+        // log type's rather than being special-cased -- and they land on
+        // EXACTLY feature-vector-source, feature-vector-row and
+        // feature-vectors-clickhouse-sink, the three literal uids this class
+        // has always used for its first chain.
+        String prefix = logType == LogType.CONN ? "" : logType.wireName() + "-";
+        String sourceUid = prefix + "feature-vector-source";
+        String mapUid = prefix + "feature-vector-row";
+        // Plural ("...-vectors-...") where every other uid in this class is
+        // singular. That mismatch predates this method -- Task 12 mirrors it
+        // verbatim rather than correcting it, because correcting it would
+        // rename a running job's checkpoint state for a purely cosmetic reason.
+        String sinkUid = prefix + "feature-vectors-clickhouse-sink";
+
+        // FeatureVectorRowMapFunction is log-type agnostic already (it reads
+        // logType back out of the deserialized FeatureVector itself, the same
+        // way FeatureVectorSerializer writes it on the online-job side) -- it
+        // takes only the topic, unlike InvalidEventRowMapFunction below, which
+        // needs logType passed in because RejectedRecord carries no such field.
+        return new LogTypeChain<>(topic, new FeatureVectorRowMapFunction(topic), "feature_vectors",
+            sourceUid, mapUid, sinkUid);
     }
 
     // One DLQ chain for a log type. A factory rather than six literal strings at
@@ -190,9 +232,15 @@ public final class ArchiveJob {
         checkpoints.setMaxConcurrentCheckpoints(1);
 
         // Same variable names the online job reads, all documented in .env.example.
+        // FEATURE_VECTOR_TOPIC and DLQ_TOPIC keep their pre-DNS names and
+        // meanings (ruling 12f) -- they were never protocol-qualified, so
+        // renaming them now would break an existing deployment for no benefit.
         String bootstrapServers = System.getenv().getOrDefault("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092");
         String featureTopic = System.getenv().getOrDefault("FEATURE_VECTOR_TOPIC", "netsec.conn.feature-vector.v1");
         String dlqTopic = System.getenv().getOrDefault("DLQ_TOPIC", "netsec.conn.dlq.v1");
+        String dnsFeatureTopic = System.getenv().getOrDefault("DNS_FEATURE_VECTOR_TOPIC",
+            "netsec.dns.feature-vector.v1");
+        String dnsDlqTopic = System.getenv().getOrDefault("DNS_DLQ_TOPIC", "netsec.dns.dlq.v1");
 
         ClickHouseConfig clickHouse = ClickHouseConfig.of(
             System.getenv().getOrDefault("CLICKHOUSE_HOST", "localhost"),
@@ -201,7 +249,17 @@ public final class ArchiveJob {
             System.getenv().getOrDefault("CLICKHOUSE_USER", "default"),
             System.getenv().getOrDefault("CLICKHOUSE_PASSWORD", ""));
 
-        build(env, bootstrapServers, featureTopic, dlqTopic, clickHouse);
+        // Four chains through the parameterised, list-form build(): conn's two
+        // (unchanged uids) plus dns's two (the prefix pattern). This is Spec
+        // §6.3's "adding a log type is a one-line registration" made real --
+        // the pre-DNS 5-argument overload above stays available for the tests
+        // that call it directly, but production now registers both protocols.
+        build(env, bootstrapServers, List.of(
+            featureVectorChain(LogType.CONN, featureTopic),
+            dlqChain(LogType.CONN, dlqTopic),
+            featureVectorChain(LogType.DNS, dnsFeatureTopic),
+            dlqChain(LogType.DNS, dnsDlqTopic)),
+            clickHouse);
         env.execute("conn-archive-job");
     }
 }

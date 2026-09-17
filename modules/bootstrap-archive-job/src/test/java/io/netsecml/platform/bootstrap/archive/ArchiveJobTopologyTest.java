@@ -181,4 +181,51 @@ class ArchiveJobTopologyTest {
         });
         return uids;
     }
+
+    // The branch dlqChainReproducesTheHistoricalConnUids's own comment recorded
+    // as untestable while LogType had only one constant: two log types (conn,
+    // dns) times two chain kinds (feature vector, DLQ) built through
+    // featureVectorChain and dlqChain, exactly as ArchiveJob.main() now does.
+    // This is what proves the per-protocol prefix pattern actually produces
+    // twelve non-colliding uids rather than only being exercised for DLQ alone.
+    @Test
+    void fourChainsAcrossTwoLogTypesProduceTwelveDistinctUidsAndConnStaysUnchanged() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        ArchiveJob.build(env, "localhost:9092", List.of(
+            ArchiveJob.featureVectorChain(LogType.CONN, "netsec.conn.feature-vector.v1"),
+            ArchiveJob.dlqChain(LogType.CONN, "netsec.conn.dlq.v1"),
+            ArchiveJob.featureVectorChain(LogType.DNS, "netsec.dns.feature-vector.v1"),
+            ArchiveJob.dlqChain(LogType.DNS, "netsec.dns.dlq.v1")),
+            ClickHouseConfig.of("localhost", 8123, "netsec_ml", "default", "test-password"));
+
+        Set<String> uids = new HashSet<>();
+        env.getStreamGraph(false).getStreamNodes().forEach(node -> {
+            if (node.getTransformationUID() != null) {
+                uids.add(node.getTransformationUID());
+            }
+        });
+
+        // Four chains of three operators each. Using the SET's size (rather
+        // than only containsAll below) is what actually proves uniqueness: if
+        // any two of the twelve nodes shared a uid, this count would be 11 or
+        // fewer, whereas containsAll alone would still pass.
+        assertEquals(12, uids.size(), "four chains of three operators each, no collisions, found: " + uids);
+
+        // Conn's six historical uids, unchanged -- the same six
+        // everyOperatorCarriesAnExplicitUid and theConnDlqChainKeepsItsHistoricalUids
+        // assert for the two-chain build above, now proven to survive sitting
+        // alongside a second log type's chains too.
+        assertTrue(uids.containsAll(Set.of(
+            "feature-vector-source", "feature-vector-row", "feature-vectors-clickhouse-sink",
+            "dlq-source", "invalid-event-row", "invalid-events-clickhouse-sink")),
+            "conn's six historical uids must be present and unchanged, found: " + uids);
+
+        // dns's six, following featureVectorChain's and dlqChain's shared
+        // "<wirename>-" prefix pattern.
+        assertTrue(uids.containsAll(Set.of(
+            "dns-feature-vector-source", "dns-feature-vector-row", "dns-feature-vectors-clickhouse-sink",
+            "dns-dlq-source", "dns-invalid-event-row", "dns-invalid-events-clickhouse-sink")),
+            "dns's six uids must follow the shared prefix pattern, found: " + uids);
+    }
 }

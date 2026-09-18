@@ -33,14 +33,14 @@ class DnsBuildFeaturesUseCaseTest {
     private static final Instant FIXED_INSTANT = Instant.parse("2026-08-27T10:03:11.402Z");
     private static final Clock FIXED_CLOCK = Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
 
-    // DNS_EVENT is the plan's NXDOMAIN fixture: an event whose response failed,
+    // DNS_EVENT is the NXDOMAIN fixture: an event whose response failed,
     // so it doubles as both "a DNS event" (test 1) and "a failed lookup" (test 2).
     private static final DnsResponse NXDOMAIN_RESPONSE =
         new DnsResponse(DnsRcode.NXDOMAIN, false, true, false, 0, 0L, DnsRcode.NXDOMAIN.code());
     private static final DnsEvent DNS_EVENT = dnsEvent(Instant.ofEpochSecond(60_000), NXDOMAIN_RESPONSE, null);
 
-    // Builds a DnsEvent directly from the domain records, per the ruling that
-    // application may not import adapter-kafka to reach for its mappers. name,
+    // Builds a DnsEvent directly from the domain records, because application may
+    // not import adapter-kafka to reach for its mappers. name,
     // qtype and transId are fixed because no test here depends on the query
     // shape -- only response, enrichment and eventTime vary across fixtures.
     private static DnsEvent dnsEvent(Instant eventTime, DnsResponse response, ConnSnapshotDelta enrichment) {
@@ -50,7 +50,7 @@ class DnsBuildFeaturesUseCaseTest {
         return new DnsEvent(envelope, query, response, "10.0.0.5", true, enrichment);
     }
 
-    // Test 1 (the plan's buildsTwentyFourValuesWithTheCommonTierLeading): width
+    // Test 1: width
     // 24, equal to the registered schema's own count so the assertion cannot
     // pass by coincidentally matching a hardcoded 24 on both sides; schemaId is
     // dns-feature-v1; index 0 is the common tier's record_count_5m and this is
@@ -70,7 +70,7 @@ class DnsBuildFeaturesUseCaseTest {
         assertEquals(DnsRcode.NXDOMAIN.code(), result.vector().values()[12], 1e-6);
     }
 
-    // Test 2 (the plan's anNxdomainResponseCountsAsAFailureInTheWindow): the
+    // Test 2: the
     // rolling window's failed_count_5m must see this NXDOMAIN, or a host doing
     // nothing but failed lookups would read failed_count_5m == 0 forever.
     @Test

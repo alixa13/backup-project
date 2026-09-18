@@ -51,7 +51,12 @@ domain → ports → application → adapters → bootstrap
 - `domain` — pure Java value objects and formulas. Zero imports of Kafka, Flink, ClickHouse, ONNX Runtime, Jackson, or Docker. Enforced by the module's own compile-time classpath.
 - `ports` — input/output port interfaces. Depends only on `domain`.
 - `application` — use cases and feature orchestration. Depends only on `domain` + `ports`. No Jackson, no Flink.
-- `adapter-kafka/flink/onnx/clickhouse/registry-filesystem/monitoring` — each implements ports and carries framework imports. Adapters never import each other.
+- `adapter-kafka/flink/onnx/clickhouse/registry-filesystem/monitoring` — each implements ports and carries framework imports. Adapters do not import each other, with one recorded
+  exception: `adapter-flink` depends on `adapter-kafka`, because the operators that
+  drive parsing (`ConnParseMapValidateFunction`, `DnsParseMapValidateFunction`)
+  construct the kafka-side parser and mapper themselves. That dependency is
+  one-directional, and no other adapter pair is coupled — every other adapter's pom
+  names only itself.
 - `bootstrap-online-job` / `bootstrap-archive-job` — the **only** modules that wire concrete adapters together into a runnable Flink job.
 - `training/` — independent Python project. Reads archived `FeatureVector` rows and contracts. Never reimplements Zeek parsing, normalization, windowing, categorical mapping, defaults, or feature ordering.
 
@@ -96,7 +101,7 @@ The ClickHouse archive job (Step 8) is complete on `feat/clickhouse-archive-job`
 but not yet merged to `main`. Implementation order is tracked in
 `Repository_Structure.md` Section E (18 steps).
 
-The DNS unit adds the platform's second protocol: 37 commits on top of `c309aad`
+The DNS unit adds the platform's second protocol: 38 commits on top of `c309aad`
 (`git rev-list --count c309aad..HEAD`, recounted at this documentation update —
 recount again rather than trust this number once further commits land), on
 this branch (`feat/dns-protocol`). This branch is a linear continuation of

@@ -101,10 +101,10 @@ The ClickHouse archive job (Step 8) is complete on `feat/clickhouse-archive-job`
 but not yet merged to `main`. Implementation order is tracked in
 `Repository_Structure.md` Section E (18 steps).
 
-The DNS unit adds the platform's second protocol: 38 commits on top of `c309aad`
-(`git rev-list --count c309aad..HEAD`, recounted at this documentation update —
-recount again rather than trust this number once further commits land), on
-this branch (`feat/dns-protocol`). This branch is a linear continuation of
+The DNS unit adds the platform's second protocol: every commit on top of
+`c309aad` on this branch (`feat/dns-protocol`). No count is written here on
+purpose — one was, and it went stale twice within a day as later commits landed.
+Run `git rev-list --count c309aad..HEAD` for the current number. This branch is a linear continuation of
 `feat/clickhouse-archive-job` and then `feat/common-feature-tier` (whose own tip
 is `c309aad`) — both are ancestors of `HEAD` here, and neither is merged to
 `main` yet (`feat/common-feature-tier` has its own open PR). Deliverables:
@@ -179,8 +179,8 @@ this machine OOM-kills those — see Commands):
 | `adapter-clickhouse` (full suite, on `feat/clickhouse-archive-job`, before this unit) | 37/37, 0 skipped at the time — now stale | Includes `DdlMigrationTest` — `001_mvp_tables.sql` has now been executed by a real ClickHouse 25.8 server, not merely read. Stale because this unit's commit `22465c4` added a ninth test to `InvalidEventRowMapperTest` (`everyLogTypeHasASourceContractFileOnDisk`); that class alone is 9/9 fresh at `f22d426` (row above), so the true full-suite count is at least 38 and has not been re-verified against containers |
 | `FeatureVectorDeduplicationTest` | 3/3 | The committed dedup query runs and resolves duplicates |
 | `ClientV2InserterTest` | 4/4 | An unknown column is rejected, not silently skipped |
-| `OnlineFeatureJobE2ETest` (at `6824194`) | 2/2, 0 skipped | conn and dns feature vectors both arrive from a real broker; the joined dns record carries `qualityFlags()==NONE`, an orphan dns record carries `CONN_ENRICHMENT_ABSENT`, and a malformed dns record reaches dns's own DLQ (`netsec.dns.dlq.v1`), never conn's |
-| `ArchiveJobE2ETest` (at `6d50912`/`038057e`) | 2/2, 0 skipped | A 24-value dns feature vector and a dns rejection both reach ClickHouse under `log_type = 'dns'`, and a conn vector/rejection under `log_type = 'conn'`, through the exact four chains `ArchiveJob.main()` wires via `connAndDnsChains(...)` |
+| `OnlineFeatureJobE2ETest` (at `6824194`; re-run green at `a2da5cb`, after all three fix waves) | 2/2, 0 skipped | conn and dns feature vectors both arrive from a real broker; the joined dns record carries `qualityFlags()==NONE`, an orphan dns record carries `CONN_ENRICHMENT_ABSENT`, and a malformed dns record reaches dns's own DLQ (`netsec.dns.dlq.v1`), never conn's |
+| `ArchiveJobE2ETest` (at `6d50912`/`038057e`; re-run green at `a2da5cb`, after all three fix waves) | 2/2, 0 skipped | A 24-value dns feature vector and a dns rejection both reach ClickHouse under `log_type = 'dns'`, and a conn vector/rejection under `log_type = 'conn'`, through the exact four chains `ArchiveJob.main()` wires via `connAndDnsChains(...)` |
 
 **Not verified:** `ClickHouseOutageTest` — the Definition of Done's headline claim
 that a ClickHouse failure cannot stop feature production. It is OOM-killed during

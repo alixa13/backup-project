@@ -15,9 +15,17 @@ public final class QualityFlags {
 
     public static final int NONE = 0;
 
-    // No conn.log snapshot was available for this record's uid at build time.
-    // Expected, not exceptional: a connection's first snapshot does not exist
-    // until it has been alive five minutes.
+    // BIT LAYOUT CONVENTION for protocols 3-6 (HTTP, SSH, Modbus, S7comm): bit
+    // 0 (CONN_ENRICHMENT_ABSENT) is PROTOCOL-AGNOSTIC -- every protocol that
+    // consumes the common tier's conn.log enrichment shares this exact bit,
+    // rather than each protocol defining its own copy of it. Bit 1 onward is
+    // where each protocol's OWN bits start; DNS claims only bit 1
+    // (DNS_RESPONSE_ABSENT) here, so bit 1 remains free for the next
+    // protocol's own first flag -- a future protocol must not reuse bit 1 for
+    // an unrelated meaning while DNS vectors carrying it are still archived,
+    // since a consumer reads this word relative to a row's own `log_type` and
+    // has no other way to know which protocol's bit convention applied when
+    // the row was written.
     public static final int CONN_ENRICHMENT_ABSENT = 1;
 
     // No dns.log answer had arrived for this query at build time. The frozen

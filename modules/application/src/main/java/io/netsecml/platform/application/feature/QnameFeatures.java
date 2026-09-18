@@ -13,7 +13,10 @@ public final class QnameFeatures {
         // Utility class, not instantiable.
     }
 
-    // Character count in the input string.
+    // Character count in the input string. Counts UTF-16 code units
+    // (String.length()'s own unit), not Unicode code points -- a non-BMP
+    // character (a surrogate pair) counts as 2. DNS labels are LDH-restricted
+    // to ASCII, so this does not matter for a well-formed name.
     public static int length(String qname) {
         return qname.length();
     }
@@ -22,6 +25,9 @@ public final class QnameFeatures {
     // character carries no information (entropy = 0). Four distinct characters
     // in equal proportion carry exactly 2 bits (entropy = 2.0).
     // Entropy = -Σ(p_i * log2(p_i)) where p_i is the frequency of character i.
+    // "Character" here means UTF-16 code unit (char), the same unit length()
+    // above counts in -- a non-BMP character's two surrogate code units are
+    // tallied as two distinct symbols, not as one character.
     public static double shannonEntropy(String qname) {
         if (qname.isEmpty()) {
             return 0.0;

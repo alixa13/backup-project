@@ -96,8 +96,10 @@ The ClickHouse archive job (Step 8) is complete on `feat/clickhouse-archive-job`
 but not yet merged to `main`. Implementation order is tracked in
 `Repository_Structure.md` Section E (18 steps).
 
-The DNS unit adds the platform's second protocol: 30 commits on top of `c309aad`,
-on this branch (`feat/dns-protocol`). This branch is a linear continuation of
+The DNS unit adds the platform's second protocol: 37 commits on top of `c309aad`
+(`git rev-list --count c309aad..HEAD`, recounted at this documentation update —
+recount again rather than trust this number once further commits land), on
+this branch (`feat/dns-protocol`). This branch is a linear continuation of
 `feat/clickhouse-archive-job` and then `feat/common-feature-tier` (whose own tip
 is `c309aad`) — both are ancestors of `HEAD` here, and neither is merged to
 `main` yet (`feat/common-feature-tier` has its own open PR). Deliverables:
@@ -142,15 +144,22 @@ skips were hiding real defects — including a deduplication query that was
 syntactically invalid and could never have executed. **Do not read a skipped
 container test as a passing one.**
 
-Verified fresh at `038057e` (this commit, HEAD), no containers involved:
+Verified fresh at `f22d426` (the commit immediately before this documentation
+update lands — see Commands for why no single command proves the whole
+reactor at once), no containers involved. Two fix waves have landed since the
+counts below were last recorded (three correctness defects, then this
+accuracy-and-limits pass); `domain`, `application` and `adapter-kafka` moved
+as a result, and `adapter-flink`/`adapter-kafka` each gained one test in this
+pass's own D6 (a blank-uid harness test and a dns/common-tier JSON field
+comparison, respectively):
 
 | Suite | Result |
 |---|---|
-| `domain` | 93/93, 0 skipped |
+| `domain` | 96/96, 0 skipped |
 | `ports` | no tests exist (no test sources in the module) |
-| `application` | 35/35, 0 skipped |
-| `adapter-kafka` | 62/62, 0 skipped |
-| `adapter-flink` | 29/29, 0 skipped |
+| `application` | 38/38, 0 skipped |
+| `adapter-kafka` | 71/71, 0 skipped |
+| `adapter-flink` | 30/30, 0 skipped |
 | `adapter-clickhouse`, `InvalidEventRowMapperTest` only (filtered; the module's container tests were not run here) | 9/9, 0 skipped |
 | `bootstrap-online-job`, `OnlineFeatureJobTopologyTest` only (filtered) | 5/5, 0 skipped |
 | `bootstrap-archive-job`, `ArchiveJobTopologyTest` only (filtered) | 8/8, 0 skipped |
@@ -162,7 +171,7 @@ this machine OOM-kills those — see Commands):
 
 | Suite | Result | What it actually proves |
 |---|---|---|
-| `adapter-clickhouse` (full suite, on `feat/clickhouse-archive-job`, before this unit) | 37/37, 0 skipped at the time — now stale | Includes `DdlMigrationTest` — `001_mvp_tables.sql` has now been executed by a real ClickHouse 25.8 server, not merely read. Stale because this unit's commit `22465c4` added a ninth test to `InvalidEventRowMapperTest` (`everyLogTypeHasASourceContractFileOnDisk`); that class alone is 9/9 fresh at `038057e` (row above), so the true full-suite count is at least 38 and has not been re-verified against containers |
+| `adapter-clickhouse` (full suite, on `feat/clickhouse-archive-job`, before this unit) | 37/37, 0 skipped at the time — now stale | Includes `DdlMigrationTest` — `001_mvp_tables.sql` has now been executed by a real ClickHouse 25.8 server, not merely read. Stale because this unit's commit `22465c4` added a ninth test to `InvalidEventRowMapperTest` (`everyLogTypeHasASourceContractFileOnDisk`); that class alone is 9/9 fresh at `f22d426` (row above), so the true full-suite count is at least 38 and has not been re-verified against containers |
 | `FeatureVectorDeduplicationTest` | 3/3 | The committed dedup query runs and resolves duplicates |
 | `ClientV2InserterTest` | 4/4 | An unknown column is rejected, not silently skipped |
 | `OnlineFeatureJobE2ETest` (at `6824194`) | 2/2, 0 skipped | conn and dns feature vectors both arrive from a real broker; the joined dns record carries `qualityFlags()==NONE`, an orphan dns record carries `CONN_ENRICHMENT_ABSENT`, and a malformed dns record reaches dns's own DLQ (`netsec.dns.dlq.v1`), never conn's |

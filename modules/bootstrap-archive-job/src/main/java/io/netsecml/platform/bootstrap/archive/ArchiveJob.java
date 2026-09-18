@@ -294,6 +294,6 @@ public final class ArchiveJob {
         // silently drift from it.
         build(env, bootstrapServers, connAndDnsChains(featureTopic, dlqTopic, dnsFeatureTopic, dnsDlqTopic),
             clickHouse);
-        env.execute("conn-archive-job");
+        env.execute("archive-job");
     }
 }

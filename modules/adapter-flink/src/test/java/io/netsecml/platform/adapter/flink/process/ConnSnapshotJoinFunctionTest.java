@@ -147,6 +147,29 @@ class ConnSnapshotJoinFunctionTest {
         harness.close();
     }
 
+    // The blank-uid branch (processElement1's own nine-line defensive comment)
+    // had no test: the empty string is still a valid Flink key, so a harness
+    // test for it is cheap, not hypothetical. A snapshot exists for a REAL uid
+    // first, so a leak onto the wrong partition would be visible if it
+    // happened -- the blank-uid record must come back with null enrichment
+    // regardless.
+    @Test
+    void blankUidRecordIsEmittedUnchangedWithoutLookingUpState() throws Exception {
+        var harness = harness();
+        ConnSnapshot snap = new ConnSnapshot("Cabc", T0, T0.plusSeconds(300), 1000L, 2000L, 10L, 20L);
+        harness.processElement2(snap, 0L);
+
+        harness.processElement1(dnsEvent("", T0.plusSeconds(310)), 0L);
+
+        List<NetworkEvent> output = harness.extractOutputValues();
+        assertEquals(1, output.size(), "a blank-uid record must still be emitted, never dropped");
+        assertNull(asDns(output.get(0)).enrichment(),
+            "a blank uid cannot be looked up meaningfully, so this must emit unchanged rather than risk "
+                + "leaking an unrelated connection's enrichment onto the empty-string partition");
+
+        harness.close();
+    }
+
     // Semantic 3a (out of order): a late-arriving OLDER snapshot must not
     // replace a newer one already held. The state after both processElement2
     // calls must still be `newer`, proven by the delta a later DNS record gets

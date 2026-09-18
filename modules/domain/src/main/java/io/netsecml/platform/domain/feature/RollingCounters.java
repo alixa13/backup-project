@@ -21,13 +21,13 @@ public final class RollingCounters {
     // Ring-buffer style parallel arrays: each index is a one-minute bucket slot,
     // reused (and reset) once the epoch minute wraps back onto that slot.
     private final long[] bucketMinutes;
-    private final long[] connectionCounts;
+    private final long[] recordCounts;
     private final long[] byteSums;
     private final long[] failedCounts;
 
-    private RollingCounters(long[] bucketMinutes, long[] connectionCounts, long[] byteSums, long[] failedCounts) {
+    private RollingCounters(long[] bucketMinutes, long[] recordCounts, long[] byteSums, long[] failedCounts) {
         this.bucketMinutes = bucketMinutes;
-        this.connectionCounts = connectionCounts;
+        this.recordCounts = recordCounts;
         this.byteSums = byteSums;
         this.failedCounts = failedCounts;
     }
@@ -56,7 +56,7 @@ public final class RollingCounters {
     // emitted values and is its own unit's decision, not this fix wave's.
     public RollingCounters record(long bucketEpochMinute, long bytes, boolean failed) {
         long[] minutes = Arrays.copyOf(bucketMinutes, BUCKET_COUNT);
-        long[] counts = Arrays.copyOf(connectionCounts, BUCKET_COUNT);
+        long[] counts = Arrays.copyOf(recordCounts, BUCKET_COUNT);
         long[] sums = Arrays.copyOf(byteSums, BUCKET_COUNT);
         long[] fails = Arrays.copyOf(failedCounts, BUCKET_COUNT);
 
@@ -100,7 +100,7 @@ public final class RollingCounters {
     }
 
     public long recordCount5m() {
-        return sumWithinWindow(connectionCounts, latestBucketMinute());
+        return sumWithinWindow(recordCounts, latestBucketMinute());
     }
 
     public long byteSum5m() {

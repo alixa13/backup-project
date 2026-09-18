@@ -330,6 +330,6 @@ public final class OnlineFeatureJob {
             System.getenv().getOrDefault("DNS_DLQ_TOPIC", "netsec.dns.dlq.v1"));
 
         build(env, bootstrapServers, conn, dns, new SensorId(sensorId));
-        env.execute("conn-online-feature-job");
+        env.execute("online-feature-job");
     }
 }

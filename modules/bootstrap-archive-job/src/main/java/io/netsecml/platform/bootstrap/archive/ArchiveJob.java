@@ -103,6 +103,21 @@ public final class ArchiveJob {
             clickHouse);
     }
 
+    // The four-chain list main() wires today: conn's two chains (unchanged uids)
+    // followed by dns's two (the shared prefix pattern), in that order. Extracted
+    // into its own method so a test can build through it instead of hand-copying
+    // the list -- a hand-copied list in a test cannot catch main() itself binding,
+    // say, the dns feature topic to LogType.CONN, because the test would never
+    // exercise main()'s own wiring to find out.
+    public static List<LogTypeChain<?>> connAndDnsChains(String connFeatureTopic, String connDlqTopic,
+                                                         String dnsFeatureTopic, String dnsDlqTopic) {
+        return List.of(
+            featureVectorChain(LogType.CONN, connFeatureTopic),
+            dlqChain(LogType.CONN, connDlqTopic),
+            featureVectorChain(LogType.DNS, dnsFeatureTopic),
+            dlqChain(LogType.DNS, dnsDlqTopic));
+    }
+
     // One feature-vector chain for a log type. Mirrors dlqChain immediately
     // below -- a factory rather than three literal strings at each call site,
     // because the uids are checkpoint state identity and hand-writing them per
@@ -249,16 +264,16 @@ public final class ArchiveJob {
             System.getenv().getOrDefault("CLICKHOUSE_USER", "default"),
             System.getenv().getOrDefault("CLICKHOUSE_PASSWORD", ""));
 
-        // Four chains through the parameterised, list-form build(): conn's two
-        // (unchanged uids) plus dns's two (the prefix pattern). This is Spec
-        // §6.3's "adding a log type is a one-line registration" made real --
-        // the pre-DNS 5-argument overload above stays available for the tests
-        // that call it directly, but production now registers both protocols.
-        build(env, bootstrapServers, List.of(
-            featureVectorChain(LogType.CONN, featureTopic),
-            dlqChain(LogType.CONN, dlqTopic),
-            featureVectorChain(LogType.DNS, dnsFeatureTopic),
-            dlqChain(LogType.DNS, dnsDlqTopic)),
+        // Four chains through connAndDnsChains() and the parameterised, list-form
+        // build(): conn's two (unchanged uids) plus dns's two (the prefix
+        // pattern). This is Spec §6.3's "adding a log type is a one-line
+        // registration" made real -- the pre-DNS 5-argument overload above stays
+        // available for the tests that call it directly, but production now
+        // registers both protocols. ArchiveJobTopologyTest's four-chain case
+        // builds through connAndDnsChains() too, so that test pins the exact
+        // list this method wires rather than a hand-copied duplicate that could
+        // silently drift from it.
+        build(env, bootstrapServers, connAndDnsChains(featureTopic, dlqTopic, dnsFeatureTopic, dnsDlqTopic),
             clickHouse);
         env.execute("conn-archive-job");
     }

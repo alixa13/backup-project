@@ -184,19 +184,19 @@ class ArchiveJobTopologyTest {
 
     // The branch dlqChainReproducesTheHistoricalConnUids's own comment recorded
     // as untestable while LogType had only one constant: two log types (conn,
-    // dns) times two chain kinds (feature vector, DLQ) built through
-    // featureVectorChain and dlqChain, exactly as ArchiveJob.main() now does.
-    // This is what proves the per-protocol prefix pattern actually produces
-    // twelve non-colliding uids rather than only being exercised for DLQ alone.
+    // dns) times two chain kinds (feature vector, DLQ), built through
+    // connAndDnsChains() -- the same method ArchiveJob.main() calls -- so this
+    // test pins the exact list main() wires rather than a hand-copied duplicate
+    // that could silently drift from it. This is what proves the per-protocol
+    // prefix pattern actually produces twelve non-colliding uids rather than
+    // only being exercised for DLQ alone.
     @Test
     void fourChainsAcrossTwoLogTypesProduceTwelveDistinctUidsAndConnStaysUnchanged() {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
-        ArchiveJob.build(env, "localhost:9092", List.of(
-            ArchiveJob.featureVectorChain(LogType.CONN, "netsec.conn.feature-vector.v1"),
-            ArchiveJob.dlqChain(LogType.CONN, "netsec.conn.dlq.v1"),
-            ArchiveJob.featureVectorChain(LogType.DNS, "netsec.dns.feature-vector.v1"),
-            ArchiveJob.dlqChain(LogType.DNS, "netsec.dns.dlq.v1")),
+        ArchiveJob.build(env, "localhost:9092",
+            ArchiveJob.connAndDnsChains("netsec.conn.feature-vector.v1", "netsec.conn.dlq.v1",
+                "netsec.dns.feature-vector.v1", "netsec.dns.dlq.v1"),
             ClickHouseConfig.of("localhost", 8123, "netsec_ml", "default", "test-password"));
 
         Set<String> uids = new HashSet<>();

@@ -10,7 +10,9 @@ import io.netsecml.platform.adapter.kafka.sink.RejectedRecordSerializer;
 import io.netsecml.platform.domain.event.LogType;
 import io.netsecml.platform.domain.event.SensorId;
 import io.netsecml.platform.domain.feature.ConnFeatureSchemaV1;
+import io.netsecml.platform.domain.feature.DnsFeatureSchemaV1;
 import io.netsecml.platform.domain.feature.FeatureVector;
+import io.netsecml.platform.domain.feature.QualityFlags;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -24,6 +26,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.ConfluentKafkaContainer;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Properties;
 import static org.junit.jupiter.api.Assertions.*;
@@ -36,6 +39,16 @@ class ArchiveJobE2ETest {
     private static final String FEATURE_TOPIC = "netsec.conn.feature-vector.v1";
     private static final String DLQ_TOPIC = "netsec.conn.dlq.v1";
     private static final String DATABASE = "archive_e2e";
+
+    // A second, fully isolated set of topics and database for the four-chain
+    // method below. KAFKA and CLICKHOUSE are static @Container fields, shared by
+    // every method in this class, and freshDatabase() never drops a database --
+    // so two methods reusing a topic or database name would read each other's rows.
+    private static final String FOUR_CHAIN_CONN_FEATURE_TOPIC = "four-chain.netsec.conn.feature-vector.v1";
+    private static final String FOUR_CHAIN_CONN_DLQ_TOPIC = "four-chain.netsec.conn.dlq.v1";
+    private static final String FOUR_CHAIN_DNS_FEATURE_TOPIC = "four-chain.netsec.dns.feature-vector.v1";
+    private static final String FOUR_CHAIN_DNS_DLQ_TOPIC = "four-chain.netsec.dns.dlq.v1";
+    private static final String FOUR_CHAIN_DATABASE = "archive_e2e_four_chain";
 
     @Container
     private static final ConfluentKafkaContainer KAFKA =
@@ -59,6 +72,21 @@ class ArchiveJobE2ETest {
             new SensorId("sensor-eu-1"), LogType.CONN, "Cabc123XYZ",
             ConnFeatureSchemaV1.SCHEMA.id(), ConnFeatureSchemaV1.CONTENT_HASH,
             values, 0, Instant.parse("2026-08-27T10:03:11.402Z"));
+    }
+
+    // 24 values -- the common tier plus dns's own twelve -- so the row matches
+    // what a real dns vector carries; index 0 and the last index are both
+    // distinctive so the assertion proves the whole array survived, not just
+    // its first element. quality_flags is non-zero here (unlike vector()'s
+    // above) so the round trip is proven for that column too.
+    private FeatureVector dnsVector() {
+        float[] values = new float[24];
+        values[0] = 13.25f;
+        values[23] = 99f;
+        return new FeatureVector("sensor-eu-1:Cdns005ZEK:4242", Instant.parse("2026-08-27T10:05:00.500Z"),
+            new SensorId("sensor-eu-1"), LogType.DNS, "Cdns005ZEK",
+            DnsFeatureSchemaV1.SCHEMA.id(), DnsFeatureSchemaV1.CONTENT_HASH,
+            values, QualityFlags.CONN_ENRICHMENT_ABSENT, Instant.parse("2026-08-27T10:05:00.650Z"));
     }
 
     // Publishes one already-serialized message to the given topic and blocks
@@ -97,7 +125,14 @@ class ArchiveJobE2ETest {
         produce(DLQ_TOPIC, new RejectedRecordSerializer().serialize(DLQ_TOPIC,
             new RejectedRecordPayload("{ broken".getBytes(StandardCharsets.UTF_8), "",
                 "PARSE", "MALFORMED_JSON", "unexpected end of input",
-                Instant.parse("2026-08-27T10:03:11.250Z"))));
+                // "now", not the fixed 2026-08-27 date vector() above still uses:
+                // invalid_events carries a 30-day TTL on received_at, so a fixed
+                // date this old eventually lets a background TTL merge delete the
+                // row before this test ever reads it -- a failure with nothing to
+                // do with this job's code. feature_vectors has no TTL, so vector()'s
+                // eventTime/producedAt stay on the fixed date the row_version
+                // assertion below still depends on.
+                Instant.now().truncatedTo(ChronoUnit.MILLIS))));
 
         try (Client query = ClickHouseTestSupport.freshDatabase(CLICKHOUSE, DATABASE)) {
             ClickHouseConfig config = ClickHouseConfig.of(CLICKHOUSE.getHost(),
@@ -147,6 +182,111 @@ class ArchiveJobE2ETest {
                 // refactor binding the wrong constant would otherwise pass every test.
                 assertEquals("conn", invalid.get(0).getString("log_type"),
                     "the log type must arrive from the topic binding, through the real job graph");
+            } finally {
+                job.cancel().get();
+            }
+        }
+    }
+
+    // Roadmap Day 6, test 2: main()'s own four-chain list -- conn's feature
+    // vector and DLQ chains plus dns's -- built through connAndDnsChains()
+    // rather than hand-copied, so this test fails if main() ever binds one of
+    // these four topics to the wrong log type. Isolated from the method above
+    // by its own database and topic names, since KAFKA and CLICKHOUSE are
+    // static @Container fields shared by every method in this class.
+    @Test
+    void fourChainsFromMainWriteConnAndDnsFeatureVectorsAndRejectionsUnderTheirOwnLogType() throws Exception {
+        // One timestamp for both rejections below. invalid_events has a 30-day
+        // TTL on received_at, so "now" keeps this test from expiring the way a
+        // fixed past date eventually would.
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+
+        // Publish all four records before the job starts, so every source reads
+        // its record from the beginning of the log.
+        produce(FOUR_CHAIN_CONN_FEATURE_TOPIC,
+            new FeatureVectorSerializer().serialize(FOUR_CHAIN_CONN_FEATURE_TOPIC, vector()));
+        produce(FOUR_CHAIN_DNS_FEATURE_TOPIC,
+            new FeatureVectorSerializer().serialize(FOUR_CHAIN_DNS_FEATURE_TOPIC, dnsVector()));
+        produce(FOUR_CHAIN_CONN_DLQ_TOPIC, new RejectedRecordSerializer().serialize(FOUR_CHAIN_CONN_DLQ_TOPIC,
+            new RejectedRecordPayload("{ conn broken".getBytes(StandardCharsets.UTF_8), "",
+                "PARSE", "MALFORMED_JSON", "conn: unexpected end of input", now)));
+        produce(FOUR_CHAIN_DNS_DLQ_TOPIC, new RejectedRecordSerializer().serialize(FOUR_CHAIN_DNS_DLQ_TOPIC,
+            new RejectedRecordPayload("{ dns broken".getBytes(StandardCharsets.UTF_8), "",
+                "PARSE", "MALFORMED_JSON", "dns: unexpected end of input", now)));
+
+        try (Client query = ClickHouseTestSupport.freshDatabase(CLICKHOUSE, FOUR_CHAIN_DATABASE)) {
+            ClickHouseConfig config = ClickHouseConfig.of(CLICKHOUSE.getHost(),
+                CLICKHOUSE.getMappedPort(ClickHouseTestSupport.HTTP_PORT), FOUR_CHAIN_DATABASE, "default",
+                ClickHouseTestSupport.PASSWORD);
+
+            StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+            env.setParallelism(1);
+            // A short checkpoint interval keeps the test's flush latency low;
+            // production uses 30 s.
+            env.enableCheckpointing(1_000L);
+            // Built through connAndDnsChains() -- the exact method main() calls --
+            // rather than a hand-assembled list, so a chain bound to the wrong
+            // log type inside main() itself would fail this test too.
+            ArchiveJob.build(env, KAFKA.getBootstrapServers(),
+                ArchiveJob.connAndDnsChains(FOUR_CHAIN_CONN_FEATURE_TOPIC, FOUR_CHAIN_CONN_DLQ_TOPIC,
+                    FOUR_CHAIN_DNS_FEATURE_TOPIC, FOUR_CHAIN_DNS_DLQ_TOPIC),
+                config);
+
+            // executeAsync returns a JobClient immediately — no helper thread needed.
+            JobClient job = env.executeAsync("archive-job-e2e-four-chain-test");
+            try {
+                // Every query below filters on log_type. awaitRows returns on the
+                // first non-empty result, so an unfiltered query against a table
+                // that ends up holding both conn's and dns's row could return
+                // before the other log type's row has landed.
+                List<GenericRecord> dnsFeatures = awaitRows(query,
+                    "SELECT event_id, connection_uid, schema_id, schema_hash, length(`values`) AS n, "
+                        + "`values`[1] AS first, `values`[24] AS last, quality_flags FROM feature_vectors "
+                        + "WHERE log_type = 'dns'");
+
+                assertEquals(1, dnsFeatures.size(), "exactly one dns feature vector must reach feature_vectors");
+                assertEquals("sensor-eu-1:Cdns005ZEK:4242", dnsFeatures.get(0).getString("event_id"));
+                assertEquals("Cdns005ZEK", dnsFeatures.get(0).getString("connection_uid"));
+                assertEquals(DnsFeatureSchemaV1.SCHEMA.id(), dnsFeatures.get(0).getString("schema_id"));
+                assertEquals(DnsFeatureSchemaV1.CONTENT_HASH, dnsFeatures.get(0).getString("schema_hash"));
+                assertEquals(24, dnsFeatures.get(0).getInteger("n"), "all 24 dns values must survive the round trip");
+                assertEquals(13.25f, dnsFeatures.get(0).getFloat("first"), 0.0001f);
+                // The 24th value, not just the 1st: a vector truncated back down to
+                // conn's 20 values would still pass the "first" assertion above.
+                assertEquals(99f, dnsFeatures.get(0).getFloat("last"), 0.0001f,
+                    "the last of the 24 values must survive, not just the first");
+                assertEquals(QualityFlags.CONN_ENRICHMENT_ABSENT, dnsFeatures.get(0).getInteger("quality_flags"),
+                    "quality_flags must survive the round trip alongside the values array");
+
+                List<GenericRecord> connFeatures = awaitRows(query,
+                    "SELECT event_id, schema_hash, length(`values`) AS n FROM feature_vectors "
+                        + "WHERE log_type = 'conn'");
+
+                assertEquals(1, connFeatures.size(), "exactly one conn feature vector must reach feature_vectors");
+                assertEquals("sensor-eu-1:Cabc123XYZ", connFeatures.get(0).getString("event_id"));
+                assertEquals(ConnFeatureSchemaV1.CONTENT_HASH, connFeatures.get(0).getString("schema_hash"));
+                assertEquals(20, connFeatures.get(0).getInteger("n"),
+                    "conn's 20 values must be unaffected by the dns chain sharing this job");
+
+                List<GenericRecord> dnsInvalid = awaitRows(query,
+                    "SELECT detail, source_version, stage, reason_code FROM invalid_events WHERE log_type = 'dns'");
+
+                assertEquals(1, dnsInvalid.size(), "exactly one dns rejection must reach invalid_events");
+                // detail is the only column that names which topic a rejection came
+                // from -- if a chain bound the dns DLQ topic to LogType.CONN instead,
+                // this row would carry log_type "conn" and this query would return
+                // nothing.
+                assertEquals("dns: unexpected end of input", dnsInvalid.get(0).getString("detail"));
+                assertEquals("zeek-dns-source-v1", dnsInvalid.get(0).getString("source_version"));
+                assertEquals("PARSE", dnsInvalid.get(0).getString("stage"));
+                assertEquals("MALFORMED_JSON", dnsInvalid.get(0).getString("reason_code"));
+
+                List<GenericRecord> connInvalid = awaitRows(query,
+                    "SELECT detail, source_version FROM invalid_events WHERE log_type = 'conn'");
+
+                assertEquals(1, connInvalid.size(), "exactly one conn rejection must reach invalid_events");
+                assertEquals("conn: unexpected end of input", connInvalid.get(0).getString("detail"));
+                assertEquals("zeek-conn-source-v1", connInvalid.get(0).getString("source_version"));
             } finally {
                 job.cancel().get();
             }

@@ -113,6 +113,13 @@ public final class ArchiveJob {
     // the list -- a hand-copied list in a test cannot catch main() itself binding,
     // say, the dns feature topic to LogType.CONN, because the test would never
     // exercise main()'s own wiring to find out.
+    //
+    // KNOWN SEAM: unlike build(List<LogTypeChain<?>>) above, which is genuinely
+    // N-protocol (a sixth log type is a sixth list entry), this method's own
+    // name and its four-String-parameter signature are shaped for exactly two
+    // protocols. A third protocol needs a new method (or a signature change
+    // here that touches every existing caller), not one more parameter slotted
+    // in for free -- the next protocol's unit should budget for that.
     public static List<LogTypeChain<?>> connAndDnsChains(String connFeatureTopic, String connDlqTopic,
                                                          String dnsFeatureTopic, String dnsDlqTopic) {
         return List.of(
@@ -207,6 +214,14 @@ public final class ArchiveJob {
 
     // No watermarks: nothing downstream is event-time windowed. The archive job
     // batches and inserts; it never reasons about time.
+    //
+    // KNOWN LIMIT (offset-initialiser asymmetry): this source resumes from
+    // committedOffsets(EARLIEST) below, while OnlineFeatureJob.rawSource starts
+    // unconditionally at earliest() every time. The two jobs restart
+    // differently after a checkpoint loss -- only the online job's restart
+    // replays its topic's full retention window, which is what compounds the
+    // enrichment join's processing-time TTL gap (see
+    // ConnSnapshotJoinFunction's own TTL comment).
     private static KafkaSource<byte[]> source(String bootstrapServers, String topic) {
         return KafkaSource.<byte[]>builder()
             .setBootstrapServers(bootstrapServers)

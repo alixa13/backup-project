@@ -193,6 +193,41 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   state evolution story is Kryo's, unlike `ConnEnrichment`'s fully-POJO state.
 - `ClickHouseOutageTest` has never run on this machine and must never be
   described as passing.
+- The conn.log enrichment join is processing-order dependent: both Kafka
+  sources use `noWatermarks()` and `KeyedCoProcessFunction` drains its two
+  inputs in arrival order, not event-time order, so whether a given dns record
+  gets enriched can depend on read timing, not only on what Zeek wrote.
+  Reprocessing identical Kafka data can produce a different vector for the
+  same record — see `ConnSnapshotJoinFunction`'s "PROCESSING-ORDER DEPENDENT"
+  comment. The join must stay non-blocking regardless.
+- The enrichment join's 30-minute TTL is processing-time, but
+  `OnlineFeatureJob`'s sources start at `earliest()`, so a replay compresses
+  hours of event time into minutes of processing time and the TTL may never
+  fire: `ConnSnapshotJoinFunction`'s uid-keyed state then grows with one entry
+  per distinct connection uid in the replayed history. This is a different,
+  separate gap from the rolling-window key set's own missing TTL above.
+- DNS event identity (`sensor:uid:trans_id`) has residual collision risk:
+  `trans_id` is a client-chosen 16-bit value that can repeat within one flow
+  (DNS over TCP/53, a reused UDP source port inside Zeek's inactivity timeout,
+  or a retransmission). The 2026-09-10 per-protocol spec's §5.1 added
+  direction and a timestamp to the OT protocols' ids for exactly this reason;
+  DNS was declared safe without it. See `DnsEventMapper`'s eventId derivation.
+- The two-protocol abstraction has known seams for a third protocol: the
+  enrichment carrier is per-record-type (`DnsEvent.withEnrichment`), and
+  `OnlineFeatureJob.build(conn, dns, sensor)` and
+  `ArchiveJob.connAndDnsChains(4 topics)` are both shaped and named for
+  exactly two protocols rather than genuinely N (unlike
+  `ArchiveJob.build(List<LogTypeChain<?>>)`, which already is).
+- `RollingCounters.record(...)` resets a bucket slot whenever its stored
+  minute merely differs from the incoming one, not only when the incoming one
+  is newer — an out-of-order arrival for an older minute erases a newer
+  minute's counts for that key. Nothing requires the external `conn`/`dns`
+  topics to be partitioned by `id_orig_h`, so the sensor's Kafka producer
+  should partition by source IP to keep per-key arrival ordered.
+- Offset-initialiser asymmetry: the online job always starts at `earliest()`
+  while the archive job resumes from `committedOffsets(EARLIEST)`, so an
+  online restart without a usable checkpoint replays the whole retention
+  window — which compounds the enrichment-TTL gap above.
 
 The common feature tier (`contracts/features/common-feature-tier-v1.json`) and
 its `conn.log` enrichment carrier are implemented and now consumed:

@@ -34,6 +34,19 @@ import java.time.Duration;
 // model would learn from a signal it can never have at inference time. See the
 // check itself for the comment on the exact comparison.
 //
+// PROCESSING-ORDER DEPENDENT -- A KNOWN LIMIT, not merely the POINT-IN-TIME
+// rule's flip side. Both of this job's Kafka sources use
+// WatermarkStrategy.noWatermarks() (see OnlineFeatureJob.rawSource), and
+// KeyedCoProcessFunction drains its two inputs in the order Flink happens to
+// read them, not event-time order. POINT IN TIME above correctly refuses a
+// snapshot from a record's future, but nothing guarantees a snapshot from its
+// genuine past has already arrived by the time this runs -- so whether a given
+// dns record ends up enriched can depend on read timing, not only on what Zeek
+// actually wrote. Consequence worth stating plainly: reprocessing the identical
+// Kafka data can produce a DIFFERENT vector for the same record, and these
+// vectors are training data. Do NOT fix this by making the join blocking --
+// the NEVER BLOCKS paragraph above is exactly why that would be worse.
+//
 // AN HONEST LIMIT. For DNS over UDP, Zeek writes a flow's conn.log line only
 // after the flow's inactivity timeout -- which is AFTER Zeek has already
 // written that flow's dns.log record. So for nearly all UDP DNS, no snapshot
@@ -69,6 +82,18 @@ public final class ConnSnapshotJoinFunction
         // OnReadAndWrite would let those reads alone keep a stale snapshot
         // "alive" in state forever; only a genuine new snapshot arriving on
         // input 2 -- a WRITE -- may reset the clock.
+        //
+        // A KNOWN LIMIT: this TTL is PROCESSING-time, not event-time, while the
+        // 30-minute reasoning above is a wall-clock one. OnlineFeatureJob's
+        // Kafka sources start at OffsetsInitializer.earliest(), so replaying a
+        // topic's retention window from the start compresses hours of EVENT
+        // time into minutes of PROCESSING time -- this TTL clock runs on the
+        // latter, so it may never fire during a replay, and this operator's
+        // uid-keyed state then grows with one entry per distinct connection uid
+        // seen in the replayed history. This is a DIFFERENT, separate gap from
+        // the rolling-window key set's own missing TTL (OnlineFeatureJob's
+        // KNOWN GAP comment): that state has no TTL at all, while this one has
+        // a TTL that simply does not fire under replay.
         StateTtlConfig ttlConfig = StateTtlConfig.newBuilder(Duration.ofMinutes(30))
             .setUpdateType(StateTtlConfig.UpdateType.OnCreateAndWrite)
             .setStateVisibility(StateTtlConfig.StateVisibility.NeverReturnExpired)

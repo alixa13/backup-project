@@ -43,6 +43,17 @@ public final class RollingCounters {
     // Folds one record into its bucket, returning a new immutable state. If the
     // target slot belongs to a different (older) minute, it is reset to zero
     // before accumulating -- this is how stale buckets roll off the window.
+    //
+    // KNOWN LIMIT: "different" is a bare != against the slot's stored minute,
+    // not a comparison of "older" vs "newer" -- a record arriving for a minute
+    // OLDER than what the slot already holds resets that slot too, erasing the
+    // newer minute's counts for this key. Nothing requires the external
+    // conn/dns topics to be partitioned by id_orig_h, so out-of-order arrival
+    // per key is ordinary here, not exceptional. DEPLOYMENT REQUIREMENT: the
+    // sensor should partition its Kafka producer by source IP so records for
+    // one key arrive in order. Deliberately not changed to compare minutes
+    // instead of merely differing from them -- that would alter conn's already
+    // emitted values and is its own unit's decision, not this fix wave's.
     public RollingCounters record(long bucketEpochMinute, long bytes, boolean failed) {
         long[] minutes = Arrays.copyOf(bucketMinutes, BUCKET_COUNT);
         long[] counts = Arrays.copyOf(connectionCounts, BUCKET_COUNT);

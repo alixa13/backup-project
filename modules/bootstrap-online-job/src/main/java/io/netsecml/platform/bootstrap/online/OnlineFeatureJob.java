@@ -93,6 +93,14 @@ public final class OnlineFeatureJob {
     // per-value but not in aggregate. Adding a TTL to these two is a separate
     // design decision with its own trade-offs and is deliberately not made
     // here.
+    //
+    // KNOWN SEAM: this method's own signature -- build(conn, dns, sensor) --
+    // is shaped and named for exactly two protocols, not for the general N.
+    // A third protocol is a new parameter and a new copy of dns's wiring
+    // pattern here, not a loop over a list the way ArchiveJob.build(chains)
+    // already handles an arbitrary log type set on the archive side. The next
+    // protocol's unit should budget for that asymmetry, not assume this method
+    // merely grows another argument for free.
     public static void build(StreamExecutionEnvironment env, String bootstrapServers,
                               ProtocolTopics conn, ProtocolTopics dns, SensorId sensor) {
         SingleOutputStreamOperator<NetworkEvent> connParsed = connChain(env, bootstrapServers, conn, sensor);
@@ -199,6 +207,14 @@ public final class OnlineFeatureJob {
     // above, which stay written out per protocol.
     private static DataStream<byte[]> rawSource(StreamExecutionEnvironment env, String bootstrapServers,
                                                   String topic, String groupId, String uid) {
+        // KNOWN LIMIT: earliest(), unconditionally -- unlike ArchiveJob's source,
+        // which resumes from committedOffsets(EARLIEST). An online restart with
+        // no usable checkpoint therefore replays this topic's entire retention
+        // window rather than picking up from wherever this consumer group last
+        // committed, which compounds the enrichment join's processing-time TTL
+        // gap (see ConnSnapshotJoinFunction's own TTL comment): more replayed
+        // history means more distinct connection uids accumulating in that
+        // join's keyed state before the TTL can fire on any of them.
         KafkaSource<byte[]> source = KafkaSource.<byte[]>builder()
             .setBootstrapServers(bootstrapServers)
             .setTopics(topic)

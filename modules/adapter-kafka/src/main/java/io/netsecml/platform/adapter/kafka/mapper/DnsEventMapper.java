@@ -86,6 +86,19 @@ public final class DnsEventMapper {
 
         // Every field this event needs is now known valid, so none of the
         // domain constructors below can throw.
+        //
+        // RESIDUAL COLLISION RISK, recorded rather than fixed (the id format is
+        // the user's decision and event ids are already archived): trans_id is
+        // client-chosen and 16-bit, so sensor:uid:trans_id can repeat within
+        // one flow -- DNS over TCP/53 (one uid, many queries), a UDP source
+        // port reused inside Zeek's own inactivity timeout, and query
+        // retransmissions can all produce the same (uid, trans_id) pair twice.
+        // docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md
+        // §5.1 ("Why the OT identities carry direction and timestamp") ran
+        // exactly this analysis for the OT protocols (Modbus, S7comm) and
+        // added direction and a timestamp to their ids as a result; DNS was
+        // declared safe without either. A collision here silently collapses
+        // two distinct queries into one ReplacingMergeTree row in the archive.
         EventId eventId = EventId.derive(sensor, dto.id() + ":" + dto.transId());
         Instant eventTime = Instant.ofEpochMilli(Math.round(dto.ts() * 1000.0));
 

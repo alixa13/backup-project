@@ -28,4 +28,24 @@ public record SourceKey(SensorId sensor, LogType logType, String sourceIp) {
             throw new IllegalArgumentException("sourceIp must not be blank");
         }
     }
+
+    // Flink assigns this key to a key group with key.hashCode()
+    // (KeyGroupRangeAssignment.assignToKeyGroup, reached from both the sending
+    // partitioner and the receiving setCurrentKey), so the hash must be the
+    // same number for the same logical key in every JVM that computes it. The
+    // record's generated hashCode() would fold in logType's own hashCode(),
+    // but Enum.hashCode() is final and returns Object's IDENTITY hash -- a
+    // number a JVM assigns per instance from its own allocation history, with
+    // no guarantee of repeating across JVMs or even across restarts of the
+    // same one. Hashing logType.name() instead sidesteps that: like
+    // sensor.value() and sourceIp, it is a String, whose hashCode() the JLS
+    // fixes to one formula everywhere, so the combined result here
+    // (Objects.hash, itself specified by Arrays.hashCode(Object[])'s javadoc)
+    // is identical on every JVM. equals() is left as the generated one: it
+    // already compares logType by enum value, not identity, so it was already
+    // JVM-consistent and needs no change to stay consistent with this hash.
+    @Override
+    public int hashCode() {
+        return Objects.hash(sensor.value(), logType.name(), sourceIp);
+    }
 }

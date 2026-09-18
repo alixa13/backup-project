@@ -16,9 +16,14 @@ Three things about running the tests that will otherwise cost you an hour:
 
 - **`clean verify` does not complete on a small machine.** The container tests are
   OOM-killed on 5.7 GiB. Run them in stages instead: `./mvnw install -DskipTests`
-  once, then one module at a time, clearing containers between
-  (`docker ps -aq | xargs -r docker rm -f`). Everything passes staged; nothing
-  proves the whole reactor green in one command until CI has more memory.
+  once, then one module at a time. Testcontainers' own Ryuk reaper removes each
+  stage's containers on its own; if a manual sweep is ever needed between stages,
+  scope it to this project's own containers
+  (`docker ps -aq --filter label=org.testcontainers=true | xargs -r docker rm -f`)
+  — never `docker ps -aq | xargs -r docker rm -f`, which removes every container
+  on the machine, including ones this project never started. Everything passes
+  staged; nothing proves the whole reactor green in one command until CI has more
+  memory.
 - **`-pl <module>` without `-am` resolves siblings from `~/.m2`**, producing
   phantom "cannot find symbol" errors against code that is fine.
 - **`-Dtest=X` with `-Dsurefire.failIfNoSpecifiedTests=false` reports BUILD SUCCESS
@@ -37,7 +42,7 @@ pytest -k test_name              # single test
 
 ## Architecture
 
-**Data flow:** External Kafka (`conn` topic) → Online Flink job (parse → validate → bounded keyed state → 20-feature vector → ONNX inference) → internal Kafka topics → Archive Flink job → ClickHouse.
+**Data flow:** External Kafka (`conn` and `dns` topics) → Online Flink job (parse → validate → bounded keyed state → per-schema feature vector — conn's own 20 values, dns's 24 (the common tier, whose conn-derived fields come from a non-blocking left join against conn.log snapshots, plus dns's own protocol tier)) → internal Kafka topics (separate feature-vector and DLQ topics per protocol) → Archive Flink job → ClickHouse. ONNX inference is not yet implemented (see Implementation state).
 
 **Hexagonal, one-way dependency chain:**
 ```
@@ -53,12 +58,23 @@ domain → ports → application → adapters → bootstrap
 **Key invariants:**
 - Java package root: `io.netsecml.platform`
 - Java 21 throughout — use `record` for immutable data carriers, `sealed interface` + records + pattern-matching `switch` for closed hierarchies. Records with array components need defensive copies in compact constructor *and* in the accessor.
-- Feature vector: exactly `schema.featureCount()` `float32` values, frozen per schema. Conn's registered schema reports 20, ordered per `contracts/features/conn-feature-schema-v1.json`. Feature order is frozen once defined — a change creates a new schema version.
+- Feature vector: exactly `schema.featureCount()` `float32` values, frozen per schema. Conn's registered schema reports 20, ordered per `contracts/features/conn-feature-schema-v1.json`; dns's registered schema reports 24, ordered per `contracts/features/dns-feature-schema-v1.json`. Feature order is frozen once defined — a change creates a new schema version.
+- A protocol's feature schema is the common tier (12 values, frozen) followed by that
+  protocol's own tier. `conn-feature-v1` predates the tier and is frozen without it; every
+  schema from `dns-feature-v1` onward leads with it.
+- Event identity is a per-log-type obligation with its own stated argument: `CONN` is
+  `sensor:uid`, `DNS` is `sensor:uid:trans_id`. A log type whose uniqueness cannot be
+  evidenced from its own fields is not ready to be added.
 - CPU-only: no GPU, no CUDA, no deep-learning frameworks. ONNX Runtime Java with intra/inter-op threads pinned to 1 per subtask.
 - Model bundle is pinned in job config and loaded once in `open()`. No live hot reload.
 - ClickHouse is never on the online scoring path. Predictions go to Kafka first; the archive job writes to ClickHouse asynchronously.
 - ClickHouse inserts are idempotent (`ReplacingMergeTree`). Do not promise exactly-once for the archive sink.
 - Bounded per-`(sensor, sourceIp)` state only — no unbounded per-IP maps or event history.
+  This is the rule the code aims at and holds per key (five one-minute buckets each), but not
+  yet in aggregate: neither `ConnFeatureProcessFunction`'s `rolling-counters` state nor
+  `DnsFeatureProcessFunction`'s `dns-window-state` carries a TTL, so the KEY SET keeps every
+  `(sensor, sourceIp)` ever seen, for either protocol, forever (see `OnlineFeatureJob`'s KNOWN
+  GAP comment).
 - `NetworkEvent` is a **sealed interface** over a shared `EventEnvelope`, with one record per log
   type. `permits` lists only log types that have a parser, mapper and feature schema — adding a
   record ahead of its implementation defeats the exhaustiveness checking that sealing buys.
@@ -80,18 +96,43 @@ The ClickHouse archive job (Step 8) is complete on `feat/clickhouse-archive-job`
 but not yet merged to `main`. Implementation order is tracked in
 `Repository_Structure.md` Section E (18 steps).
 
-The pipeline is: external `conn` topic → parse/validate → bounded keyed state →
-20-value `FeatureVector` → `netsec.conn.feature-vector.v1` and
-`netsec.conn.dlq.v1` → archive job → ClickHouse `feature_vectors` and
-`invalid_events`.
+The DNS unit adds the platform's second protocol: 30 commits on top of `c309aad`,
+on this branch (`feat/dns-protocol`). This branch is a linear continuation of
+`feat/clickhouse-archive-job` and then `feat/common-feature-tier` (whose own tip
+is `c309aad`) — both are ancestors of `HEAD` here, and neither is merged to
+`main` yet (`feat/common-feature-tier` has its own open PR). Deliverables:
+
+- `LogType.DNS` and `DnsEvent` added to the sealed `NetworkEvent` hierarchy
+- `dns-feature-v1`: 24 values, the 12-value common tier followed by dns's own
+  12-value protocol tier
+- the dns parser, mapper, `DnsBuildFeaturesUseCase`, and the Flink operators
+  that window it
+- the conn.log enrichment left join (`ConnSnapshotJoinFunction`), giving a dns
+  record access to conn's common-tier fields
+- both the online and archive jobs wired for two protocols, each with its own
+  per-protocol operator uids and Kafka topics
+- `contracts/source/zeek-dns-source-v1.json`, the dns source contract
+
+The pipeline is now: external `conn` and `dns` topics → parse/validate →
+bounded keyed state → per-schema `FeatureVector` (conn: 20 values, on
+`netsec.conn.feature-vector.v1` / `netsec.conn.dlq.v1`; dns: 24 values, on
+`netsec.dns.feature-vector.v1` / `netsec.dns.dlq.v1`) → archive job (four
+Kafka-to-ClickHouse chains, one feature-vector and one DLQ chain per protocol,
+built by `ArchiveJob.connAndDnsChains(...)`) → ClickHouse `feature_vectors` and
+`invalid_events`, both now holding rows for either log type.
 
 **`main` cannot currently run the online job at all.** Three serialization defects
 (`SensorId` and both Kafka serializers not `Serializable`; two
 `setValueSerializationSchema` lambdas erasing their generic type) make
-`env.execute()` fail before a single record is read. The fix is on
-`fix/flink-job-serializability`, which should land before this branch. Until it
-does, treat any claim that the pipeline "works" as applying to
-`feat/clickhouse-archive-job` only.
+`env.execute()` fail before a single record is read on `main`. **This branch is
+not affected** — it already carries an equivalent fix, inherited from
+`feat/clickhouse-archive-job` (commit `721c0cf`), not from
+`fix/flink-job-serializability` (commit `eb4db7c`), which fixed the same three
+defects independently on its own branch off the same `main` commit and is
+confirmed NOT an ancestor of this branch. Neither fix is merged to `main`
+itself, so `main` still cannot run the online job; this branch can —
+`OnlineFeatureJobE2ETest` (2/2 at `6824194`, against real containers) is the
+proof.
 
 ### Verification state
 
@@ -101,26 +142,62 @@ skips were hiding real defects — including a deduplication query that was
 syntactically invalid and could never have executed. **Do not read a skipped
 container test as a passing one.**
 
-Executed and green on `feat/clickhouse-archive-job`, against real containers:
+Verified fresh at `038057e` (this commit, HEAD), no containers involved:
+
+| Suite | Result |
+|---|---|
+| `domain` | 93/93, 0 skipped |
+| `ports` | no tests exist (no test sources in the module) |
+| `application` | 35/35, 0 skipped |
+| `adapter-kafka` | 62/62, 0 skipped |
+| `adapter-flink` | 29/29, 0 skipped |
+| `adapter-clickhouse`, `InvalidEventRowMapperTest` only (filtered; the module's container tests were not run here) | 9/9, 0 skipped |
+| `bootstrap-online-job`, `OnlineFeatureJobTopologyTest` only (filtered) | 5/5, 0 skipped |
+| `bootstrap-archive-job`, `ArchiveJobTopologyTest` only (filtered) | 8/8, 0 skipped |
+
+Verified earlier against real containers. Not re-run at this commit: this pass
+ran only the filtered class per module shown above, never `adapter-clickhouse`
+or either bootstrap module unfiltered (both hold further container tests, and
+this machine OOM-kills those — see Commands):
 
 | Suite | Result | What it actually proves |
 |---|---|---|
-| `adapter-clickhouse` | 37/37, 0 skipped | Includes `DdlMigrationTest` — `001_mvp_tables.sql` has now been executed by a real ClickHouse 25.8 server, not merely read |
+| `adapter-clickhouse` (full suite, on `feat/clickhouse-archive-job`, before this unit) | 37/37, 0 skipped at the time — now stale | Includes `DdlMigrationTest` — `001_mvp_tables.sql` has now been executed by a real ClickHouse 25.8 server, not merely read. Stale because this unit's commit `22465c4` added a ninth test to `InvalidEventRowMapperTest` (`everyLogTypeHasASourceContractFileOnDisk`); that class alone is 9/9 fresh at `038057e` (row above), so the true full-suite count is at least 38 and has not been re-verified against containers |
 | `FeatureVectorDeduplicationTest` | 3/3 | The committed dedup query runs and resolves duplicates |
 | `ClientV2InserterTest` | 4/4 | An unknown column is rejected, not silently skipped |
-| `OnlineFeatureJobE2ETest` | 1/1 | The online job can be submitted and produces a feature vector — first pass in this project's history |
-| `ArchiveJobE2ETest` | 1/1 (171 s) | Kafka → ClickHouse, end to end |
-| domain, ports, application, adapter-kafka, adapter-flink | pass | — |
+| `OnlineFeatureJobE2ETest` (at `6824194`) | 2/2, 0 skipped | conn and dns feature vectors both arrive from a real broker; the joined dns record carries `qualityFlags()==NONE`, an orphan dns record carries `CONN_ENRICHMENT_ABSENT`, and a malformed dns record reaches dns's own DLQ (`netsec.dns.dlq.v1`), never conn's |
+| `ArchiveJobE2ETest` (at `6d50912`/`038057e`) | 2/2, 0 skipped | A 24-value dns feature vector and a dns rejection both reach ClickHouse under `log_type = 'dns'`, and a conn vector/rejection under `log_type = 'conn'`, through the exact four chains `ArchiveJob.main()` wires via `connAndDnsChains(...)` |
 
 **Not verified:** `ClickHouseOutageTest` — the Definition of Done's headline claim
 that a ClickHouse failure cannot stop feature production. It is OOM-killed during
 container startup (two Flink mini-clusters plus two containers do not fit in
 5.7 GiB) and has never run. It was deliberately not weakened to fit the machine.
 
+**Known limits:**
+- Conn.log enrichment will be absent for nearly every dns vector in production:
+  Zeek writes a connection's conn.log line only after the connection ends (for
+  UDP, after an inactivity timeout) — after the dns.log records inside it. The
+  end-to-end test publishes conn first, deliberately, which is what lets it
+  prove the join at all rather than model Zeek's real write order (see
+  `ConnSnapshotJoinFunction`'s "AN HONEST LIMIT" comment).
+- `byte_sum_5m` is always 0 for dns: dns.log carries no byte counts, so
+  `DnsBuildFeaturesUseCase` folds `bytes = 0` for every record; several other
+  common-tier values are near-constant for dns as a result.
+- The rolling-window key set has no TTL — see the bounded-state invariant above
+  and `OnlineFeatureJob`'s KNOWN GAP comment.
+- `DnsWindowState` itself resolves to Flink's record/POJO serializer, but its two
+  components, `RollingCounters` and `RecordTimingState`, have no public no-arg
+  constructor, so Flink cannot treat them as nested POJOs: both fall back to
+  `GenericTypeInfo`, backed by `KryoSerializer` (confirmed by resolving
+  `TypeExtractor.createTypeInfo` for all three classes at this commit). Their
+  state evolution story is Kryo's, unlike `ConnEnrichment`'s fully-POJO state.
+- `ClickHouseOutageTest` has never run on this machine and must never be
+  described as passing.
+
 The common feature tier (`contracts/features/common-feature-tier-v1.json`) and
-its `conn.log` enrichment carrier are implemented, but no protocol consumes them
-yet — `conn-feature-v1` predates the tier and is frozen without it. The first
-consumer is the DNS unit.
+its `conn.log` enrichment carrier are implemented and now consumed:
+`conn-feature-v1` predates the tier and is frozen without it, but
+`dns-feature-v1` leads with it at indices 0-11.
 
 Not yet implemented: ONNX inference (Day 9), predictions and `netsec.prediction.v1`
 (Day 9), the model registry (Day 7), and the Python training project.

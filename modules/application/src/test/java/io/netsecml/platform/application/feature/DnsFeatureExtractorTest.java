@@ -40,8 +40,8 @@ class DnsFeatureExtractorTest {
     // This asserts every one of the twelve indices, not just qname_length and
     // entropy: the name promises "every" feature, and dns_qtype (1), dns_label_count
     // (9), dns_digit_ratio (10) and dns_hyphen_ratio (11) are just as much a part
-    // of that claim as the two the brief's own snippet checked, and just as able
-    // to hide an index transposition if left unchecked.
+    // of that claim as qname_length and entropy are, and just as able to hide
+    // an index transposition if left unchecked.
     @Test
     void anUnansweredQueryStillCarriesEveryQnameFeature() {
         DnsEvent event = dnsEvent("x7q2m9v4z1kd.com", DnsQType.A, DnsQType.A.code(), 4242, null);

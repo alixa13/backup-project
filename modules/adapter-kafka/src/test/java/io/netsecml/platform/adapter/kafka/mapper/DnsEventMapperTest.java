@@ -36,10 +36,10 @@ class DnsEventMapperTest {
 
     // Fuller overload for tests that vary a field the 3-arg dto() above cannot
     // reach: id_orig_h, qtype, rcode, the AA/RA/TC flags, answers or TTLs.
-    // id_orig_p, id_resp_h and id_resp_p are deliberately not parameters at all
-    // -- DnsEventMapper reads none of them (BINDING CORRECTIONS #7), so no test
-    // needs to vary what the mapper never looks at; they stay fixed at the same
-    // valid-a-record.json values used everywhere else in this file.
+    // id_orig_p, id_resp_h and id_resp_p are deliberately not parameters at
+    // all -- DnsEventMapper reads none of them, so no test needs to vary what
+    // the mapper never looks at; they stay fixed at the same valid-a-record.json
+    // values used everywhere else in this file.
     private ZeekDnsEvent dto(String uid, String idOrigH, int transId, String query, Integer qtype,
                               Integer rcode, Boolean aa, Boolean ra, Boolean tc,
                               List<String> answers, List<Double> ttls) {
@@ -112,8 +112,8 @@ class DnsEventMapperTest {
         assertEquals(1, dns.response().answerCount());
         assertEquals(299L, dns.response().firstTtlSeconds());
 
-        // BINDING CORRECTIONS #6: dns.log has no is_orig column, so every
-        // record is the query the originator sent, and sourceIp is id_orig_h.
+        // dns.log has no is_orig column, so every record is the query the
+        // originator sent, and sourceIp is id_orig_h.
         assertEquals("10.0.0.5", dns.sourceIp());
         assertTrue(dns.isOrig());
         assertNull(dns.enrichment(), "enrichment is populated by a later join operator, not this mapper");
@@ -180,9 +180,9 @@ class DnsEventMapperTest {
         assertEquals(ReasonCode.MISSING_REQUIRED_FIELD, result.reason());
     }
 
-    // Required test, BINDING CORRECTIONS #1: id + ":" + transId turns a blank
-    // id into ":4242" -- NOT blank -- so EventId.derive's own guard would never
-    // fire on it. This must be caught before that concatenation happens.
+    // id + ":" + transId turns a blank id into ":4242" -- NOT blank -- so
+    // EventId.derive's own guard would never fire on it. This must be caught
+    // before that concatenation happens.
     @Test
     void blankIdIsRejectedRatherThanDerivingAGarbageIdentity() {
         MappingResult<NetworkEvent> result = mapper.map(dto("", 4242, "example.com"), sensor);
@@ -190,11 +190,11 @@ class DnsEventMapperTest {
         assertEquals(ReasonCode.MISSING_REQUIRED_FIELD, result.reason());
     }
 
-    // BINDING CORRECTIONS #3: id_orig_h becomes DnsEvent.sourceIp, which throws
-    // IllegalArgumentException on blank -- validated ahead of that constructor
-    // for the same reason as every other check in this mapper. Not on the
-    // brief's required-test bullet list, but its behavior is (correction #3),
-    // so it is covered here rather than left as an untested assumption.
+    // id_orig_h becomes DnsEvent.sourceIp, which throws IllegalArgumentException
+    // on blank -- validated ahead of that constructor for the same reason as
+    // every other check in this mapper. That validation has no dedicated test
+    // elsewhere in this file, so it is covered here rather than left as an
+    // untested assumption.
     @Test
     void blankIdOrigHIsRejected() {
         MappingResult<NetworkEvent> result = mapper.map(
@@ -204,9 +204,9 @@ class DnsEventMapperTest {
         assertEquals(ReasonCode.MISSING_REQUIRED_FIELD, result.reason());
     }
 
-    // Required test, BINDING CORRECTIONS #4: qtype ABSENT means "not observed"
-    // and must be rejected -- mapping it to DnsQType.OTHER would write -1 into
-    // schema index 13, which the frozen dns-feature-v1 contract marks REQUIRED,
+    // qtype ABSENT means "not observed" and must be rejected -- mapping it to
+    // DnsQType.OTHER would write -1 into schema index 13, which the frozen
+    // dns-feature-v1 contract marks REQUIRED,
     // corrupting a required feature rather than merely defaulting one. A
     // PRESENT-but-unrecognised qtype is a different case that DOES map to
     // OTHER correctly; that path belongs to DnsQType.fromCode and is exercised
@@ -220,9 +220,9 @@ class DnsEventMapperTest {
         assertEquals(ReasonCode.MISSING_REQUIRED_FIELD, result.reason());
     }
 
-    // Required test, BINDING CORRECTIONS #5: Zeek writes AA/RA/TC as false on
-    // EVERY record, reply or not, so their presence proves nothing -- only
-    // rcode indicates a response was actually seen. AA=true here is
+    // Zeek writes AA/RA/TC as false on EVERY record, reply or not, so their
+    // presence proves nothing -- only rcode indicates a response was actually
+    // seen. AA=true here is
     // deliberately misleading input: if the mapper checked AA instead of rcode
     // it would fabricate a response for a query that, per rcode's absence,
     // never received one.

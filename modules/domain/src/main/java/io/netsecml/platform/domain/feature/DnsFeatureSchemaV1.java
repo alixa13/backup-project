@@ -9,8 +9,9 @@ import static io.netsecml.platform.domain.feature.FeatureDefinition.MissingPolic
 // docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md
 // section 4.1 lists -- dns_ngram_score is excluded because it needs a data-derived reference corpus
 // that does not exist yet, unlike dns_rcode/dns_qtype which map to fixed IANA
-// registry numbers. See the plan's ruling 1 for the full reasoning; a v2 schema
-// can add it once a frequency table is committed to contracts/.
+// registry numbers. See docs/superpowers/plans/2026-09-12-dns-protocol-unit.md,
+// "Two rulings this plan makes up front" (ruling 1), for the full reasoning;
+// a v2 schema can add it once a frequency table is committed to contracts/.
 public final class DnsFeatureSchemaV1 {
     public static final String CONTENT_HASH =
         "41bde5d99886f8343766d6f593ab33bf2ebfc1bcfebcf41ad1da775856c2439f";

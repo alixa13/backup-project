@@ -28,10 +28,8 @@ import static org.junit.jupiter.api.Assertions.*;
 class DnsBuildFeaturesUseCaseTest {
     private static final SensorId SENSOR = new SensorId("sensor-eu-1");
 
-    // The plan's fixtures (FIXED_CLOCK, DNS_EVENT) are referenced by name in the
-    // plan text at the bottom of the brief but are not defined anywhere in the
-    // codebase -- ruling "the plan's fixtures do not exist" says to define them
-    // here rather than go looking for them.
+    // FIXED_CLOCK and DNS_EVENT are defined here, rather than found already
+    // built, because nothing in the codebase defines them yet.
     private static final Instant FIXED_INSTANT = Instant.parse("2026-08-27T10:03:11.402Z");
     private static final Clock FIXED_CLOCK = Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
 

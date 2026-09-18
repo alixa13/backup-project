@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.*;
 // section 6.2): a two-input keyed operator joining DNS records (input 1)
 // against conn.log snapshots (input 2) by connection uid. These tests pin the
 // four semantics that matter -- non-blocking, point-in-time, out-of-order
-// safety, and TTL -- each named in this task's brief as needing its own test.
+// safety, and TTL -- each pinned by its own numbered test below.
 class ConnSnapshotJoinFunctionTest {
 
     private static final SensorId SENSOR = new SensorId("sensor-eu-1");
@@ -236,10 +236,10 @@ class ConnSnapshotJoinFunctionTest {
         harness.close();
     }
 
-    // Semantic 4 (TTL): proves BOTH halves of OnCreateAndWrite in one test, as
-    // the brief requires -- state is still alive at 20 minutes (not expired
-    // too early), AND a READ at 20 minutes does not itself extend the TTL, so
-    // state IS expired at 35 minutes (30 minutes after the WRITE at time 0,
+    // Semantic 4 (TTL): proves BOTH halves of OnCreateAndWrite in one test --
+    // state is still alive at 20 minutes (not expired too early), AND a READ
+    // at 20 minutes does not itself extend the TTL, so state IS expired at 35
+    // minutes (30 minutes after the WRITE at time 0,
     // with no intervening write). OnReadAndWrite would have kept it alive here
     // through the 20-minute read alone; this test is what tells them apart.
     @Test
@@ -291,8 +291,8 @@ class ConnSnapshotJoinFunctionTest {
         harness.close();
     }
 
-    // THE point of this task, per the brief: prove ConnEnrichment -- a record
-    // holding a ConnSnapshot (a String connectionUid and two Instants) plus a
+    // This test's whole purpose: prove ConnEnrichment -- a record holding a
+    // ConnSnapshot (a String connectionUid and two Instants) plus a
     // ConnSnapshotDelta -- actually survives Flink's serialize/restore path,
     // not just a Java-level build()-to-build() handoff. Nothing in this
     // repository has snapshotted a String or an Instant through Flink state

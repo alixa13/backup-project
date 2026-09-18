@@ -245,12 +245,17 @@ class ArchiveJobE2ETest {
                         + "WHERE log_type = 'dns'");
 
                 assertEquals(1, dnsFeatures.size(), "exactly one dns feature vector must reach feature_vectors");
-                assertEquals("sensor-eu-1:Cdns005ZEK:4242", dnsFeatures.get(0).getString("event_id"));
-                assertEquals("Cdns005ZEK", dnsFeatures.get(0).getString("connection_uid"));
-                assertEquals(DnsFeatureSchemaV1.SCHEMA.id(), dnsFeatures.get(0).getString("schema_id"));
-                assertEquals(DnsFeatureSchemaV1.CONTENT_HASH, dnsFeatures.get(0).getString("schema_hash"));
+                assertEquals("sensor-eu-1:Cdns005ZEK:4242", dnsFeatures.get(0).getString("event_id"),
+                    "the dns vector's event_id must survive the round trip");
+                assertEquals("Cdns005ZEK", dnsFeatures.get(0).getString("connection_uid"),
+                    "connection_uid must carry the dns record's own uid, not conn's");
+                assertEquals(DnsFeatureSchemaV1.SCHEMA.id(), dnsFeatures.get(0).getString("schema_id"),
+                    "schema_id must identify the dns schema, not conn's");
+                assertEquals(DnsFeatureSchemaV1.CONTENT_HASH, dnsFeatures.get(0).getString("schema_hash"),
+                    "schema_hash must match the frozen dns-feature-v1 hash");
                 assertEquals(24, dnsFeatures.get(0).getInteger("n"), "all 24 dns values must survive the round trip");
-                assertEquals(13.25f, dnsFeatures.get(0).getFloat("first"), 0.0001f);
+                assertEquals(13.25f, dnsFeatures.get(0).getFloat("first"), 0.0001f,
+                    "the first of the 24 values must survive the round trip");
                 // The 24th value, not just the 1st: a vector truncated back down to
                 // conn's 20 values would still pass the "first" assertion above.
                 assertEquals(99f, dnsFeatures.get(0).getFloat("last"), 0.0001f,
@@ -263,8 +268,10 @@ class ArchiveJobE2ETest {
                         + "WHERE log_type = 'conn'");
 
                 assertEquals(1, connFeatures.size(), "exactly one conn feature vector must reach feature_vectors");
-                assertEquals("sensor-eu-1:Cabc123XYZ", connFeatures.get(0).getString("event_id"));
-                assertEquals(ConnFeatureSchemaV1.CONTENT_HASH, connFeatures.get(0).getString("schema_hash"));
+                assertEquals("sensor-eu-1:Cabc123XYZ", connFeatures.get(0).getString("event_id"),
+                    "conn's event_id must be unaffected by the dns chain sharing this job");
+                assertEquals(ConnFeatureSchemaV1.CONTENT_HASH, connFeatures.get(0).getString("schema_hash"),
+                    "conn's schema_hash must be unaffected by the dns chain sharing this job");
                 assertEquals(20, connFeatures.get(0).getInteger("n"),
                     "conn's 20 values must be unaffected by the dns chain sharing this job");
 
@@ -276,17 +283,23 @@ class ArchiveJobE2ETest {
                 // from -- if a chain bound the dns DLQ topic to LogType.CONN instead,
                 // this row would carry log_type "conn" and this query would return
                 // nothing.
-                assertEquals("dns: unexpected end of input", dnsInvalid.get(0).getString("detail"));
-                assertEquals("zeek-dns-source-v1", dnsInvalid.get(0).getString("source_version"));
-                assertEquals("PARSE", dnsInvalid.get(0).getString("stage"));
-                assertEquals("MALFORMED_JSON", dnsInvalid.get(0).getString("reason_code"));
+                assertEquals("dns: unexpected end of input", dnsInvalid.get(0).getString("detail"),
+                    "detail must name the dns topic's own broken payload, not conn's");
+                assertEquals("zeek-dns-source-v1", dnsInvalid.get(0).getString("source_version"),
+                    "source_version must name the dns source contract, not conn's");
+                assertEquals("PARSE", dnsInvalid.get(0).getString("stage"),
+                    "a MALFORMED_JSON rejection must be stamped stage PARSE");
+                assertEquals("MALFORMED_JSON", dnsInvalid.get(0).getString("reason_code"),
+                    "reason_code must survive the round trip");
 
                 List<GenericRecord> connInvalid = awaitRows(query,
                     "SELECT detail, source_version FROM invalid_events WHERE log_type = 'conn'");
 
                 assertEquals(1, connInvalid.size(), "exactly one conn rejection must reach invalid_events");
-                assertEquals("conn: unexpected end of input", connInvalid.get(0).getString("detail"));
-                assertEquals("zeek-conn-source-v1", connInvalid.get(0).getString("source_version"));
+                assertEquals("conn: unexpected end of input", connInvalid.get(0).getString("detail"),
+                    "detail must name the conn topic's own broken payload, not dns's");
+                assertEquals("zeek-conn-source-v1", connInvalid.get(0).getString("source_version"),
+                    "source_version must name the conn source contract, not dns's");
             } finally {
                 job.cancel().get();
             }

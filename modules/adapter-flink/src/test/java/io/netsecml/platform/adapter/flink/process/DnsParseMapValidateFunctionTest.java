@@ -31,7 +31,8 @@ class DnsParseMapValidateFunctionTest {
     // that no other committed fixture includes. Reaching main output at all
     // proves @JsonIgnoreProperties survives the Flink function, not just the
     // parser's own unit test; the event id proves the uid+trans_id composite
-    // (spec section 5) is what actually gets derived on the success path.
+    // (docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md
+    // section 5) is what actually gets derived on the success path.
     @Test
     void validZeekShapedRecordReachesMainOutputWithDerivedEventId() throws Exception {
         DnsParseMapValidateFunction function = new DnsParseMapValidateFunction(new SensorId("sensor-eu-1"));

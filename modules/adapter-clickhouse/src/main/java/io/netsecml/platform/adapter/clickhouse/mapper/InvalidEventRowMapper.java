@@ -11,7 +11,9 @@ public final class InvalidEventRowMapper implements Serializable {
     // Supplied at construction from the topic binding, never read from the event:
     // dlq-v1 is frozen and carries no protocol field. The archive job knows the
     // log type because it knows which topic it read the rejection from, bound at
-    // wiring time. See the design's section 9.
+    // wiring time. See
+    // docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md
+    // section 9 ("Failure paths").
     private final LogType logType;
 
     public InvalidEventRowMapper(LogType logType) {

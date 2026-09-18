@@ -3,12 +3,14 @@ package io.netsecml.platform.domain.feature;
 // Bit flags recording how a feature vector was produced, not what it observed.
 //
 // FeatureVector.qualityFlags has been hard-coded 0 since it was defined. This is
-// its first real use: spec section 6.2 requires that a vector built without a
-// conn.log snapshot be distinguishable from one where the connection genuinely
-// moved no bytes. The common tier's conn_enrichment_present (index 11) already
-// records it inside the vector for the model; this flag records it OUTSIDE the
-// values, so a query over archived rows can filter on provenance without knowing
-// any schema's index layout.
+// its first real use:
+// docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md
+// section 6.2 requires that a vector built without a conn.log snapshot be
+// distinguishable from one where the connection genuinely moved no bytes. The
+// common tier's conn_enrichment_present (index 11) already records it inside
+// the vector for the model; this flag records it OUTSIDE the values, so a query
+// over archived rows can filter on provenance without knowing any schema's
+// index layout.
 public final class QualityFlags {
 
     public static final int NONE = 0;

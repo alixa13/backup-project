@@ -160,9 +160,15 @@ public final class OnlineFeatureJob {
     // Every operator and sink assigned a uid here gets an explicit, stable
     // one. Without one, Flink derives the operator id from the topology hash,
     // so ANY future edit to this graph silently discards state on restore-
-    // from-checkpoint instead of failing loudly -- and this is the one chain
-    // in this job where that risk is concrete: ConnFeatureProcessFunction
-    // holds keyed rolling-window state per (sensor, sourceIp).
+    // from-checkpoint instead of failing loudly. That risk is concrete in
+    // THIS job -- ConnFeatureProcessFunction holds keyed rolling-window state
+    // per (sensor, sourceIp), and so do DnsFeatureProcessFunction's
+    // "dns-window-state" and ConnSnapshotJoinFunction's "conn-enrichment" on
+    // the dns side of the same job (see the KNOWN GAP comment on the
+    // two-protocol build() above) -- unlike the separate archive job
+    // (ArchiveJob), whose own uid comment notes it carries no keyed state at
+    // all, only a source's committed offset and a sink's in-flight batch,
+    // both of which replay safely from Kafka.
     private static SingleOutputStreamOperator<NetworkEvent> connChain(StreamExecutionEnvironment env,
             String bootstrapServers, ProtocolTopics conn, SensorId sensor) {
         DataStream<byte[]> connRaw = rawSource(env, bootstrapServers, conn.input(), "conn-online-job",

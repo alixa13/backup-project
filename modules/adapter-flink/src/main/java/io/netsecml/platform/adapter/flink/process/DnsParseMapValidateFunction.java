@@ -12,7 +12,9 @@ import java.time.Clock;
 // dns.log's half of the shared parse-map-validate body. Unlike conn, dns's event
 // id needs BOTH the upstream uid and trans_id: a resolver reuses one connection
 // for many queries, so several dns.log records legitimately share a uid, and
-// trans_id is what keeps their derived ids distinct (spec section 5).
+// trans_id is what keeps their derived ids distinct
+// (docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md
+// section 5, "Event identity").
 public final class DnsParseMapValidateFunction extends ParseMapValidateFunction<ZeekDnsEvent> {
     private transient JsonZeekDnsParser parser;
     private transient DnsEventMapper mapper;

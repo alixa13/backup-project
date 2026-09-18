@@ -34,9 +34,11 @@ public final class DnsEventMapper {
             return MappingResult.invalid(ReasonCode.MISSING_REQUIRED_FIELD, "id is required");
         }
 
-        // Same timestamp check and conversion as EventMapper -- reused rather
-        // than re-derived, since both mappers turn the same Zeek "ts" shape
-        // into the same Instant. A non-finite or too-large ts is rejected here
+        // Same timestamp check and conversion as EventMapper -- deliberately
+        // matched to EventMapper's copy, not shared through a common base type
+        // (see MAX_VALID_TS_SECONDS's own comment above for why it is
+        // duplicated rather than extracted), so both mappers land the same
+        // Instant from the same Zeek "ts" shape. A non-finite or too-large ts is rejected here
         // for the same reason as MAX_VALID_TS_SECONDS's own comment above: past
         // this mapper, ts only ever feeds Math.round(ts * 1000.0), which
         // silently saturates rather than throws on infinity or a huge finite

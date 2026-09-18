@@ -288,7 +288,7 @@ class ArchiveJobE2ETest {
                 assertEquals("zeek-dns-source-v1", dnsInvalid.get(0).getString("source_version"),
                     "source_version must name the dns source contract, not conn's");
                 assertEquals("PARSE", dnsInvalid.get(0).getString("stage"),
-                    "a MALFORMED_JSON rejection must be stamped stage PARSE");
+                    "stage must survive the round trip");
                 assertEquals("MALFORMED_JSON", dnsInvalid.get(0).getString("reason_code"),
                     "reason_code must survive the round trip");
 

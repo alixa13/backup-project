@@ -5,8 +5,9 @@ import static io.netsecml.platform.domain.feature.FeatureDefinition.MissingPolic
 import static io.netsecml.platform.domain.feature.FeatureDefinition.MissingPolicy.REQUIRED;
 
 // The frozen dns.log feature schema: the common tier (indices 0-11) followed by
-// twelve DNS-specific values (12-23). 24, not the 25 spec section 4.1 lists --
-// dns_ngram_score is excluded because it needs a data-derived reference corpus
+// twelve DNS-specific values (12-23). 24, not the 25
+// docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md
+// section 4.1 lists -- dns_ngram_score is excluded because it needs a data-derived reference corpus
 // that does not exist yet, unlike dns_rcode/dns_qtype which map to fixed IANA
 // registry numbers. See the plan's ruling 1 for the full reasoning; a v2 schema
 // can add it once a frequency table is committed to contracts/.

@@ -42,9 +42,9 @@ public final class ConnSnapshotExtractFunction implements FlatMapFunction<Networ
             }
             // A DnsEvent reaching this function is a wiring error, not a
             // runtime condition: this extractor sits only on the conn.log
-            // chain (see the pipeline diagram in this unit's task-11 brief),
-            // never on the DNS chain, so this throws rather than silently
-            // skipping or defaulting.
+            // chain, per how OnlineFeatureJob's two-protocol build() wires
+            // it -- flatMapping connParsed, never dnsParsed -- so this throws
+            // rather than silently skipping or defaulting.
             case DnsEvent ignored -> throw new IllegalStateException(
                 "ConnSnapshotExtractFunction received a DnsEvent; this operator sits only on the conn.log "
                 + "chain (docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md section "

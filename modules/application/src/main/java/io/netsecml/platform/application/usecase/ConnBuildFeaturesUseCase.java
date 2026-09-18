@@ -22,7 +22,8 @@ public final class ConnBuildFeaturesUseCase implements BuildFeaturesUseCase<Conn
     private final Clock clock;
 
     // Resolved once, in the constructor, rather than per record inside build().
-    // Spec §6.1 calls byLogType "wiring, fail-fast startup checks" specifically
+    // docs/superpowers/specs/2026-09-04-multi-protocol-feature-schema-design.md
+    // §6.1 calls byLogType "wiring, fail-fast startup checks" specifically
     // so an unresolvable schema surfaces before traffic arrives rather than on
     // the first record. ConnFeatureProcessFunction builds this in open(), so in
     // practice that means the schema is now validated at task startup -- not at

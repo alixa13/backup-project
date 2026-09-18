@@ -44,9 +44,13 @@ public final class ArchiveJob {
     // into a ClickHouse row, the target table, and the three operator uids.
     //
     // Public so a caller assembling the parameterised build() below can register
-    // its own log type without reaching into this class's internals -- Spec §6.3
-    // requires build() to take the set of log types as a parameter, and adding a
-    // log type must be one entry in a list, not a new String parameter.
+    // its own log type without reaching into this class's internals --
+    // docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md
+    // §6.3 ("Topic and chain fan-out"; cited by file path rather than a bare
+    // section number, because this repo has three spec documents whose section
+    // numbers collide) requires build() to take the set of log types as a
+    // parameter, and adding a log type must be one entry in a list, not a new
+    // String parameter.
     //
     // The uids are stored explicitly rather than derived from the chain name. They
     // are checkpoint state identity, and the two pre-existing chains named their
@@ -73,8 +77,8 @@ public final class ArchiveJob {
     // checkpoint interval and a Testcontainers-backed bootstrapServers/clickHouse
     // before the environment is executed.
     //
-    // This is the parameterised form Spec §6.3 requires: the set of log types is
-    // the chains list, so a sixth log type is a sixth list entry, never a
+    // This is the parameterised form §6.3 above requires: the set of log types
+    // is the chains list, so a sixth log type is a sixth list entry, never a
     // thirteenth String parameter.
     public static void build(StreamExecutionEnvironment env, String bootstrapServers,
                              List<LogTypeChain<?>> chains, ClickHouseConfig clickHouse) {
@@ -266,7 +270,7 @@ public final class ArchiveJob {
 
         // Four chains through connAndDnsChains() and the parameterised, list-form
         // build(): conn's two (unchanged uids) plus dns's two (the prefix
-        // pattern). This is Spec §6.3's "adding a log type is a one-line
+        // pattern). This is §6.3 above's "adding a log type is a one-line
         // registration" made real -- the pre-DNS 5-argument overload above stays
         // available for the tests that call it directly, but production now
         // registers both protocols. ArchiveJobTopologyTest's four-chain case

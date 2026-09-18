@@ -92,11 +92,12 @@ public final class ConnSnapshotJoinFunction
         DnsEvent dns = switch (event) {
             case DnsEvent d -> d;
             // A ConnEvent reaching input 1 is a wiring error: this operator's
-            // first input is the DNS parse chain only (see the pipeline
-            // diagram in this unit's task-11 brief) -- conn records reach
-            // this operator solely through input 2, via
-            // ConnSnapshotExtractFunction on the separate conn chain. So this
-            // throws rather than silently skipping or defaulting.
+            // first input is the DNS parse chain only, per how
+            // OnlineFeatureJob's two-protocol build() wires this operator's
+            // .connect(...).keyBy(...) call -- conn records reach this
+            // operator solely through input 2, via ConnSnapshotExtractFunction
+            // on the separate conn chain. So this throws rather than silently
+            // skipping or defaulting.
             case ConnEvent ignored -> throw new IllegalStateException(
                 "ConnSnapshotJoinFunction received a ConnEvent on input 1; this operator's first input is "
                 + "the DNS chain only "

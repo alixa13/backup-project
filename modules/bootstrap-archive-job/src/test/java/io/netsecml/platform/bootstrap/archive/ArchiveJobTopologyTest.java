@@ -92,10 +92,12 @@ class ArchiveJobTopologyTest {
         });
     }
 
-    // The parameterised overload Spec §6.3 requires: the set of log types is a
-    // list, so a third log type is a third list entry, wired identically to the
-    // two the 5-argument overload builds. This is what proves adding a log type
-    // is one entry, not two new String parameters on build() itself.
+    // The parameterised overload
+    // docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md
+    // §6.3 requires: the set of log types is a list, so a third log type is a
+    // third list entry, wired identically to the two the 5-argument overload
+    // builds. This is what proves adding a log type is one entry, not two new
+    // String parameters on build() itself.
     @Test
     void parameterisedBuildWiresOneChainPerListEntry() {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();

@@ -30,9 +30,11 @@ public final class SourceKeySelector implements KeySelector<NetworkEvent, Source
             // the narrowing conn's arm needs.
             case DnsEvent dns -> dns.sourceIp();
         };
-        // logType is the new middle component (spec section 5.5): it needs no
-        // arm of its own in the switch above because every NetworkEvent already
-        // carries it on the shared envelope, conn and dns alike.
+        // logType is the new middle component
+        // (docs/superpowers/specs/2026-09-04-multi-protocol-feature-schema-design.md
+        // section 5.5, "SourceKey gains the log type"): it needs no arm of its
+        // own in the switch above because every NetworkEvent already carries it
+        // on the shared envelope, conn and dns alike.
         return new SourceKey(event.sensor(), event.logType(), sourceIp);
     }
 }

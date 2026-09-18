@@ -8,20 +8,22 @@ import java.util.Objects;
 // sourceIp and isOrig are carried directly rather than through a ConnectionTuple
 // because dns.log has no connection state, service or conn_state to put in one --
 // the four endpoint fields are all it shares with conn. When EventEnvelope gains
-// the Endpoints component its spec section 5.1 already specifies, sourceIp moves
-// there and this record loses it; until then it lives here rather than forcing
-// DNS to fabricate a ConnectionTuple.
+// the Endpoints component its binding spec
+// (docs/superpowers/specs/2026-09-04-multi-protocol-feature-schema-design.md
+// §5.1) already specifies, sourceIp moves there and this record loses it; until
+// then it lives here rather than forcing DNS to fabricate a ConnectionTuple.
 //
 // enrichment is a left-join RESULT carried on the record, not a field dns.log
-// ever logs. A later unit adds a Flink operator that joins dns.log records
-// against conn.log snapshots by uid and re-emits the event with this populated
-// via withEnrichment. It is nullable and null by default: null means no conn.log
-// snapshot has arrived yet for this uid, which is the ordinary state for a
-// connection's first five minutes -- conn.log itself is only written when a
-// connection ends or is periodically flushed, so most dns records will be
-// scored before any snapshot exists. That is never an error condition; the
-// common tier's conn_enrichment_present feature (index 11) exists specifically
-// to let a model distinguish "no snapshot yet" from a genuine zero.
+// ever logs. ConnSnapshotJoinFunction (adapter-flink) is the Flink operator
+// that joins dns.log records against conn.log snapshots by uid and re-emits
+// the event with this populated via withEnrichment. It is nullable and null by
+// default: null means no conn.log snapshot has arrived yet for this uid, which
+// is the ordinary state for a connection's first five minutes -- conn.log
+// itself is only written when a connection ends or is periodically flushed, so
+// most dns records will be scored before any snapshot exists. That is never an
+// error condition; the common tier's conn_enrichment_present feature (index
+// 11) exists specifically to let a model distinguish "no snapshot yet" from a
+// genuine zero.
 //
 // This component is populated by no production code yet -- the conn.log join
 // operator arrives later in this same unit. That is a deliberate, narrow

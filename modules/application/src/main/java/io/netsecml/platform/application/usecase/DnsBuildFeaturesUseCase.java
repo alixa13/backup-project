@@ -34,7 +34,9 @@ public final class DnsBuildFeaturesUseCase implements BuildFeaturesUseCase<DnsEv
 
     // Resolved once, in the constructor, rather than per record inside build() --
     // see ConnBuildFeaturesUseCase's field of the same name for the full
-    // rationale (spec section 6.1's "wiring, fail-fast startup checks").
+    // rationale
+    // (docs/superpowers/specs/2026-09-04-multi-protocol-feature-schema-design.md
+    // section 6.1's "wiring, fail-fast startup checks").
     private final FeatureSchema schema;
 
     // Kept so a future DnsFeatureProcessFunction.open()'s no-arg construction
@@ -81,7 +83,7 @@ public final class DnsBuildFeaturesUseCase implements BuildFeaturesUseCase<DnsEv
     public FeatureBuildResult<DnsWindowState> build(DnsEvent event, DnsWindowState currentState) {
         DnsResponse response = event.response();
 
-        // 9a: an unanswered query counts as failed in the rolling window, same
+        // An unanswered query counts as failed in the rolling window, same
         // as conn's S0 (an attempt that got no reply). Capture that sees only
         // the query side of DNS traffic -- a resolver whose replies never reach
         // this sensor -- will inflate failed_count_5m exactly as it inflates
@@ -91,11 +93,11 @@ public final class DnsBuildFeaturesUseCase implements BuildFeaturesUseCase<DnsEv
 
         // Folds this event into the bounded rolling window and the inter-arrival
         // timing. Both .record() and .observe() return NEW state; the caller
-        // (the next task's DnsFeatureProcessFunction) is responsible for storing
-        // newState back into keyed state.
+        // (DnsFeatureProcessFunction) is responsible for storing newState back
+        // into keyed state.
         long bucketMinute = event.eventTime().getEpochSecond() / 60;
 
-        // 9c: bytes are always 0L -- dns.log carries no byte counts, so this
+        // bytes are always 0L -- dns.log carries no byte counts, so this
         // window's byte_sum_5m for DNS stays 0 unless a later unit adds one.
         // Unlike conn, there is no measurement to sum here.
         RollingCounters newCounters = currentState.counters().record(bucketMinute, 0L, failed);
@@ -108,7 +110,7 @@ public final class DnsBuildFeaturesUseCase implements BuildFeaturesUseCase<DnsEv
         float[] commonTier = CommonFeatureExtractor.extract(newCounters, newTiming, event.isOrig(), event.enrichment());
         float[] protocolTier = dnsFeatureExtractor.extractProtocolTier(event);
 
-        // 9d: common tier then protocol tier, at the width the schema declares
+        // Common tier then protocol tier, at the width the schema declares
         // (validated once above, so this arraycopy pair can never run off the
         // end of `values`). DnsFeatureSchemaV1Test.theFirstTwelveFeaturesAreTheCommonTierInOrder
         // is what pins this order as contract.
@@ -116,7 +118,7 @@ public final class DnsBuildFeaturesUseCase implements BuildFeaturesUseCase<DnsEv
         System.arraycopy(commonTier, 0, values, 0, CommonFeatureTierV1.FEATURE_COUNT);
         System.arraycopy(protocolTier, 0, values, CommonFeatureTierV1.FEATURE_COUNT, DnsFeatureExtractor.FEATURE_COUNT);
 
-        // 9b: the two provenance bits, OR'd together and independent of one
+        // The two provenance bits, OR'd together and independent of one
         // another. Neither is exceptional -- an idle connection has no conn.log
         // snapshot yet, and dns.log genuinely records queries nothing answered
         // -- but both must be visible outside the frozen values array, because

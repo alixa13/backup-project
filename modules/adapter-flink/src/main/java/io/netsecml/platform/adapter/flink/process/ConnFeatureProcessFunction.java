@@ -77,13 +77,17 @@ public final class ConnFeatureProcessFunction extends KeyedProcessFunction<Sourc
             case ConnEvent c -> c;
             // Resolving this compile break with an explicit arm rather than a
             // default, per the comment above: a DnsEvent reaching this function
-            // is a wiring error (the DNS chain is a separate pipeline per spec
-            // section 6.3, never routed through ConnFeatureProcessFunction), not
-            // a runtime condition to degrade gracefully from -- so it throws
+            // is a wiring error (the DNS chain is a separate pipeline per
+            // docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md
+            // section 6.3 -- cited by its file path rather than a bare section
+            // number, because this repo has three spec documents whose section
+            // numbers collide -- never routed through ConnFeatureProcessFunction),
+            // not a runtime condition to degrade gracefully from -- so it throws
             // rather than being silently skipped or defaulted.
             case DnsEvent ignored -> throw new IllegalStateException(
                 "ConnFeatureProcessFunction received a DnsEvent; the DNS chain is separate by design "
-                + "(spec section 6.3) and this is a wiring error, not a runtime condition");
+                + "(docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md section 6.3) "
+                + "and this is a wiring error, not a runtime condition");
         };
 
         FeatureBuildResult<RollingCounters> result = useCase.build(conn, currentState);

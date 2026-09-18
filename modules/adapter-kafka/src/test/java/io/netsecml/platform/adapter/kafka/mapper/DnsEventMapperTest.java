@@ -21,9 +21,9 @@ class DnsEventMapperTest {
         return parser.parse(bytes).value();
     }
 
-    // The plan's fixture pseudocode (task-7-brief.md, BINDING CORRECTIONS #9)
-    // calls this with exactly (uid, transId, query), and no such helper exists
-    // anywhere in the codebase yet -- defined here to match that call shape.
+    // Takes exactly (uid, transId, query) -- the three fields tests using this
+    // helper actually vary -- and no such helper exists anywhere in the
+    // codebase yet -- defined here to match that call shape.
     // Every other field is fixed at the same values as
     // tests/fixtures/zeek_dns/valid-a-record.json (a realistic, fully valid
     // dns.log record) because tests using this 3-arg form never need to vary
@@ -48,11 +48,9 @@ class DnsEventMapperTest {
     }
 
     // Spec section 10 ("Fixture obligations") of
-    // docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md
-    // -- named just "section 10" in task-7-brief.md and the unit plan, which is
-    // unambiguous there but not in this file with three numbered spec docs in
-    // play; the filename is added here for that reason, not because the
-    // citation itself was wrong. That section 10 in turn restates section 5.4
+    // docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md,
+    // named by file path here because this repo has three numbered spec docs
+    // whose sections collide. That section 10 in turn restates section 5.4
     // of docs/superpowers/specs/2026-09-04-multi-protocol-feature-schema-design.md,
     // the original per-log-type-identity rule.
     //
@@ -260,7 +258,10 @@ class DnsEventMapperTest {
                 "a null TTL element must not escape map() and crash-loop the Flink subtask");
 
         assertTrue(result.isValid(), () -> "expected a valid event, got " + result);
-        DnsEvent event = (DnsEvent) result.value();
+        DnsEvent event = switch (result.value()) {
+            case DnsEvent d -> d;
+            case ConnEvent c -> throw new AssertionError("DnsEventMapper maps dns.log exclusively; got a ConnEvent");
+        };
         assertEquals(0L, event.response().firstTtlSeconds(),
             "dns_ttl is DEFAULT_ZERO in the frozen contract, so an unusable value defaults to 0");
     }

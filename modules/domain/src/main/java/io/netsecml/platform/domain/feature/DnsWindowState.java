@@ -9,14 +9,15 @@ import java.util.Objects;
 // conn's checkpoint state (see RecordTimingState's own javadoc) -- widening it
 // to also carry timing would change what conn already has on disk.
 //
-// This record is held directly in Flink's ValueState<DnsWindowState> once the
-// next task's DnsFeatureProcessFunction exists, so its shape is
-// checkpoint-affecting: adding, removing or reordering components here changes
-// what a running job has serialized under its uid, the same way changing
-// RollingCounters' own fields would. The next task's Testcontainers-backed E2E
-// test is what actually proves a DnsWindowState instance survives a real
-// serialize/deserialize round trip; this task only proves the Java-level
-// behavior above that.
+// This record is held directly in Flink's ValueState<DnsWindowState> by
+// DnsFeatureProcessFunction, so its shape is checkpoint-affecting: adding,
+// removing or reordering components here changes what a running job has
+// serialized under its uid, the same way changing RollingCounters' own fields
+// would. DnsFeatureProcessFunctionTest.windowStateSurvivesASnapshotRestoreRoundTrip
+// -- a Flink KeyedOneInputStreamOperatorTestHarness snapshot/restore test, not
+// a Testcontainers-backed one -- is what actually proves a DnsWindowState
+// instance survives a real serialize/deserialize round trip; this record's own
+// compact constructor only proves the Java-level behavior above that.
 public record DnsWindowState(RollingCounters counters, RecordTimingState timing) {
 
     public DnsWindowState {

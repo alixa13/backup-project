@@ -13,10 +13,15 @@ import io.netsecml.platform.domain.feature.RecordTimingState;
 // index error in this class therefore misaligns every protocol at once, which
 // is why each position is asserted individually in the tests.
 //
-// Spec section 6.5's named extraction trigger fired here: this class always
-// needed a protocol-agnostic window type, and DNS becoming a second consumer
-// is what settled it. It now takes RollingCounters, not the conn-specific type
-// that used to sit in this signature.
+// docs/superpowers/specs/2026-09-04-multi-protocol-feature-schema-design.md
+// section 6.5's named extraction trigger fired here (cited by file path rather
+// than a bare section number, because this repo has three spec documents whose
+// section numbers collide -- a bare "section 6.5" would be especially
+// ambiguous, since the OTHER per-protocol spec's own §6 stops at 6.3 and does
+// not have a 6.5 at all): this class always needed a protocol-agnostic window
+// type, and DNS becoming a second consumer is what settled it. It now takes
+// RollingCounters, not the conn-specific type that used to sit in this
+// signature.
 public final class CommonFeatureExtractor {
 
     // Non-instantiable: every member is static.

@@ -83,14 +83,15 @@ class DnsBuildFeaturesUseCaseTest {
         assertEquals(1f, first.vector().values()[2], "failed_count_5m after one NXDOMAIN");
     }
 
-    // Test 3, ruling 9b's whole reason for existing: NOERROR's numeric code IS
-    // 0, the same value a missing response defaults to, so index 12 cannot tell
-    // these two events apart on its own -- only qualityFlags can settle that one
-    // question. (The window's failed_count_5m at index 2 also differs between
-    // them, per ruling 9a -- that is a separate, real distinction the vector
-    // DOES carry; this test does not claim index 12 and the flag are the only
-    // differences anywhere in the vector, only that they are what resolves
-    // index 12's own ambiguity.)
+    // Test 3, the whole reason QualityFlags.DNS_RESPONSE_ABSENT exists: NOERROR's
+    // numeric code IS 0, the same value a missing response defaults to, so index
+    // 12 cannot tell these two events apart on its own -- only qualityFlags can
+    // settle that one question. (The window's failed_count_5m at index 2 also
+    // differs between them, because an unanswered query counts as failed in the
+    // rolling window (DnsBuildFeaturesUseCase.build's own comment) -- that is a
+    // separate, real distinction the vector DOES carry; this test does not claim
+    // index 12 and the flag are the only differences anywhere in the vector,
+    // only that they are what resolves index 12's own ambiguity.)
     @Test
     void indexTwelveAloneCannotDistinguishUnansweredFromNoerrorButTheResponseAbsentFlagCan() {
         DnsEvent unanswered = dnsEvent(Instant.ofEpochSecond(60_000), null, null);
@@ -104,13 +105,13 @@ class DnsBuildFeaturesUseCaseTest {
 
         // Index 12 alone is identical -- this IS the gap the schema cannot
         // close. (The two vectors are NOT identical overall: index 2 differs,
-        // asserted next, exactly as ruling 9a requires. This test's claim is
-        // scoped to index 12 only -- do not read it as "the two vectors are
-        // identical except for the flag".)
+        // asserted next, because an unanswered query counts as failed in the
+        // rolling window. This test's claim is scoped to index 12 only -- do
+        // not read it as "the two vectors are identical except for the flag".)
         assertEquals(0f, unansweredResult.vector().values()[12], "dns_rcode defaults to 0 with no response");
         assertEquals(0f, answeredResult.vector().values()[12], "NOERROR's own code is 0");
 
-        // An unanswered query still counts as failed in the rolling window (9a);
+        // An unanswered query still counts as failed in the rolling window;
         // a genuinely successful lookup does not. This is a real difference
         // between the two vectors, visible in the values themselves -- the flag
         // below is the ONLY thing that distinguishes them specifically at index

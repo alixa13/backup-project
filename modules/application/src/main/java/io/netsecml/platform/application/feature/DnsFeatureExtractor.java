@@ -41,7 +41,12 @@ public final class DnsFeatureExtractor {
         float answerCount = 0f;
         float ttl = 0f;
         if (response != null) {
-            rcode = response.rcode().code();
+            // rcodeCode, not rcode().code(): the contract (index 12, dns_rcode)
+            // promises the IANA RCODE number, and DnsRcode enumerates only six
+            // of the registry's codes -- rcode().code() would collapse every
+            // other real code (6-10, 16+) to OTHER's -1. rcodeCode is the wire
+            // value DnsEventMapper carried through unchanged for this reason.
+            rcode = response.rcodeCode();
             authoritative = response.authoritative() ? 1f : 0f;
             recursionAvailable = response.recursionAvailable() ? 1f : 0f;
             truncated = response.truncated() ? 1f : 0f;
@@ -60,7 +65,7 @@ public final class DnsFeatureExtractor {
 
         return new float[]{
             rcode,                                        // 0  dns_rcode
-            query.qtype().code(),                          // 1  dns_qtype
+            query.qtypeCode(),                              // 1  dns_qtype -- see rcodeCode's comment above; same reason, same fix
             authoritative,                                  // 2  dns_authoritative
             recursionAvailable,                             // 3  dns_recursion_available
             truncated,                                      // 4  dns_truncated

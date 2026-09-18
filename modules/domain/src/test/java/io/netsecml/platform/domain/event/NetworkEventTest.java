@@ -125,7 +125,7 @@ class NetworkEventTest {
         NetworkEvent dnsEvent = new DnsEvent(
             new EventEnvelope(EventId.derive(new SensorId("s"), "D"),
                 Instant.parse("2026-09-11T10:00:00Z"), new SensorId("s"), LogType.DNS, "D"),
-            new DnsQuery("example.com", DnsQType.A, 1), null, "10.0.0.5", true, null);
+            new DnsQuery("example.com", DnsQType.A, 1, DnsQType.A.code()), null, "10.0.0.5", true, null);
 
         String describedConn = switch (connEvent) {
             case ConnEvent conn -> "conn:" + conn.connection().sourceIp();

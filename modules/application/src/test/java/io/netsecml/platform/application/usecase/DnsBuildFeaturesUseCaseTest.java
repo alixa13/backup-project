@@ -38,7 +38,7 @@ class DnsBuildFeaturesUseCaseTest {
     // DNS_EVENT is the plan's NXDOMAIN fixture: an event whose response failed,
     // so it doubles as both "a DNS event" (test 1) and "a failed lookup" (test 2).
     private static final DnsResponse NXDOMAIN_RESPONSE =
-        new DnsResponse(DnsRcode.NXDOMAIN, false, true, false, 0, 0L);
+        new DnsResponse(DnsRcode.NXDOMAIN, false, true, false, 0, 0L, DnsRcode.NXDOMAIN.code());
     private static final DnsEvent DNS_EVENT = dnsEvent(Instant.ofEpochSecond(60_000), NXDOMAIN_RESPONSE, null);
 
     // Builds a DnsEvent directly from the domain records, per the ruling that
@@ -48,7 +48,7 @@ class DnsBuildFeaturesUseCaseTest {
     private static DnsEvent dnsEvent(Instant eventTime, DnsResponse response, ConnSnapshotDelta enrichment) {
         EventEnvelope envelope = new EventEnvelope(
             EventId.derive(SENSOR, eventTime.toString()), eventTime, SENSOR, LogType.DNS, eventTime.toString());
-        DnsQuery query = new DnsQuery("example.com", DnsQType.A, 42);
+        DnsQuery query = new DnsQuery("example.com", DnsQType.A, 42, DnsQType.A.code());
         return new DnsEvent(envelope, query, response, "10.0.0.5", true, enrichment);
     }
 
@@ -95,7 +95,7 @@ class DnsBuildFeaturesUseCaseTest {
     void indexTwelveAloneCannotDistinguishUnansweredFromNoerrorButTheResponseAbsentFlagCan() {
         DnsEvent unanswered = dnsEvent(Instant.ofEpochSecond(60_000), null, null);
         DnsEvent answeredNoerror = dnsEvent(Instant.ofEpochSecond(60_000),
-            new DnsResponse(DnsRcode.NOERROR, false, false, false, 0, 0L), null);
+            new DnsResponse(DnsRcode.NOERROR, false, false, false, 0, 0L, DnsRcode.NOERROR.code()), null);
 
         FeatureBuildResult<DnsWindowState> unansweredResult =
             new DnsBuildFeaturesUseCase(FIXED_CLOCK).build(unanswered, DnsWindowState.empty());
@@ -143,7 +143,7 @@ class DnsBuildFeaturesUseCaseTest {
     void bothAbsenceBitsAreSetTogetherAndNeitherWhenBothArePresent() {
         DnsEvent bothAbsent = dnsEvent(Instant.ofEpochSecond(60_000), null, null);
         DnsEvent bothPresent = dnsEvent(Instant.ofEpochSecond(60_000),
-            new DnsResponse(DnsRcode.NOERROR, false, true, false, 1, 300L),
+            new DnsResponse(DnsRcode.NOERROR, false, true, false, 1, 300L, DnsRcode.NOERROR.code()),
             new ConnSnapshotDelta(100L, 200L, 3L, 4L, 60L));
 
         int absentFlags = new DnsBuildFeaturesUseCase(FIXED_CLOCK)
@@ -164,7 +164,7 @@ class DnsBuildFeaturesUseCaseTest {
     // here so DNS_RESPONSE_ABSENT never fires, isolating CONN_ENRICHMENT_ABSENT.
     @Test
     void enrichmentPresenceControlsTheFlagAndIndicesSixToTen() {
-        DnsResponse noerror = new DnsResponse(DnsRcode.NOERROR, false, false, false, 0, 0L);
+        DnsResponse noerror = new DnsResponse(DnsRcode.NOERROR, false, false, false, 0, 0L, DnsRcode.NOERROR.code());
         DnsEvent withoutEnrichment = dnsEvent(Instant.ofEpochSecond(60_000), noerror, null);
 
         FeatureBuildResult<DnsWindowState> absentResult =
@@ -198,7 +198,7 @@ class DnsBuildFeaturesUseCaseTest {
     // tolerate.
     @Test
     void stateCarriesAcrossCallsForTheSameKey() {
-        DnsResponse noerror = new DnsResponse(DnsRcode.NOERROR, false, false, false, 0, 0L);
+        DnsResponse noerror = new DnsResponse(DnsRcode.NOERROR, false, false, false, 0, 0L, DnsRcode.NOERROR.code());
         Instant firstTime = Instant.ofEpochSecond(60_000);
         DnsEvent first = dnsEvent(firstTime, noerror, null);
         DnsEvent second = dnsEvent(firstTime.plusMillis(2500), noerror, null);

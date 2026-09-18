@@ -100,7 +100,13 @@ public final class DnsEventMapper {
         // still get distinct identities.
         String connectionUid = dto.id();
 
-        DnsQuery query = new DnsQuery(dto.query(), qtype, dto.transId());
+        // dto.qtype() is passed through a second time here as the RAW code,
+        // alongside the enum derived from it two lines above -- both come from
+        // this one wire value, so DnsQuery's compact constructor can assert
+        // they agree. See DnsQuery's javadoc for why the raw code exists at all
+        // (index 13 must carry the actual IANA number, not the enumerated
+        // subset's -1 fallback).
+        DnsQuery query = new DnsQuery(dto.query(), qtype, dto.transId(), dto.qtype());
 
         // Only rcode's presence indicates a response was actually observed.
         // Zeek writes AA, RA and TC as false on every record, reply or not, so
@@ -125,8 +131,12 @@ public final class DnsEventMapper {
             Double firstTtl = (dto.ttls() == null || dto.ttls().isEmpty()) ? null : dto.ttls().get(0);
             long firstTtlSeconds = firstTtl == null ? 0L : Math.round(firstTtl);
 
+            // dto.rcode() is passed through a second time here as the RAW code,
+            // for the same reason and by the same pairing as qtype/qtypeCode
+            // above: DnsResponse's compact constructor asserts it agrees with
+            // the enum derived from this same value.
             response = new DnsResponse(DnsRcode.fromCode(dto.rcode()), authoritative, recursionAvailable,
-                truncated, answerCount, firstTtlSeconds);
+                truncated, answerCount, firstTtlSeconds, dto.rcode());
         }
 
         // dns.log has no is_orig column (unlike the ICSNPP logs --

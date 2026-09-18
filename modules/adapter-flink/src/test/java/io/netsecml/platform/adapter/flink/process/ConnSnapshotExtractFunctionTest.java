@@ -50,8 +50,8 @@ class ConnSnapshotExtractFunctionTest {
     }
 
     private NetworkEvent dnsEvent(String uid, Instant eventTime) {
-        DnsQuery query = new DnsQuery("example.com", DnsQType.A, 42);
-        DnsResponse response = new DnsResponse(DnsRcode.NOERROR, false, true, false, 1, 300L);
+        DnsQuery query = new DnsQuery("example.com", DnsQType.A, 42, DnsQType.A.code());
+        DnsResponse response = new DnsResponse(DnsRcode.NOERROR, false, true, false, 1, 300L, DnsRcode.NOERROR.code());
         EventEnvelope envelope = new EventEnvelope(EventId.derive(SENSOR, uid + eventTime), eventTime, SENSOR,
             LogType.DNS, uid);
         return new DnsEvent(envelope, query, response, "10.0.0.5", true, null);

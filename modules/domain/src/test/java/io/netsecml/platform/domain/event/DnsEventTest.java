@@ -13,8 +13,9 @@ class DnsEventTest {
         SENSOR,
         LogType.DNS,
         "Dabc123XYZ");
-    private static final DnsQuery QUERY = new DnsQuery("example.com", DnsQType.A, 1);
-    private static final DnsResponse RESPONSE = new DnsResponse(DnsRcode.NOERROR, true, true, false, 1, 300L);
+    private static final DnsQuery QUERY = new DnsQuery("example.com", DnsQType.A, 1, DnsQType.A.code());
+    private static final DnsResponse RESPONSE =
+        new DnsResponse(DnsRcode.NOERROR, true, true, false, 1, 300L, DnsRcode.NOERROR.code());
 
     @Test
     void buildsValidEventWithAResponse() {
@@ -58,14 +59,32 @@ class DnsEventTest {
     // missing-value case.
     @Test
     void queryRejectsBlankName() {
-        assertThrows(IllegalArgumentException.class, () -> new DnsQuery("  ", DnsQType.A, 1));
-        assertThrows(NullPointerException.class, () -> new DnsQuery("example.com", null, 1));
+        assertThrows(IllegalArgumentException.class, () -> new DnsQuery("  ", DnsQType.A, 1, DnsQType.A.code()));
+        // qtypeCode's value is irrelevant here: qtype is null, and
+        // Objects.requireNonNull(qtype, ...) throws before the drift check
+        // between qtype and qtypeCode is ever reached.
+        assertThrows(NullPointerException.class, () -> new DnsQuery("example.com", null, 1, 0));
     }
 
     @Test
     void responseRequiresRcode() {
+        // rcodeCode's value is irrelevant here for the same reason as above:
+        // rcode is null, so Objects.requireNonNull throws first.
         assertThrows(NullPointerException.class,
-            () -> new DnsResponse(null, false, false, false, 0, 0L));
+            () -> new DnsResponse(null, false, false, false, 0, 0L, 0));
+    }
+
+    // qtypeCode/rcodeCode must agree with the enum's own code() for every
+    // ENUMERATED value -- both are derived from the same wire value by
+    // DnsEventMapper, so disagreement here would be a caller bug, not a real
+    // dns.log record. OTHER is the one legitimate exception (fromCode's
+    // catch-all for a code the enum does not list), covered separately by
+    // DnsFeatureExtractorTest's unenumerated-code tests, not here.
+    @Test
+    void queryAndResponseRejectARawCodeThatDisagreesWithAnEnumeratedEnumValue() {
+        assertThrows(IllegalArgumentException.class, () -> new DnsQuery("example.com", DnsQType.A, 1, 999));
+        assertThrows(IllegalArgumentException.class,
+            () -> new DnsResponse(DnsRcode.NOERROR, false, false, false, 0, 0L, 999));
     }
 
     // withEnrichment is how the (not-yet-built) join operator hands back a

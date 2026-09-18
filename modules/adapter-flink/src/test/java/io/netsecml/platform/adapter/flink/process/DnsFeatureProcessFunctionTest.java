@@ -22,8 +22,8 @@ class DnsFeatureProcessFunctionTest {
     // interval, mirroring the reduction DnsBuildFeaturesUseCaseTest's own
     // dnsEvent() helper makes for the same reason.
     private NetworkEvent dnsEvent(SensorId sensor, String sourceIp, Instant eventTime) {
-        DnsQuery query = new DnsQuery("example.com", DnsQType.A, 42);
-        DnsResponse response = new DnsResponse(DnsRcode.NOERROR, false, true, false, 1, 300L);
+        DnsQuery query = new DnsQuery("example.com", DnsQType.A, 42, DnsQType.A.code());
+        DnsResponse response = new DnsResponse(DnsRcode.NOERROR, false, true, false, 1, 300L, DnsRcode.NOERROR.code());
         // LogType.DNS and a non-blank uid are required positional components on
         // the envelope; this harness test only exercises per-key windowing, so a
         // fixed composite string used to derive eventId is enough -- the same

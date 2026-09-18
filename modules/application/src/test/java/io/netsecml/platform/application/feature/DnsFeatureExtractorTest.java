@@ -19,11 +19,15 @@ class DnsFeatureExtractorTest {
 
     // Mirrors DnsEventTest's fixture pattern. enrichment is irrelevant to this
     // extractor (it belongs to the common tier, a different task), so it is
-    // always null here.
-    private DnsEvent dnsEvent(String qname, DnsQType qtype, int transId, DnsResponse response) {
+    // always null here. qtypeCode is a separate parameter, not qtype.code(),
+    // specifically so a caller CAN construct the unenumerated case (qtype ==
+    // OTHER, qtypeCode == some real IANA number OTHER does not name) -- the
+    // exact shape unenumeratedQtypeEmitsItsRawIanaNumberNotNegativeOne below
+    // needs and every enumerated-code call site below supplies qtype.code() for.
+    private DnsEvent dnsEvent(String qname, DnsQType qtype, int qtypeCode, int transId, DnsResponse response) {
         EventEnvelope envelope = new EventEnvelope(
             EventId.derive(SENSOR, "abc"), Instant.now(), SENSOR, LogType.DNS, "abc");
-        DnsQuery query = new DnsQuery(qname, qtype, transId);
+        DnsQuery query = new DnsQuery(qname, qtype, transId, qtypeCode);
         return new DnsEvent(envelope, query, response, "10.0.0.5", true, null);
     }
 
@@ -40,7 +44,7 @@ class DnsFeatureExtractorTest {
     // to hide an index transposition if left unchecked.
     @Test
     void anUnansweredQueryStillCarriesEveryQnameFeature() {
-        DnsEvent event = dnsEvent("x7q2m9v4z1kd.com", DnsQType.A, 4242, null);
+        DnsEvent event = dnsEvent("x7q2m9v4z1kd.com", DnsQType.A, DnsQType.A.code(), 4242, null);
 
         float[] values = extractor.extractProtocolTier(event);
 
@@ -83,8 +87,8 @@ class DnsFeatureExtractorTest {
     @Test
     void respondedQueryPopulatesAllTwelveIndicesInSchemaOrder() {
         String qname = "ab12-cd.com";
-        DnsResponse response = new DnsResponse(DnsRcode.NXDOMAIN, true, false, true, 7, 300L);
-        DnsEvent event = dnsEvent(qname, DnsQType.AAAA, 7, response);
+        DnsResponse response = new DnsResponse(DnsRcode.NXDOMAIN, true, false, true, 7, 300L, DnsRcode.NXDOMAIN.code());
+        DnsEvent event = dnsEvent(qname, DnsQType.AAAA, DnsQType.AAAA.code(), 7, response);
 
         float[] values = extractor.extractProtocolTier(event);
 
@@ -113,13 +117,19 @@ class DnsFeatureExtractorTest {
     // is pinned independently of the other two.
     @Test
     void authoritativeRecursionAvailableAndTruncatedMapToDistinctIndices() {
-        DnsResponse onlyAuthoritative = new DnsResponse(DnsRcode.NOERROR, true, false, false, 0, 0L);
-        DnsResponse onlyRecursionAvailable = new DnsResponse(DnsRcode.NOERROR, false, true, false, 0, 0L);
-        DnsResponse onlyTruncated = new DnsResponse(DnsRcode.NOERROR, false, false, true, 0, 0L);
+        DnsResponse onlyAuthoritative =
+            new DnsResponse(DnsRcode.NOERROR, true, false, false, 0, 0L, DnsRcode.NOERROR.code());
+        DnsResponse onlyRecursionAvailable =
+            new DnsResponse(DnsRcode.NOERROR, false, true, false, 0, 0L, DnsRcode.NOERROR.code());
+        DnsResponse onlyTruncated =
+            new DnsResponse(DnsRcode.NOERROR, false, false, true, 0, 0L, DnsRcode.NOERROR.code());
 
-        float[] a = extractor.extractProtocolTier(dnsEvent("example.com", DnsQType.A, 1, onlyAuthoritative));
-        float[] b = extractor.extractProtocolTier(dnsEvent("example.com", DnsQType.A, 1, onlyRecursionAvailable));
-        float[] c = extractor.extractProtocolTier(dnsEvent("example.com", DnsQType.A, 1, onlyTruncated));
+        float[] a = extractor.extractProtocolTier(
+            dnsEvent("example.com", DnsQType.A, DnsQType.A.code(), 1, onlyAuthoritative));
+        float[] b = extractor.extractProtocolTier(
+            dnsEvent("example.com", DnsQType.A, DnsQType.A.code(), 1, onlyRecursionAvailable));
+        float[] c = extractor.extractProtocolTier(
+            dnsEvent("example.com", DnsQType.A, DnsQType.A.code(), 1, onlyTruncated));
 
         assertArrayEquals(new float[]{1f, 0f, 0f}, new float[]{a[2], a[3], a[4]}, 0f,
             "authoritative alone sets only index 2");
@@ -136,8 +146,57 @@ class DnsFeatureExtractorTest {
     // this is the only test that would catch that drift.
     @Test
     void featureCountConstantMatchesTheLengthOfTheArrayItDescribes() {
-        DnsEvent event = dnsEvent("example.com", DnsQType.A, 1, null);
+        DnsEvent event = dnsEvent("example.com", DnsQType.A, DnsQType.A.code(), 1, null);
 
         assertEquals(DnsFeatureExtractor.FEATURE_COUNT, extractor.extractProtocolTier(event).length);
+    }
+
+    // contracts/features/dns-feature-schema-v1.json index 13 (dns_qtype, local
+    // index 1 here) promises "the IANA QTYPE number from qtype" -- the actual
+    // registry number, not DnsQType's ten-value subset of it. QTYPE 65
+    // (HTTPS/SVCB) is real and growing traffic (Apple and Chrome resolvers)
+    // that DnsQType does not enumerate, so DnsQType.fromCode(65) correctly
+    // returns OTHER. Before this fix the extractor read query.qtype().code(),
+    // which is OTHER's own placeholder (-1) -- silently contradicting the
+    // contract's own text for every one of those records. query.qtypeCode() is
+    // the fix: the wire number itself, carried through unchanged.
+    @Test
+    void anUnenumeratedQtypeEmitsItsRawIanaNumberNotNegativeOne() {
+        DnsEvent event = dnsEvent("example.com", DnsQType.OTHER, 65, 1, null);
+
+        float[] values = extractor.extractProtocolTier(event);
+
+        assertEquals(65f, values[1], "dns_qtype must carry qtype 65 itself, not OTHER's -1 fallback");
+    }
+
+    // Same defect, same fix, as the qtype case above, for index 12 (dns_rcode,
+    // local index 0): RCODE 16 (BADVERS/BADSIG) is real and not one of
+    // DnsRcode's six enumerated values, so DnsRcode.fromCode(16) correctly
+    // returns OTHER. response.rcodeCode() carries 16 through where
+    // response.rcode().code() would have emitted -1.
+    @Test
+    void anUnenumeratedRcodeEmitsItsRawIanaNumberNotNegativeOne() {
+        DnsResponse response = new DnsResponse(DnsRcode.fromCode(16), false, false, false, 0, 0L, 16);
+        DnsEvent event = dnsEvent("example.com", DnsQType.A, DnsQType.A.code(), 1, response);
+
+        float[] values = extractor.extractProtocolTier(event);
+
+        assertEquals(16f, values[0], "dns_rcode must carry rcode 16 itself, not OTHER's -1 fallback");
+    }
+
+    // The enumerated branch, kept alongside the two unenumerated cases above so
+    // both are visibly covered side by side: for a code DnsQType DOES name,
+    // qtypeCode and qtype.code() agree, and the emitted value is still the
+    // plain IANA number (A = 1) -- respondedQueryPopulatesAllTwelveIndicesInSchemaOrder
+    // and anUnansweredQueryStillCarriesEveryQnameFeature above already pin this
+    // same behaviour for qtype 1 and 28, unchanged by this fix; this test names
+    // it explicitly as the enumerated counterpart to the two tests above.
+    @Test
+    void anEnumeratedQtypeEmitsItsPlainIanaNumber() {
+        DnsEvent event = dnsEvent("example.com", DnsQType.A, DnsQType.A.code(), 1, null);
+
+        float[] values = extractor.extractProtocolTier(event);
+
+        assertEquals(1f, values[1], "dns_qtype = A's IANA number");
     }
 }

@@ -14,6 +14,16 @@ import java.time.Instant;
 // ZeekDnsEvent only proves a field was PRESENT -- "query": "" parses cleanly --
 // so PRESENT is not the same guarantee as the domain layer needs.
 public final class DnsEventMapper {
+    // Same bound as EventMapper.MAX_VALID_TS_SECONDS, and for the same reason:
+    // ClickHouse's event_time column is DateTime64(3, 'UTC'), valid for years
+    // 1900-2299, so 2300-01-01T00:00:00Z -- expressed here in ts's own unit,
+    // Zeek's UNIX epoch-seconds -- is the first instant outside that range. Not
+    // shared as a single constant because these two mappers do not share a
+    // common base type to hang one on; duplicated deliberately rather than
+    // re-derived, so it cannot drift from EventMapper's copy without both
+    // mappers' pinning tests catching it.
+    static final double MAX_VALID_TS_SECONDS = Instant.parse("2300-01-01T00:00:00Z").getEpochSecond();
+
     public MappingResult<NetworkEvent> map(ZeekDnsEvent dto, SensorId sensor) {
         // id must be checked blank BEFORE it is used to derive the event id
         // below. dto.id() + ":" + dto.transId() turns a blank id into ":4242"
@@ -26,8 +36,12 @@ public final class DnsEventMapper {
 
         // Same timestamp check and conversion as EventMapper -- reused rather
         // than re-derived, since both mappers turn the same Zeek "ts" shape
-        // into the same Instant.
-        if (Double.isNaN(dto.ts()) || dto.ts() < 0) {
+        // into the same Instant. A non-finite or too-large ts is rejected here
+        // for the same reason as MAX_VALID_TS_SECONDS's own comment above: past
+        // this mapper, ts only ever feeds Math.round(ts * 1000.0), which
+        // silently saturates rather than throws on infinity or a huge finite
+        // value.
+        if (Double.isNaN(dto.ts()) || Double.isInfinite(dto.ts()) || dto.ts() < 0 || dto.ts() >= MAX_VALID_TS_SECONDS) {
             return MappingResult.invalid(ReasonCode.INVALID_TIMESTAMP, "ts must be a non-negative number, was " + dto.ts());
         }
 

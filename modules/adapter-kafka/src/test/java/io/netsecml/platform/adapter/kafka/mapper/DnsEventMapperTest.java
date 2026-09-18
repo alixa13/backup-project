@@ -279,4 +279,65 @@ class DnsEventMapperTest {
         assertFalse(result.isValid());
         assertEquals(ReasonCode.INVALID_TIMESTAMP, result.reason());
     }
+
+    // Pins the ceiling itself, not just behavior around it -- mirrors
+    // EventMapperTest's equivalent test so both mappers' bounds are proven
+    // equal, not merely each independently plausible.
+    @Test
+    void maxValidTsSecondsIsTheEpochSecondOfTheFirstInstantOutsideClickHousesDateTime64Range() {
+        assertEquals(10_413_792_000.0, DnsEventMapper.MAX_VALID_TS_SECONDS,
+            "must equal Instant.parse(\"2300-01-01T00:00:00Z\").getEpochSecond()");
+    }
+
+    // A JSON literal like 1e400 overflows double and parses to
+    // Double.POSITIVE_INFINITY -- NOT NaN, so the pre-existing NaN/negative
+    // guard never caught it. Driven through the real parser, not a hand-built
+    // DTO, mirroring aNullFirstTtlDefaultsToZeroInsteadOfThrowing above, so
+    // this proves a Kafka record actually carrying that literal reaches this
+    // rejection rather than merely assuming Jackson would produce infinity.
+    @Test
+    void aPositiveInfiniteTimestampFromTheRealParserIsRejectedAsInvalidTimestamp() {
+        String json = "{\"id\":\"Cdns001ABC\",\"ts\":1e400,\"id_orig_h\":\"10.0.0.5\","
+            + "\"id_orig_p\":53421,\"id_resp_h\":\"8.8.8.8\",\"id_resp_p\":53,\"trans_id\":4242,"
+            + "\"query\":\"example.com\",\"qtype\":1,\"rcode\":0}";
+        ZeekDnsEvent parsed = parser.parse(json.getBytes(java.nio.charset.StandardCharsets.UTF_8)).value();
+        assertTrue(Double.isInfinite(parsed.ts()), "1e400 must overflow to POSITIVE_INFINITY, not NaN");
+
+        MappingResult<NetworkEvent> result = mapper.map(parsed, sensor);
+
+        assertFalse(result.isValid());
+        assertEquals(ReasonCode.INVALID_TIMESTAMP, result.reason());
+    }
+
+    // A merely huge FINITE value overflows the same way once multiplied by 1000
+    // and rounded to a long in Instant.ofEpochMilli -- this is the ceiling
+    // catching a value that is neither NaN nor infinite, at or beyond
+    // 2300-01-01T00:00:00Z.
+    @Test
+    void aTimestampAtTheClickHouseCeilingIsRejectedAsInvalidTimestamp() {
+        ZeekDnsEvent atCeiling = new ZeekDnsEvent("Cdns001ABC", DnsEventMapper.MAX_VALID_TS_SECONDS,
+            "10.0.0.5", 53421, "8.8.8.8", 53, 4242, "example.com", 1, 0, false, true, false,
+            List.of("93.184.216.34"), List.of(299.0));
+
+        MappingResult<NetworkEvent> result = mapper.map(atCeiling, sensor);
+
+        assertFalse(result.isValid());
+        assertEquals(ReasonCode.INVALID_TIMESTAMP, result.reason());
+    }
+
+    // The boundary's other side: one second BEFORE the ceiling must still be
+    // accepted, so the fix does not silently narrow the valid range. Together
+    // with the at-the-ceiling test above, this pins the ">=" comparison exactly
+    // -- a drift to ">" would flip only the previous test, and a drift to "<="
+    // would flip only this one.
+    @Test
+    void aTimestampOneSecondBeforeTheClickHouseCeilingIsAccepted() {
+        ZeekDnsEvent justBelowCeiling = new ZeekDnsEvent("Cdns001ABC", DnsEventMapper.MAX_VALID_TS_SECONDS - 1,
+            "10.0.0.5", 53421, "8.8.8.8", 53, 4242, "example.com", 1, 0, false, true, false,
+            List.of("93.184.216.34"), List.of(299.0));
+
+        MappingResult<NetworkEvent> result = mapper.map(justBelowCeiling, sensor);
+
+        assertTrue(result.isValid());
+    }
 }

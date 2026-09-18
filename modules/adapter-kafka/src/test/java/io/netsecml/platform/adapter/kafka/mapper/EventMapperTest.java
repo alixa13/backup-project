@@ -81,4 +81,65 @@ class EventMapperTest {
         assertFalse(result.isValid());
         assertEquals(ReasonCode.INVALID_PORT, result.reason());
     }
+
+    // Pins the ceiling itself, not just behavior around it: if a later edit
+    // widened MAX_VALID_TS_SECONDS (e.g. moving the year forward), this fails
+    // even though every accept/reject test below would still pass against the
+    // new, wider bound.
+    @Test
+    void maxValidTsSecondsIsTheEpochSecondOfTheFirstInstantOutsideClickHousesDateTime64Range() {
+        assertEquals(10_413_792_000.0, EventMapper.MAX_VALID_TS_SECONDS,
+            "must equal Instant.parse(\"2300-01-01T00:00:00Z\").getEpochSecond()");
+    }
+
+    // A JSON literal like 1e400 overflows double and parses to
+    // Double.POSITIVE_INFINITY -- NOT NaN, so the pre-existing NaN/negative
+    // guard never caught it. Driven through the real parser, not a hand-built
+    // DTO, so this proves a Kafka record actually carrying that literal reaches
+    // this rejection rather than merely assuming Jackson would produce infinity.
+    @Test
+    void aPositiveInfiniteTimestampFromTheRealParserIsRejectedAsInvalidTimestamp() {
+        String json = "{\"id\":\"Cabc123XYZ\",\"ts\":1e400,\"id_orig_h\":\"10.0.0.5\","
+            + "\"id_orig_p\":53421,\"id_resp_h\":\"93.184.216.34\",\"id_resp_p\":443,"
+            + "\"proto\":\"tcp\",\"conn_state\":\"SF\"}";
+        ZeekConnEvent parsed = parser.parse(json.getBytes(java.nio.charset.StandardCharsets.UTF_8)).value();
+        assertTrue(Double.isInfinite(parsed.ts()), "1e400 must overflow to POSITIVE_INFINITY, not NaN");
+
+        MappingResult<NetworkEvent> result = mapper.map(parsed, sensor);
+
+        assertFalse(result.isValid());
+        assertEquals(ReasonCode.INVALID_TIMESTAMP, result.reason());
+    }
+
+    // A merely huge FINITE value overflows the same way once multiplied by 1000
+    // and rounded to a long in Instant.ofEpochMilli -- this is the ceiling
+    // catching a value that is neither NaN nor infinite, at or beyond
+    // 2300-01-01T00:00:00Z.
+    @Test
+    void aTimestampAtTheClickHouseCeilingIsRejectedAsInvalidTimestamp() {
+        ZeekConnEvent atCeiling = new ZeekConnEvent("Cabc123XYZ", EventMapper.MAX_VALID_TS_SECONDS,
+            "10.0.0.5", 53421, "93.184.216.34", 443, "tcp", null, "SF",
+            null, null, null, null, null, null, null, null);
+
+        MappingResult<NetworkEvent> result = mapper.map(atCeiling, sensor);
+
+        assertFalse(result.isValid());
+        assertEquals(ReasonCode.INVALID_TIMESTAMP, result.reason());
+    }
+
+    // The boundary's other side: one second BEFORE the ceiling must still be
+    // accepted, so the fix does not silently narrow the valid range. Together
+    // with the at-the-ceiling test above, this pins the ">=" comparison exactly
+    // -- a drift to ">" would flip only the previous test, and a drift to "<="
+    // would flip only this one.
+    @Test
+    void aTimestampOneSecondBeforeTheClickHouseCeilingIsAccepted() {
+        ZeekConnEvent justBelowCeiling = new ZeekConnEvent("Cabc123XYZ", EventMapper.MAX_VALID_TS_SECONDS - 1,
+            "10.0.0.5", 53421, "93.184.216.34", 443, "tcp", null, "SF",
+            null, null, null, null, null, null, null, null);
+
+        MappingResult<NetworkEvent> result = mapper.map(justBelowCeiling, sensor);
+
+        assertTrue(result.isValid());
+    }
 }

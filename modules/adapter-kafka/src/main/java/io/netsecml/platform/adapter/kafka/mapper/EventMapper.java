@@ -5,11 +5,22 @@ import io.netsecml.platform.domain.event.*;
 import java.time.Instant;
 
 public final class EventMapper {
+    // ClickHouse's event_time column is DateTime64(3, 'UTC'), whose valid range
+    // is years 1900-2299, so 2300-01-01T00:00:00Z is the first instant outside
+    // it; ts is Zeek's UNIX epoch-SECONDS timestamp, so this ceiling is
+    // expressed in that same unit. A ts at or beyond it -- or non-finite, which
+    // Math.round(ts * 1000.0) below would otherwise silently saturate to
+    // Long.MAX_VALUE instead of reject -- would make eventTime either land in a
+    // nonsense partition (feature_vectors is PARTITION BY toYYYYMMDD(event_time))
+    // or fail the ClickHouse insert outright, crash-looping the archive job by
+    // replaying the same poison record forever.
+    static final double MAX_VALID_TS_SECONDS = Instant.parse("2300-01-01T00:00:00Z").getEpochSecond();
+
     public MappingResult<NetworkEvent> map(ZeekConnEvent dto, SensorId sensor) {
         if (dto.id() == null || dto.id().isBlank()) {
             return MappingResult.invalid(ReasonCode.MISSING_REQUIRED_FIELD, "id is required");
         }
-        if (Double.isNaN(dto.ts()) || dto.ts() < 0) {
+        if (Double.isNaN(dto.ts()) || Double.isInfinite(dto.ts()) || dto.ts() < 0 || dto.ts() >= MAX_VALID_TS_SECONDS) {
             return MappingResult.invalid(ReasonCode.INVALID_TIMESTAMP, "ts must be a non-negative number, was " + dto.ts());
         }
         if (dto.idOrigH() == null || dto.idOrigH().isBlank()

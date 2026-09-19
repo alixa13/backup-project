@@ -341,17 +341,22 @@ Expected: compilation failure — the classes do not exist.
 
 ```java
 public static String deriveId(String eventId, String modelName, String modelVersion) {
-    // Deterministic so a replay rewrites the same row rather than adding one:
-    // predictions is a ReplacingMergeTree keyed by (model, version, time, event).
+    // Deterministic, so rescoring the same event with the same model yields the
+    // same id instead of a second row.
+    //
+    // Each part is length-prefixed rather than joined by a separator: with a
+    // plain delimiter, ("x|y", "z") and ("x", "y|z") encode identically, and
+    // sensor ids -- half of eventId -- are operator-supplied strings this code
+    // does not get to constrain. Length prefixes make the encoding injective, so
+    // distinct inputs cannot share an id.
     try {
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        byte[] hash = digest.digest((eventId + "|" + modelName + "|" + modelVersion)
-            .getBytes(StandardCharsets.UTF_8));
-        StringBuilder hex = new StringBuilder(64);
-        for (byte b : hash) {
-            hex.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
+        StringBuilder canonical = new StringBuilder();
+        for (String part : List.of(eventId, modelName, modelVersion)) {
+            canonical.append(part.length()).append(':').append(part);
         }
-        return hex.toString();
+        byte[] hash = MessageDigest.getInstance("SHA-256")
+            .digest(canonical.toString().getBytes(StandardCharsets.UTF_8));
+        return HexFormat.of().formatHex(hash);
     } catch (NoSuchAlgorithmException e) {
         throw new IllegalStateException("SHA-256 is required by every JVM", e);
     }

@@ -1,0 +1,68 @@
+package io.netsecml.platform.domain.model;
+
+import java.io.Serializable;
+import java.util.List;
+
+// The identity and shape of one scoring model bundle: which model, which
+// version, which feature schema it was trained against, and how to read its
+// output tensor. This travels in Flink job configuration (hence Serializable)
+// and is the value every scoring component -- the registry, the ONNX adapter,
+// the inference use case -- agrees on.
+//
+// schemaHash and modelSha are content hashes (schema drift and model-file
+// integrity, respectively), so both are validated as 64 lowercase hex
+// characters, matching how the rest of the platform represents a SHA-256 hex
+// digest (see FeatureVector.schemaHash and Prediction.deriveId).
+public record ModelRef(String name, String version, String schemaId, String schemaHash, String modelSha,
+                        float threshold, List<String> classes, String outputName, int positiveClassColumn)
+        implements Serializable {
+
+    public ModelRef {
+        // Identity fields: a blank value here means the bundle cannot be looked
+        // up, logged, or matched against a feature schema.
+        if (name == null || name.isBlank()) {
+            throw new IllegalArgumentException("name must not be blank");
+        }
+        if (version == null || version.isBlank()) {
+            throw new IllegalArgumentException("version must not be blank");
+        }
+        if (schemaId == null || schemaId.isBlank()) {
+            throw new IllegalArgumentException("schemaId must not be blank");
+        }
+        if (outputName == null || outputName.isBlank()) {
+            throw new IllegalArgumentException("outputName must not be blank");
+        }
+
+        // Content hashes: exactly 64 lowercase hex characters (a SHA-256 digest),
+        // never bounded to a shorter prefix or accepted uppercase.
+        if (schemaHash == null || !schemaHash.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("schemaHash must be 64 lowercase hex characters");
+        }
+        if (modelSha == null || !modelSha.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("modelSha must be 64 lowercase hex characters");
+        }
+
+        // A decision threshold is a probability; anything outside 0..1 cannot be
+        // compared against a score and is a configuration error, not a runtime one.
+        if (threshold < 0.0f || threshold > 1.0f) {
+            throw new IllegalArgumentException("threshold must be within 0.0..1.0, got " + threshold);
+        }
+
+        // classes labels the output tensor's columns; an empty list means there is
+        // nothing for positiveClassColumn to select from.
+        if (classes == null || classes.isEmpty()) {
+            throw new IllegalArgumentException("classes must not be empty");
+        }
+        // Defensive copy in: the caller keeps no handle on our internal list.
+        classes = List.copyOf(classes);
+
+        // positiveClassColumn selects a column of the model's OUTPUT TENSOR, not an
+        // index into classes -- a single-column probability output (this platform's
+        // fixture) and a two-column zipmap=False sklearn output both stay valid
+        // regardless of how many labels classes carries, so this is bounded only
+        // below, never by classes.size().
+        if (positiveClassColumn < 0) {
+            throw new IllegalArgumentException("positiveClassColumn must not be negative");
+        }
+    }
+}

@@ -32,7 +32,7 @@
   "threshold": 0.5,
   "modelSha": "39c067af8762132ff69b8cb32d3e2732872062998515f845624349f938d23f7e",
   "outputName": "probability",
-  "positiveClassIndex": 0,
+  "positiveClassColumn": 0,
   "metrics": {},
   "trainedAt": "2026-09-19T00:00:00Z",
   "provenance": "hand-built fixture, not trained on any data",
@@ -111,6 +111,31 @@
         19.0
       ],
       "expectedScore": 0.994513750076294
+    },
+    {
+      "values": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        5.5
+      ],
+      "expectedScore": 0.4987500011920929
     }
   ]
 }

@@ -45,9 +45,15 @@ public record ModelRef(String name, String version, String schemaId, String sche
         }
 
         // A decision threshold is a probability; anything outside 0..1 cannot be
-        // compared against a score and is a configuration error, not a runtime one.
-        if (threshold < 0.0f || threshold > 1.0f) {
-            throw new IllegalArgumentException("threshold must be within 0.0..1.0, got " + threshold);
+        // compared against a score and is a configuration error, not a runtime
+        // one. NaN and infinity both pass a naive `< 0 || > 1` range check (every
+        // NaN comparison is false), so finiteness is checked explicitly -- a NaN
+        // threshold would make every `score >= threshold` decision false, so the
+        // job would emit a silent, confident stream of "not attack" predictions
+        // rather than error, which is exactly the failure this unit exists to
+        // prevent (see Prediction.score, which guards the same shape of value).
+        if (!Float.isFinite(threshold) || threshold < 0.0f || threshold > 1.0f) {
+            throw new IllegalArgumentException("threshold must be finite and within 0.0..1.0, got " + threshold);
         }
 
         // classes is the model's human-readable label set -- what a prediction's

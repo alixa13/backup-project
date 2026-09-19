@@ -32,6 +32,18 @@ class ModelRefTest {
             1.5f, List.of("normal", "attack"), "probability", 0));
     }
 
+    // A NaN threshold passes a naive `< 0 || > 1` range check (every NaN
+    // comparison is false), which would make every downstream `score >= threshold`
+    // decision false -- a silent stream of confident "not attack" predictions
+    // with nothing ever erroring. Rejecting it at construction is what protects
+    // against that.
+    @Test
+    void rejectsANonFiniteThresholdThatWouldMakeEveryDecisionFalse() {
+        assertThrows(IllegalArgumentException.class, () -> new ModelRef(
+            "conn-demo", "v1", "conn-feature-v1", "a".repeat(64), "b".repeat(64),
+            Float.NaN, List.of("normal", "attack"), "probability", 0));
+    }
+
     @Test
     void classesAreCopiedSoACallerCannotMutateTheRef() {
         List<String> mutable = new ArrayList<>(List.of("normal", "attack"));

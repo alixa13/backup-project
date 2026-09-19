@@ -1,4 +1,4 @@
-package io.netsecml.platform.domain.model;
+package io.netsecml.platform.domain.inference;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;

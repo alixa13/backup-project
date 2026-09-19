@@ -37,6 +37,7 @@
     <maven.compiler.release>21</maven.compiler.release>
     <junit.version>5.10.2</junit.version>
     <flink.version>2.2.1</flink.version>
+    <onnxruntime.version>1.20.0</onnxruntime.version>
     <maven.compiler.plugin.version>3.13.0</maven.compiler.plugin.version>
     <maven.surefire.plugin.version>3.2.5</maven.surefire.plugin.version>
   </properties>
@@ -115,6 +116,11 @@
         <groupId>com.clickhouse</groupId>
         <artifactId>client-v2</artifactId>
         <version>0.9.0</version>
+      </dependency>
+      <dependency>
+        <groupId>com.microsoft.onnxruntime</groupId>
+        <artifactId>onnxruntime</artifactId>
+        <version>${onnxruntime.version}</version>
       </dependency>
     </dependencies>
   </dependencyManagement>

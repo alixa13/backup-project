@@ -4,6 +4,8 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.util.HexFormat;
+import java.util.List;
 
 // One scored event: the score and decision a model produced for it, plus the
 // identity (model + schema + event) needed to trace that decision back to the
@@ -24,20 +26,45 @@ public record Prediction(String predictionId, String eventId, Instant eventTime,
         if (predictionId == null || !predictionId.matches("[0-9a-f]{64}")) {
             throw new IllegalArgumentException("predictionId must be 64 lowercase hex characters");
         }
+
+        // score is a probability read off the model's positive-class output
+        // column. NaN and infinity both pass a naive `< 0 || > 1` range check (a
+        // NaN comparison is always false), so finiteness is checked explicitly.
+        // A value outside 0..1 means the wrong output column was read -- exactly
+        // the misconfiguration positiveClassColumn and threshold already guard
+        // against elsewhere in this unit -- so it fails loudly at construction
+        // rather than becoming a silent garbage row an operator has to notice later.
+        if (!Float.isFinite(score) || score < 0.0f || score > 1.0f) {
+            throw new IllegalArgumentException("score must be finite and within 0.0..1.0, got " + score);
+        }
+
+        // inferenceMicros is a measured duration; a clock cannot produce a
+        // negative one.
+        if (inferenceMicros < 0) {
+            throw new IllegalArgumentException("inferenceMicros must not be negative, got " + inferenceMicros);
+        }
     }
 
     public static String deriveId(String eventId, String modelName, String modelVersion) {
-        // Deterministic so a replay rewrites the same row rather than adding one:
-        // predictions is a ReplacingMergeTree keyed by (model, version, time, event).
+        // Deterministic so the same (event, model, version) always recomputes the
+        // same id on replay instead of minting a new one. prediction_id is NOT
+        // part of predictions' ReplacingMergeTree key (ORDER BY (model_name,
+        // model_version, event_time, event_id)), so a collision here would not
+        // silently overwrite a row -- it would break anything that instead treats
+        // prediction_id as unique: a Kafka message key, a join, a dedup query.
+        //
+        // Each part is length-prefixed before hashing so the encoding is
+        // injective: a plain "|"-joined string would let ("x|y", "z", "v1") and
+        // ("x", "y|z", "v1") hash identically, and half of eventId is an
+        // operator-supplied sensor name that nothing here constrains.
         try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            byte[] hash = digest.digest((eventId + "|" + modelName + "|" + modelVersion)
-                .getBytes(StandardCharsets.UTF_8));
-            StringBuilder hex = new StringBuilder(64);
-            for (byte b : hash) {
-                hex.append(Character.forDigit((b >> 4) & 0xF, 16)).append(Character.forDigit(b & 0xF, 16));
+            StringBuilder canonical = new StringBuilder();
+            for (String part : List.of(eventId, modelName, modelVersion)) {
+                canonical.append(part.length()).append(':').append(part);
             }
-            return hex.toString();
+            byte[] hash = MessageDigest.getInstance("SHA-256")
+                .digest(canonical.toString().getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash);
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 is required by every JVM", e);
         }

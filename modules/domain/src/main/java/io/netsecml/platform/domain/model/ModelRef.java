@@ -11,8 +11,10 @@ import java.util.List;
 //
 // schemaHash and modelSha are content hashes (schema drift and model-file
 // integrity, respectively), so both are validated as 64 lowercase hex
-// characters, matching how the rest of the platform represents a SHA-256 hex
-// digest (see FeatureVector.schemaHash and Prediction.deriveId).
+// characters here. That is the same REPRESENTATION the rest of the platform
+// uses for a SHA-256 hex digest (see FeatureVector.schemaHash and
+// Prediction.deriveId) -- it is not a claim that those other sites validate
+// the format too; FeatureVector.schemaHash in particular carries no such check.
 public record ModelRef(String name, String version, String schemaId, String schemaHash, String modelSha,
                         float threshold, List<String> classes, String outputName, int positiveClassColumn)
         implements Serializable {
@@ -48,8 +50,11 @@ public record ModelRef(String name, String version, String schemaId, String sche
             throw new IllegalArgumentException("threshold must be within 0.0..1.0, got " + threshold);
         }
 
-        // classes labels the output tensor's columns; an empty list means there is
-        // nothing for positiveClassColumn to select from.
+        // classes is the model's human-readable label set -- what a prediction's
+        // consumer reads back for score and decision. A model that cannot name
+        // its classes is not described well enough to serve. This is required on
+        // its own terms: positiveClassColumn does NOT index into this list (see
+        // below), so classes being non-empty is not what makes that column valid.
         if (classes == null || classes.isEmpty()) {
             throw new IllegalArgumentException("classes must not be empty");
         }

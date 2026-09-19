@@ -9,7 +9,11 @@ import static org.junit.jupiter.api.Assertions.*;
 // is the only gate against a malformed model reference reaching the scoring path.
 class ModelRefTest {
 
-    // Shared valid values so each test below changes exactly one field.
+    // Shared valid values reused by the field-validation tests further down
+    // (rejectsABlankName through acceptsAPositiveClassColumnBeyondClassesSize),
+    // so each of those changes exactly one field from this baseline. The three
+    // tests immediately below predate these constants and inline their own
+    // values instead.
     private static final String SCHEMA_HASH = "a".repeat(64);
     private static final String MODEL_SHA = "b".repeat(64);
     private static final List<String> CLASSES = List.of("normal", "attack");
@@ -75,7 +79,9 @@ class ModelRefTest {
             "conn-demo", "v1", "conn-feature-v1", SCHEMA_HASH, "not-a-hash", 0.5f, CLASSES, "probability", 0));
     }
 
-    // An empty classes list leaves positiveClassColumn nothing to label.
+    // classes is the model's human-readable label set, required on its own terms
+    // regardless of positiveClassColumn: see acceptsAPositiveClassColumnBeyondClassesSize
+    // below for proof that column does not index into this list.
     @Test
     void rejectsAnEmptyClassesList() {
         assertThrows(IllegalArgumentException.class, () -> new ModelRef(

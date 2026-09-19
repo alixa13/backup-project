@@ -4,9 +4,13 @@ import org.junit.jupiter.api.Test;
 import java.time.Instant;
 import static org.junit.jupiter.api.Assertions.*;
 
-// deriveId is the identity Prediction rows use in ClickHouse's ReplacingMergeTree:
-// deterministic per (event, model, version) so a replay overwrites rather than
-// duplicates, and versioned so rescoring under a new model adds a row instead.
+// deriveId gives each scored event a stable, deterministic id -- it is NOT the
+// row identity ReplacingMergeTree dedups on (that is ORDER BY (model_name,
+// model_version, event_time, event_id), and prediction_id is not part of it).
+// What determinism protects is anything that instead treats prediction_id as
+// unique: a Kafka message key, a join, a dedup query. The encoding is also
+// injective (length-prefixed, not "|"-joined) so two different inputs cannot
+// collide on the same id.
 class PredictionTest {
 
     private static final Instant EVENT_TIME = Instant.parse("2026-09-19T10:00:00Z");
@@ -30,6 +34,16 @@ class PredictionTest {
         assertNotEquals(Prediction.deriveId("e", "m", "v1"), Prediction.deriveId("e", "m", "v2"));
     }
 
+    // A plain "|"-joined encoding would let a delimiter character inside one part
+    // shift where the next part appears to start, so two different (eventId,
+    // modelName) pairs could hash to the same id. eventId is half operator-supplied
+    // (a sensor name), so nothing upstream rules this out -- the encoding itself
+    // must prevent it.
+    @Test
+    void deriveIdDoesNotCollideWhenADelimiterCharacterCrossesPartBoundaries() {
+        assertNotEquals(Prediction.deriveId("x|y", "z", "v1"), Prediction.deriveId("x", "y|z", "v1"));
+    }
+
     // Without an eventId a prediction cannot be joined back to the feature vector
     // that produced it, which is its only purpose.
     @Test
@@ -46,5 +60,35 @@ class PredictionTest {
         assertThrows(IllegalArgumentException.class, () -> new Prediction(
             "not-a-hash", "sensor-eu-1:Cabc123XYZ", EVENT_TIME, "conn-demo", "v1", VALID_SHA,
             "conn-feature-v1", VALID_SCHEMA_HASH, 0.9f, true, 0.5f, 1200L, 0, EVENT_TIME));
+    }
+
+    // score is a probability read off the model's positive-class output column.
+    // A value outside 0..1 means the wrong column was read -- the same class of
+    // misconfiguration positiveClassColumn and threshold already guard against
+    // elsewhere in this unit -- so it fails loudly here instead of archiving a
+    // garbage row.
+    @Test
+    void rejectsAScoreOutsideZeroToOne() {
+        assertThrows(IllegalArgumentException.class, () -> new Prediction(
+            VALID_PREDICTION_ID, "sensor-eu-1:Cabc123XYZ", EVENT_TIME, "conn-demo", "v1", VALID_SHA,
+            "conn-feature-v1", VALID_SCHEMA_HASH, 1.5f, true, 0.5f, 1200L, 0, EVENT_TIME));
+    }
+
+    // NaN and infinity both pass a naive `< 0 || > 1` range check (a NaN
+    // comparison is always false), so finiteness is checked separately, not
+    // folded into the range test above.
+    @Test
+    void rejectsANonFiniteScore() {
+        assertThrows(IllegalArgumentException.class, () -> new Prediction(
+            VALID_PREDICTION_ID, "sensor-eu-1:Cabc123XYZ", EVENT_TIME, "conn-demo", "v1", VALID_SHA,
+            "conn-feature-v1", VALID_SCHEMA_HASH, Float.NaN, true, 0.5f, 1200L, 0, EVENT_TIME));
+    }
+
+    // inferenceMicros is a measured duration; negative is not a value a clock can produce.
+    @Test
+    void rejectsANegativeInferenceMicros() {
+        assertThrows(IllegalArgumentException.class, () -> new Prediction(
+            VALID_PREDICTION_ID, "sensor-eu-1:Cabc123XYZ", EVENT_TIME, "conn-demo", "v1", VALID_SHA,
+            "conn-feature-v1", VALID_SCHEMA_HASH, 0.9f, true, 0.5f, -1L, 0, EVENT_TIME));
     }
 }

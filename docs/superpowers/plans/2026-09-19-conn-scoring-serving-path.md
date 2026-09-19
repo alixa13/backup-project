@@ -180,7 +180,7 @@ bundle = {
     "threshold": 0.5,
     "modelSha": hashlib.sha256(payload).hexdigest(),
     "outputName": "probability",
-    "positiveClassIndex": 0,
+    "positiveClassColumn": 0,
     "metrics": {},
     "trainedAt": "2026-09-19T00:00:00Z",
     "provenance": "hand-built fixture, not trained on any data",
@@ -273,7 +273,7 @@ git commit -m "build: add ONNX Runtime and a hand-built fixture model"
 - Test: `modules/domain/src/test/java/io/netsecml/platform/domain/model/ModelRefTest.java`, `.../PredictionTest.java`
 
 **Interfaces:**
-- Produces: `ModelRef(String name, String version, String schemaId, String schemaHash, String modelSha, float threshold, List<String> classes, String outputName, int positiveClassIndex)` implements `Serializable`; `Prediction(String predictionId, String eventId, Instant eventTime, String modelName, String modelVersion, String modelSha, String schemaId, String schemaHash, float score, boolean decision, float threshold, long inferenceMicros, int qualityFlags, Instant producedAt)` with `static String Prediction.deriveId(String eventId, String modelName, String modelVersion)`.
+- Produces: `ModelRef(String name, String version, String schemaId, String schemaHash, String modelSha, float threshold, List<String> classes, String outputName, int positiveClassColumn)` implements `Serializable`; `Prediction(String predictionId, String eventId, Instant eventTime, String modelName, String modelVersion, String modelSha, String schemaId, String schemaHash, float score, boolean decision, float threshold, long inferenceMicros, int qualityFlags, Instant producedAt)` with `static String Prediction.deriveId(String eventId, String modelName, String modelVersion)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -331,7 +331,7 @@ Expected: compilation failure — the classes do not exist.
 
 - [ ] **Step 3: Implement**
 
-`ModelRef.java` — compact constructor validating: `name`, `version`, `schemaId`, `outputName` non-blank; `schemaHash` and `modelSha` each matching `[0-9a-f]{64}`; `threshold` within `0.0f..1.0f`; `classes` non-empty and copied with `List.copyOf`; `positiveClassIndex` within `classes` bounds. Implements `Serializable` because it travels in Flink job configuration.
+`ModelRef.java` — compact constructor validating: `name`, `version`, `schemaId`, `outputName` non-blank; `schemaHash` and `modelSha` each matching `[0-9a-f]{64}`; `threshold` within `0.0f..1.0f`; `classes` non-empty and copied with `List.copyOf`; `positiveClassColumn` non-negative — it is a column of the model's output tensor, NOT an index into `classes`, so it is not bounded by that list. Implements `Serializable` because it travels in Flink job configuration.
 
 `Prediction.java`:
 
@@ -488,7 +488,7 @@ git commit -m "feat: add the ModelScorer port and the scoring use case"
 **Interfaces:**
 - Produces: `record LoadedModel(ModelRef ref, byte[] onnx, List<SampleVector> samples)`; `record SampleVector(float[] values, double expectedScore)`; `FilesystemModelRegistry.load(Path bundleDir) → LoadedModel`.
 
-`model-bundle-v1.json` describes exactly the fields Task 1's generator writes: `name`, `version`, `schemaId`, `schemaHash`, `featureOrder`, `classes`, `threshold`, `modelSha`, `outputName`, `positiveClassIndex`, `metrics`, `trainedAt`, `provenance`, `sampleVectors`. `prediction-v1.json` mirrors `feature-vector-v1.json`'s style with topic `netsec.prediction.v1` and the fields of `Prediction`.
+`model-bundle-v1.json` describes exactly the fields Task 1's generator writes: `name`, `version`, `schemaId`, `schemaHash`, `featureOrder`, `classes`, `threshold`, `modelSha`, `outputName`, `positiveClassColumn`, `metrics`, `trainedAt`, `provenance`, `sampleVectors`. Document `positiveClassColumn` explicitly: it is the column of the named output tensor that carries P(positive class) — 0 for a single-column graph like the fixture's, and 1 for a scikit-learn probability output exported with `zipmap=False`. It does not index `classes`. `prediction-v1.json` mirrors `feature-vector-v1.json`'s style with topic `netsec.prediction.v1` and the fields of `Prediction`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -571,7 +571,7 @@ private static ModelRef refFrom(JsonNode b) {
     b.get("classes").forEach(c -> classes.add(c.asText()));
     return new ModelRef(b.get("name").asText(), b.get("version").asText(), b.get("schemaId").asText(),
         b.get("schemaHash").asText(), b.get("modelSha").asText(), (float) b.get("threshold").asDouble(),
-        classes, b.get("outputName").asText(), b.get("positiveClassIndex").asInt());
+        classes, b.get("outputName").asText(), b.get("positiveClassColumn").asInt());
 }
 ```
 
@@ -624,7 +624,7 @@ options.setIntraOpNumThreads(1);
 options.setInterOpNumThreads(1);
 ```
 
-then reads the single input's shape, and throws `IllegalStateException` if its last dimension differs from `expectedFeatureCount`. `score(float[])` creates a `[1, n]` tensor, runs the session, reads the output named `ref.outputName()`, and returns the value at `ref.positiveClassIndex()`. `close()` closes the session (the shared environment is not closed).
+then reads the single input's shape, and throws `IllegalStateException` if its last dimension differs from `expectedFeatureCount`. `score(float[])` creates a `[1, n]` tensor, runs the session, reads the output named `ref.outputName()`, and returns the value at `ref.positiveClassColumn()`. `close()` closes the session (the shared environment is not closed).
 
 - [ ] **Step 4: Run to verify it passes**
 

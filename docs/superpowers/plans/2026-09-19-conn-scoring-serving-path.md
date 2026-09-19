@@ -35,7 +35,7 @@
 | `contracts/stream/prediction-v1.json` | frozen wire shape of a prediction |
 | `contracts/model/model-bundle-v1.json` | frozen shape of a model bundle directory |
 | `domain/.../model/ModelRef.java` | model identity, threshold, output layout |
-| `domain/.../model/Prediction.java` | the prediction record + deterministic id |
+| `domain/.../inference/Prediction.java` | the prediction record + deterministic id |
 | `ports/.../port/out/ModelScorer.java` | score(float[]) → probability |
 | `ports/.../port/out/ModelScorerFactory.java` | serializable factory so operators need no adapter |
 | `application/.../usecase/ScoreFeaturesUseCase.java` | schema binding check, timing, threshold, identity |
@@ -268,7 +268,10 @@ git commit -m "build: add ONNX Runtime and a hand-built fixture model"
 
 **Files:**
 - Create: `modules/domain/src/main/java/io/netsecml/platform/domain/model/ModelRef.java`
-- Create: `modules/domain/src/main/java/io/netsecml/platform/domain/model/Prediction.java`
+- Create: `modules/domain/src/main/java/io/netsecml/platform/domain/inference/Prediction.java` — the
+  skeleton already ships this package, described as "prediction and inference result types (score,
+  decision, threshold)", and `PILOT_ARCHITECTURE.md` names it for prediction types. `ModelRef` stays in
+  `domain.model`, whose own description is model identity and bundle metadata.
 - Create: `modules/domain/src/main/java/io/netsecml/platform/domain/model/package-info.java`
 - Test: `modules/domain/src/test/java/io/netsecml/platform/domain/model/ModelRefTest.java`, `.../PredictionTest.java`
 
@@ -326,7 +329,8 @@ void classesAreCopiedSoACallerCannotMutateTheRef() {
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `./mvnw test -pl modules/domain -o -Dtest=PredictionTest+ModelRefTest`
+Run: `./mvnw test -pl modules/domain -o -Dtest=PredictionTest,ModelRefTest` (Surefire takes a
+comma-separated list; `+` is not a selector)
 Expected: compilation failure — the classes do not exist.
 
 - [ ] **Step 3: Implement**
@@ -359,7 +363,9 @@ The compact constructor rejects a blank `eventId` and a `predictionId` that is n
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `./mvnw test -pl modules/domain -o`
-Expected: `Tests run: 101` (96 + 5), 0 failures.
+Expected: at least `Tests run: 101` (96 + the 5 shown here), 0 failures. Add a test for every validation
+rule you implement — the count above is a floor, not a target, and a rule with no failing test behind it is
+not a rule. Report the number you actually reach.
 
 - [ ] **Step 5: Commit**
 

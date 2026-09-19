@@ -91,4 +91,24 @@ class PredictionTest {
             VALID_PREDICTION_ID, "sensor-eu-1:Cabc123XYZ", EVENT_TIME, "conn-demo", "v1", VALID_SHA,
             "conn-feature-v1", VALID_SCHEMA_HASH, 0.9f, true, 0.5f, -1L, 0, EVENT_TIME));
     }
+
+    // Same rule as ModelRef.threshold, but this is not defence in depth: the
+    // archive side's PredictionDeserializer builds a Prediction straight from
+    // wire JSON without ever going through a ModelRef, so this constructor is
+    // the only thing standing between a malformed message and a garbage row.
+    @Test
+    void rejectsAThresholdOutsideZeroToOne() {
+        assertThrows(IllegalArgumentException.class, () -> new Prediction(
+            VALID_PREDICTION_ID, "sensor-eu-1:Cabc123XYZ", EVENT_TIME, "conn-demo", "v1", VALID_SHA,
+            "conn-feature-v1", VALID_SCHEMA_HASH, 0.9f, true, 1.5f, 1200L, 0, EVENT_TIME));
+    }
+
+    // NaN passes a naive `< 0 || > 1` range check (every NaN comparison is
+    // false), same as score above -- checked separately for the same reason.
+    @Test
+    void rejectsANonFiniteThreshold() {
+        assertThrows(IllegalArgumentException.class, () -> new Prediction(
+            VALID_PREDICTION_ID, "sensor-eu-1:Cabc123XYZ", EVENT_TIME, "conn-demo", "v1", VALID_SHA,
+            "conn-feature-v1", VALID_SCHEMA_HASH, 0.9f, true, Float.NaN, 1200L, 0, EVENT_TIME));
+    }
 }

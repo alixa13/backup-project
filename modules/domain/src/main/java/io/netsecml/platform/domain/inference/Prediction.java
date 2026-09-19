@@ -38,6 +38,26 @@ public record Prediction(String predictionId, String eventId, Instant eventTime,
             throw new IllegalArgumentException("score must be finite and within 0.0..1.0, got " + score);
         }
 
+        // threshold is the decision cutoff this prediction was scored against,
+        // recorded here for the archived row's own audit trail. Same rule as
+        // ModelRef.threshold and for the same reason -- a NaN or out-of-range
+        // value would pass a naive range check silently -- but this is not mere
+        // defence in depth: PredictionDeserializer (archive side, reading the
+        // prediction topic) builds a Prediction straight from wire JSON without
+        // ever touching a ModelRef, so this constructor is the ONLY guard a
+        // malformed or truncated message meets before becoming a row in
+        // ClickHouse.
+        if (!Float.isFinite(threshold) || threshold < 0.0f || threshold > 1.0f) {
+            throw new IllegalArgumentException("threshold must be finite and within 0.0..1.0, got " + threshold);
+        }
+
+        // decision is deliberately NOT checked against score >= threshold here.
+        // That comparison lives in exactly one place -- the scoring use case --
+        // on purpose, so it cannot drift between two homes; a future model that
+        // decides by something other than a single threshold would otherwise
+        // force this record to encode a rule it no longer represents. This is a
+        // decision, not an oversight.
+
         // inferenceMicros is a measured duration; a clock cannot produce a
         // negative one.
         if (inferenceMicros < 0) {

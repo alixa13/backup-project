@@ -1,5 +1,8 @@
 package io.netsecml.platform.adapter.onnx.runtime;
 
+import ai.onnxruntime.NodeInfo;
+import ai.onnxruntime.OnnxTensor;
+import ai.onnxruntime.OrtEnvironment;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netsecml.platform.domain.model.ModelRef;
@@ -96,11 +99,12 @@ class OnnxModelScorerTest {
     }
 
     @Test
-    void scoreFailsLoudlyWhenTheRefNamesAnOutputTheGraphDoesNotHave() throws Exception {
-        // The fixture graph's only output is "probability". A ref that names an
-        // output the graph doesn't have is a bundle/graph mismatch exactly like
-        // the width check at construction -- it must surface as a clear failure
-        // at score() time, not a NullPointerException from an absent Optional.
+    void aRefNamingAnOutputTheGraphDoesNotHaveIsRejectedAtConstruction() throws Exception {
+        // The fixture graph's only output is "probability". A ref naming an
+        // output the graph doesn't have is a ref/graph pairing error exactly
+        // like the input-width check above: it is invariant across every
+        // record, so it must fail here rather than throwing an opaque failure
+        // on the first call to score() in production.
         JsonNode bundle = bundle();
         List<String> classes = new ArrayList<>();
         bundle.get("classes").forEach(c -> classes.add(c.asText()));
@@ -108,9 +112,47 @@ class OnnxModelScorerTest {
                 bundle.get("schemaId").asText(), bundle.get("schemaHash").asText(), bundle.get("modelSha").asText(),
                 (float) bundle.get("threshold").asDouble(), classes, "not_a_real_output",
                 bundle.get("positiveClassColumn").asInt());
-        try (OnnxModelScorer scorer = new OnnxModelScorer(model(), wrongOutputRef, 20)) {
-            IllegalStateException ex = assertThrows(IllegalStateException.class, () -> scorer.score(new float[20]));
-            assertTrue(ex.getMessage().contains("not_a_real_output"), "message should name the missing output");
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> new OnnxModelScorer(model(), wrongOutputRef, 20));
+        assertTrue(ex.getMessage().contains("not_a_real_output"), "message should name the wanted output");
+        assertTrue(ex.getMessage().contains("probability"), "message should list what the graph actually has");
+    }
+
+    @Test
+    void aPositiveClassColumnBeyondTheOutputTensorsWidthIsRejectedAtConstruction() throws Exception {
+        // The fixture graph's "probability" output is [1, 1] -- one column.
+        // A bundle naming column 1 against it is a ref/graph pairing error
+        // exactly like the two checks above: it must fail here, not throw
+        // ArrayIndexOutOfBoundsException on the first scored record.
+        JsonNode bundle = bundle();
+        List<String> classes = new ArrayList<>();
+        bundle.get("classes").forEach(c -> classes.add(c.asText()));
+        ModelRef wrongColumnRef = new ModelRef(bundle.get("name").asText(), bundle.get("version").asText(),
+                bundle.get("schemaId").asText(), bundle.get("schemaHash").asText(), bundle.get("modelSha").asText(),
+                (float) bundle.get("threshold").asDouble(), classes, bundle.get("outputName").asText(), 1);
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> new OnnxModelScorer(model(), wrongColumnRef, 20));
+        assertTrue(ex.getMessage().contains("positiveClassColumn"), "message should name the field at fault");
+        assertTrue(ex.getMessage().contains("1"), "message should name the requested column");
+        assertTrue(ex.getMessage().contains("probability"), "message should name the output it was checked against");
+    }
+
+    @Test
+    void requireFloatTensorOutputRejectsANonFloatTensor() throws Exception {
+        // Exercises the element-type guard directly, using ONNX Runtime's own
+        // TensorInfo for a real (if unrelated) int64 tensor rather than a
+        // second .onnx fixture whose graph would need to produce a non-float
+        // output. Without this guard, a graph whose named output is an int64
+        // label tensor -- or a scikit-learn zipmap sequence-of-maps output --
+        // would reach the `(float[][]) ... getValue()` cast in score() and
+        // throw ClassCastException on the first scored record instead of
+        // failing here, at construction.
+        try (OnnxTensor longTensor = OnnxTensor.createTensor(OrtEnvironment.getEnvironment(), new long[][] {{1L}})) {
+            NodeInfo intOutput = new NodeInfo("label", longTensor.getInfo());
+            IllegalStateException ex = assertThrows(IllegalStateException.class,
+                    () -> OnnxModelScorer.requireFloatTensorOutput("label", intOutput));
+            assertTrue(ex.getMessage().contains("label"), "message should name the output");
+            assertTrue(ex.getMessage().contains("INT64"), "message should name the element type actually found");
         }
     }
 

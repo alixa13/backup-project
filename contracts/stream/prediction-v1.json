@@ -1,0 +1,22 @@
+{
+  "id": "prediction-v1",
+  "semanticVersion": "1.0.0",
+  "topic": "netsec.prediction.v1",
+  "encoding": "application/json",
+  "fields": [
+    { "name": "predictionId", "type": "string", "required": true, "description": "Deterministic id from Prediction.deriveId(eventId, modelName, modelVersion): 64 lowercase hex characters (SHA-256). Recomputes identically on replay of the same event against the same model version; not part of predictions' ReplacingMergeTree ORDER BY, so it is not guaranteed globally unique on its own" },
+    { "name": "eventId", "type": "string", "required": true, "description": "The scored FeatureVector's own eventId -- the join key back to the feature vector this prediction was produced from" },
+    { "name": "eventTime", "type": "string", "format": "date-time", "required": true, "description": "The scored event's timestamp, copied from the feature vector, ISO-8601 UTC" },
+    { "name": "modelName", "type": "string", "required": true, "description": "ModelRef.name of the model bundle that produced this prediction" },
+    { "name": "modelVersion", "type": "string", "required": true, "description": "ModelRef.version of the model bundle that produced this prediction" },
+    { "name": "modelSha", "type": "string", "required": true, "description": "SHA-256 of the model.onnx bytes that produced this prediction, 64 lowercase hex characters, copied from ModelRef.modelSha" },
+    { "name": "schemaId", "type": "string", "required": true, "description": "Feature schema id the scored vector was built under, copied from the FeatureVector" },
+    { "name": "schemaHash", "type": "string", "required": true, "description": "SHA-256 content hash of that feature schema, 64 lowercase hex characters, copied from the FeatureVector" },
+    { "name": "score", "type": "float32", "required": true, "description": "Probability read off the model's positive-class output column (ModelRef.positiveClassColumn), in [0.0, 1.0]" },
+    { "name": "decision", "type": "boolean", "required": true, "description": "The scoring use case's decision for this prediction. Deliberately not re-derivable from score and threshold alone by a consumer -- the comparison rule lives in exactly one place so it can change without this contract changing" },
+    { "name": "threshold", "type": "float32", "required": true, "description": "The decision cutoff this prediction was scored against, copied from ModelRef.threshold, in [0.0, 1.0]" },
+    { "name": "inferenceMicros", "type": "int64", "required": true, "description": "Measured duration of the scoring call, in microseconds; never negative" },
+    { "name": "qualityFlags", "type": "int32", "required": true, "description": "Copied from the scored FeatureVector's own qualityFlags, so a prediction made on a degraded vector stays visibly degraded downstream" },
+    { "name": "producedAt", "type": "string", "format": "date-time", "required": true, "description": "Emission time of this prediction, ISO-8601 UTC" }
+  ]
+}

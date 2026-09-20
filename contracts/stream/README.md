@@ -8,7 +8,7 @@ review. Frozen Days 3-9 (Roadmap.md Section 5).
 | `feature-vector-v1.json` | `netsec.conn.feature-vector.v1` | **Frozen.** Written by the online job, read by the archive job and by Python training. |
 | `dlq-v1.json` | `netsec.conn.dlq.v1` | **Frozen.** Carries both PARSE-stage and MAP-stage rejections, distinguished by the `stage` field. |
 | `network-event-v1.json` | `netsec.network-event.v1` | Not frozen. No producer exists; the online job has no normalized-event sink. |
-| `prediction-v1.json` | `netsec.prediction.v1` | Not frozen. Arrives with inference on Roadmap Day 9. |
+| `prediction-v1.json` | `netsec.prediction.v1` | **Frozen.** Mirrors `feature-vector-v1.json`'s style; carries the 14 fields of `Prediction`, in the record's own declaration order. Written by the online job's scoring operator, read by the archive job. |
 | `invalid-event-v1.json` | `netsec.invalid-event.v1` | Not frozen. Deferred — `dlq-v1` carries both stages today, and no consumer needs them on separate topics yet. |
 
 These files are immutable. A change to a frozen contract creates a new version

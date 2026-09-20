@@ -1,0 +1,21 @@
+{
+  "id": "model-bundle-v1",
+  "semanticVersion": "1.0.0",
+  "encoding": "application/json",
+  "fields": [
+    { "name": "name", "type": "string", "required": true, "description": "Model family name, e.g. conn-demo. Together with version, identifies the bundle in Prediction.modelName/modelVersion" },
+    { "name": "version", "type": "string", "required": true, "description": "Model version within its family, e.g. v1" },
+    { "name": "schemaId", "type": "string", "required": true, "description": "Feature schema id this model was trained against, e.g. conn-feature-v1. Must resolve in FeatureSchemaRegistry" },
+    { "name": "schemaHash", "type": "string", "required": true, "description": "SHA-256 content hash of that feature schema, 64 lowercase hex characters, matching the registered schema's own content hash. A scoring component compares this against the live registry so a model cannot silently score a feature schema that has drifted since training" },
+    { "name": "featureOrder", "type": "array<string>", "required": true, "description": "Feature names in the exact order the model expects them, for a human/CI cross-check against the registered schema's own ordering. This is documentation for that check; the runtime feature order always comes from the registered schema, never from this list" },
+    { "name": "classes", "type": "array<string>", "required": true, "description": "Human-readable class labels, e.g. [\"normal\", \"attack\"]. positiveClassColumn does NOT index into this list -- see positiveClassColumn below" },
+    { "name": "threshold", "type": "float32", "required": true, "description": "Decision cutoff in [0.0, 1.0]: a score at or above this value is a positive decision. Carried into ModelRef.threshold and, per-prediction, into Prediction.threshold" },
+    { "name": "modelSha", "type": "string", "required": true, "description": "SHA-256 of model.onnx's raw bytes, 64 lowercase hex characters. FilesystemModelRegistry recomputes this at load time and refuses to load the bundle if model.onnx does not match -- a truncated or swapped model file must never reach the runtime silently" },
+    { "name": "outputName", "type": "string", "required": true, "description": "Name of the ONNX graph's output tensor that carries the class probabilities" },
+    { "name": "positiveClassColumn", "type": "int32", "required": true, "description": "The COLUMN of the output tensor named by outputName that carries P(positive class) -- it is not an index into classes. 0 for a single-column probability graph (this bundle format's own fixture), 1 for a scikit-learn probability output exported with zipmap=False, which emits one column per class in class order" },
+    { "name": "metrics", "type": "object", "required": true, "description": "Free-form training metrics (e.g. precision, recall, AUC). Opaque to the runtime; for humans and future dashboards only. {} is valid" },
+    { "name": "trainedAt", "type": "string", "format": "date-time", "required": true, "description": "When the model was trained, ISO-8601 UTC" },
+    { "name": "provenance", "type": "string", "required": true, "description": "Free-text description of how the model was produced: training data, converter (e.g. skl2onnx) version, and any other detail needed to reproduce it" },
+    { "name": "sampleVectors", "type": "array<object>", "required": true, "description": "Golden vectors: real feature vectors paired with the probability scikit-learn produced for each, each an object with values (array<float32>, one value per entry in featureOrder) and expectedScore (float64). A test feeds these through the ONNX runtime and asserts agreement within a small tolerance -- the guard against a converter changing semantics between training and serving, which no other check in this pipeline would notice" }
+  ]
+}

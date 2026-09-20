@@ -27,6 +27,7 @@ public final class ScoreFeaturesUseCase {
     }
 
     public Prediction score(FeatureVector vector) {
+        Objects.requireNonNull(vector, "vector must not be null");
         ModelRef ref = scorer.ref();
 
         // The bundle names the schema it was trained against. A mismatch means

@@ -15,6 +15,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -51,9 +52,14 @@ class ScoreFeaturesUseCaseTest {
 
     // A vector carrying an arbitrary other schema's identity, so it can never
     // match the conn-feature-v1 ModelRef the tests bind their stub scorers to.
-    private static FeatureVector vectorWithSchema(String schemaId, String schemaHash) {
-        return new FeatureVector("evt-1", Instant.parse("2026-09-19T09:59:00Z"), SENSOR, LogType.DNS, "uid-1",
-            schemaId, schemaHash, new float[24], QualityFlags.NONE, Instant.parse("2026-09-19T09:59:01Z"));
+    // logType and width are caller-supplied (rather than hardcoded) so the
+    // fixture stays internally consistent -- a "dns-feature-v1" schemaId
+    // paired with LogType.CONN and a conn-width array would be a fixture that
+    // lies about what it represents, even though nothing under test here
+    // reads logType or array width.
+    private static FeatureVector vectorWithSchema(String schemaId, String schemaHash, LogType logType, int width) {
+        return new FeatureVector("evt-1", Instant.parse("2026-09-19T09:59:00Z"), SENSOR, logType, "uid-1",
+            schemaId, schemaHash, new float[width], QualityFlags.NONE, Instant.parse("2026-09-19T09:59:01Z"));
     }
 
     @Test
@@ -69,7 +75,7 @@ class ScoreFeaturesUseCaseTest {
     void aVectorFromADifferentSchemaIsRejected() {
         // A model scoring a schema it was not trained on is a deployment error.
         ModelRef ref = ref(0.5f);
-        FeatureVector other = vectorWithSchema("dns-feature-v1", DnsFeatureSchemaV1.CONTENT_HASH);
+        FeatureVector other = vectorWithSchema("dns-feature-v1", DnsFeatureSchemaV1.CONTENT_HASH, LogType.DNS, 24);
         assertThrows(IllegalStateException.class,
             () -> new ScoreFeaturesUseCase(stub(0.9, ref), FIXED_CLOCK).score(other));
     }
@@ -85,12 +91,35 @@ class ScoreFeaturesUseCaseTest {
     }
 
     @Test
-    void theIdentityFieldsComeFromTheVectorAndTheModelRef() {
+    void predictionIdIsDerivedFromTheEventIdAndTheModelIdentity() {
+        // Deliberately does not also assert p.schemaId()/p.schemaHash() here:
+        // the schema-binding check earlier in score() already forces
+        // ref.schemaId()==vector.schemaId() and ref.schemaHash()==vector.schemaHash()
+        // on every path that reaches this point, so those two fields are equal
+        // by construction and asserting them would not distinguish "came from
+        // the vector" from "came from the ref" -- see modelIdentityFieldsLandInTheirOwnSlots
+        // below for the fields that a positional swap could actually break.
         ModelRef ref = ref(0.5f);
         Prediction p = new ScoreFeaturesUseCase(stub(0.9, ref), FIXED_CLOCK).score(vector(QualityFlags.NONE));
         assertEquals(Prediction.deriveId(p.eventId(), "conn-demo", "v1"), p.predictionId());
-        assertEquals("conn-feature-v1", p.schemaId());
-        assertEquals(ConnFeatureSchemaV1.CONTENT_HASH, p.schemaHash());
+    }
+
+    @Test
+    void modelIdentityFieldsLandInTheirOwnSlots() {
+        // modelName, modelVersion, and modelSha are three adjacent String
+        // components of Prediction, filled positionally from ref.name(),
+        // ref.version(), and ref.modelSha(); Prediction's own constructor
+        // validates none of the three, so a positional swap between any two
+        // of them would compile, pass Prediction's validation, and pass
+        // every other test in this class silently. ref(...) below gives each
+        // of the three a distinct, unmistakable value (a plain name, a plain
+        // version string, and a 64-hex digest), so any permutation of the
+        // three fails at least one assertion here.
+        ModelRef ref = ref(0.5f);
+        Prediction p = new ScoreFeaturesUseCase(stub(0.9, ref), FIXED_CLOCK).score(vector(QualityFlags.NONE));
+        assertEquals("conn-demo", p.modelName());
+        assertEquals("v1", p.modelVersion());
+        assertEquals("a".repeat(64), p.modelSha());
     }
 
     @Test
@@ -99,7 +128,7 @@ class ScoreFeaturesUseCaseTest {
         // decide false, not just "not >=" by accident of a wrong comparator.
         ModelRef ref = ref(0.5f);
         Prediction p = new ScoreFeaturesUseCase(stub(0.4, ref), FIXED_CLOCK).score(vector(QualityFlags.NONE));
-        assertTrue(!p.decision(), "score below threshold must not decide attack");
+        assertFalse(p.decision(), "score below threshold must not decide attack");
     }
 
     @Test
@@ -107,7 +136,7 @@ class ScoreFeaturesUseCaseTest {
         // The whole point of naming both sides is that a mispaired deployment is
         // diagnosable from the one log line this exception produces.
         ModelRef ref = ref(0.5f);
-        FeatureVector other = vectorWithSchema("dns-feature-v1", DnsFeatureSchemaV1.CONTENT_HASH);
+        FeatureVector other = vectorWithSchema("dns-feature-v1", DnsFeatureSchemaV1.CONTENT_HASH, LogType.DNS, 24);
         IllegalStateException ex = assertThrows(IllegalStateException.class,
             () -> new ScoreFeaturesUseCase(stub(0.9, ref), FIXED_CLOCK).score(other));
         assertTrue(ex.getMessage().contains("conn-feature-v1"), "must name the model's expected schema id");
@@ -123,7 +152,7 @@ class ScoreFeaturesUseCaseTest {
         // stale registry entry) must be caught too, not just an outright
         // different schema.
         ModelRef ref = ref(0.5f);
-        FeatureVector driftedHash = vectorWithSchema("conn-feature-v1", "0".repeat(64));
+        FeatureVector driftedHash = vectorWithSchema("conn-feature-v1", "0".repeat(64), LogType.CONN, 20);
         IllegalStateException ex = assertThrows(IllegalStateException.class,
             () -> new ScoreFeaturesUseCase(stub(0.9, ref), FIXED_CLOCK).score(driftedHash));
         assertTrue(ex.getMessage().contains(ConnFeatureSchemaV1.CONTENT_HASH), "must name the model's expected schema hash");

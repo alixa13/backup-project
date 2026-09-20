@@ -2,6 +2,7 @@ package io.netsecml.platform.adapter.registry;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netsecml.platform.domain.model.ModelRef;
 import java.io.IOException;
@@ -9,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -24,7 +26,18 @@ import java.util.Map;
 // adapter-kafka, adapter-onnx or any other adapter.
 public final class FilesystemModelRegistry {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    // Jackson's @JsonProperty(required = true) only enforces that a key is
+    // PRESENT in the JSON object -- it does not stop an explicit JSON `null`
+    // from binding to a required primitive record component. Without this
+    // feature enabled, "threshold": null silently becomes threshold = 0.0,
+    // which then passes ModelRef's 0..1 range check and makes
+    // `score >= threshold` true for every prediction: a detector that flags
+    // all traffic with no error anywhere. Enabling
+    // FAIL_ON_NULL_FOR_PRIMITIVES makes that same null throw
+    // MismatchedInputException at load time instead, for every required
+    // primitive field (threshold, positiveClassColumn) on this mapper.
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES);
 
     private FilesystemModelRegistry() {
         // Static utility: load() is the only entry point. There is no
@@ -66,19 +79,49 @@ public final class FilesystemModelRegistry {
                 bundle.modelSha, (float) bundle.threshold, bundle.classes, bundle.outputName,
                 bundle.positiveClassColumn);
 
-        List<SampleVector> samples = bundle.sampleVectors.stream()
-                .map(sample -> new SampleVector(toFloatArray(sample.values), sample.expectedScore))
-                .toList();
+        List<SampleVector> samples = toSampleVectors(bundle.sampleVectors);
 
         return new LoadedModel(ref, onnx, samples);
     }
 
+    // @JsonProperty(required = true) only rejects an ABSENT sampleVectors key;
+    // Jackson still binds an explicit `"sampleVectors": null` for a required
+    // List (FAIL_ON_NULL_FOR_PRIMITIVES only covers primitives, not
+    // reference types), so this null check is load()'s own responsibility.
+    // The message names the field so an operator does not have to guess which
+    // part of a large bundle.json is wrong.
+    private static List<SampleVector> toSampleVectors(List<SampleVectorJson> sampleVectors) {
+        if (sampleVectors == null) {
+            throw new IllegalStateException(
+                "bundle.json's sampleVectors must not be null; use an empty array for a bundle with no golden vectors");
+        }
+        List<SampleVector> result = new ArrayList<>(sampleVectors.size());
+        for (int i = 0; i < sampleVectors.size(); i++) {
+            result.add(new SampleVector(toFloatArray(sampleVectors.get(i).values, i), sampleVectors.get(i).expectedScore));
+        }
+        return result;
+    }
+
     // bundle.json carries sample values as JSON numbers, which Jackson binds
-    // to List<Double>; the domain and ONNX side both want float32.
-    private static float[] toFloatArray(List<Double> values) {
+    // to List<Double>; the domain and ONNX side both want float32. Both the
+    // list itself and any of its elements can arrive as an explicit JSON
+    // null (the same required-but-nullable gap as sampleVectors above), so
+    // both are checked here rather than left to throw a bare, unhelpful
+    // NullPointerException with no indication of which sample or index is
+    // bad -- sampleIndex is only for that error message.
+    private static float[] toFloatArray(List<Double> values, int sampleIndex) {
+        if (values == null) {
+            throw new IllegalStateException(
+                "bundle.json's sampleVectors[" + sampleIndex + "].values must not be null");
+        }
         float[] result = new float[values.size()];
         for (int i = 0; i < values.size(); i++) {
-            result[i] = values.get(i).floatValue();
+            Double value = values.get(i);
+            if (value == null) {
+                throw new IllegalStateException(
+                    "bundle.json's sampleVectors[" + sampleIndex + "].values[" + i + "] must not be null");
+            }
+            result[i] = value.floatValue();
         }
         return result;
     }
@@ -94,11 +137,22 @@ public final class FilesystemModelRegistry {
 
     // Jackson binding target for bundle.json. Its shape mirrors
     // contracts/model/model-bundle-v1.json field-for-field. featureOrder,
-    // metrics, trainedAt and provenance are parsed -- so a bundle.json missing
-    // one of them fails loudly instead of silently passing -- but are
-    // documentation/audit-only past that: FilesystemModelRegistry never uses
-    // them to build a ModelRef or to decide a feature vector's runtime order,
-    // which always comes from the registered feature schema, never a bundle file.
+    // metrics, trainedAt and provenance are parsed -- so a bundle.json
+    // missing one of those keys fails loudly (Jackson's `required = true`
+    // throws MismatchedInputException for an absent key) instead of silently
+    // passing -- but that guarantee does NOT extend to an explicit JSON
+    // `null` for these four: none of them is primitive and none is
+    // null-checked here, so "trainedAt": null binds silently as a null
+    // String and simply flows through unused. That is tolerable because all
+    // four are documentation/audit-only past parsing: FilesystemModelRegistry
+    // never uses them to build a ModelRef or to decide a feature vector's
+    // runtime order, which always comes from the registered feature schema,
+    // never a bundle file. The fields that DO drive a scoring decision are
+    // held to the stricter standard: threshold and positiveClassColumn
+    // reject an explicit null too, because MAPPER above enables
+    // FAIL_ON_NULL_FOR_PRIMITIVES, and sampleVectors (plus each entry's
+    // values) is checked by hand in toSampleVectors/toFloatArray for the
+    // same reason -- both are reference types that flag does not cover.
     @JsonIgnoreProperties(ignoreUnknown = true)
     private record BundleJson(
             @JsonProperty(value = "name", required = true) String name,

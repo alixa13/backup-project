@@ -247,25 +247,31 @@ review is the net for.
 
 ## 10. Unit decomposition
 
-**Unit M1 — ingest and the 42 modbus-tier values. No scoring, and no schema freeze.**
-Source contract, `LogType.MODBUS`, `ModbusEvent`, the parser and mapper, event identity,
-`ModbusEntityKey`, the event-level extraction (groups A and B), the Flink operator holding
-the causal state (groups C and D), topics and DLQ.
+**Unit M1 — the source contract, the parser, and the 42-value causal engine.**
+Deliberately scoped to touch NO existing invariant, so that OPEN QUESTION 1 blocks none
+of it:
 
-M1 deliberately stops one step short of registering a feature schema, because
-OPEN QUESTION 1 decides the schema's width and a schema is frozen forever once registered.
-Everything M1 builds is identical under either answer: the 42 modbus-tier values are the
-same 42 whether or not twelve common-tier values are later prepended to them. M1 therefore
-proves the hard part — exact parity with the frozen engine's causal semantics — without
-committing to the one irreversible choice.
+- `contracts/source/zeek-modbus-source-v1.json`
+- a `ZeekModbusRecord` DTO and `JsonZeekModbusParser` in `adapter-kafka`
+- `ModbusEntityKey` in `domain` — a new type, colliding with nothing
+- the causal engine: orientation normalization, the segment rule, the pending-TID machine,
+  the trailing windows, and all 42 values, as a standalone component with no Flink and no
+  schema registration
 
-**M1 has no dependency on the model at all**, so it proceeds while the ONNX re-export
-happens.
+In particular M1 does **not** add `LogType.MODBUS` or a `ModbusEvent` record. The sealed
+hierarchy's own rule is that `permits` lists only log types that have "a parser, a mapper
+and a feature schema" behind them, and M1 has no schema by design — so adding the record
+in M1 would break that invariant exactly as registering a schema would.
 
-**Unit M1b — schema, archive and end-to-end.**
-Registers `modbus-feature-v1` at whatever width OPEN QUESTION 1 settles on, assembles the
-`FeatureVector`, wires the archive chain, and proves it end to end. Small, and unblocked
-the moment that question is answered.
+This is the right order on risk as well as on rules: reproducing the Python engine's causal
+semantics exactly is the hard part of this whole design, and M1 makes it independently
+verifiable against worked vectors before anything is wired or frozen. **M1 has no
+dependency on the model**, so it proceeds while the ONNX re-export happens.
+
+**Unit M1b — hierarchy, schema, operator and end-to-end.** Unblocked by an answer to
+OPEN QUESTION 1. Adds `LogType.MODBUS`, `ModbusEvent` and its mapper, registers
+`modbus-feature-v1`, hosts M1's engine in a `KeyedProcessFunction`, wires topics, the DLQ
+and the archive chain, and proves it end to end.
 
 **Unit M2 — sequence assembly and scoring.**
 `scoreKind`, a sequence-assembly operator holding the last L=20 vectors per entity key, a

@@ -1,0 +1,34 @@
+{
+  "id": "zeek-modbus-source-v1",
+  "description": "Required and optional fields for a Zeek modbus.log record delivered as one Kafka JSON message.",
+  "requiredFields": [
+    { "name": "ts", "type": "number", "notes": "epoch seconds, fractional part allowed; negative rejected; stored at millisecond precision" },
+    { "name": "uid", "type": "string", "notes": "Zeek uid; state identity only per the upstream feature contract's excluded_raw_fields -- not itself a feature" },
+    { "name": "is_orig", "type": "boolean", "notes": "direction; source for the is_response feature (1=response, i.e. is_orig false; 0=request)" },
+    { "name": "tid", "type": "integer", "notes": "Modbus transaction id; keys the pending-TID state used by outstanding_requests_before_event, response_without_request, request_overwrite_same_tid, rtt_valid and rtt_s -- excluded from the feature vector itself as transaction state key only" },
+    { "name": "func", "type": "integer", "notes": "Modbus function code; source for the fc_1..fc_6/fc_other one-hot and the read/write ratio features" }
+  ],
+  "optionalFields": [
+    { "name": "unit", "type": "integer", "notes": "Modbus unit id; part of the sequence_context key (client_ip, server_ip, unit_id) together with the endpoint fields below, excluded from the vector itself as sequence key only. Some Zeek builds emit this field as uint instead of unit; either spelling is accepted" },
+    { "name": "uint", "type": "integer", "notes": "alternate spelling of unit id emitted by some Zeek builds; treated identically to unit" },
+    { "name": "address", "type": "integer", "notes": "register/coil address; source for address_value, address_present, address_delta_valid and address_delta" },
+    { "name": "quantity", "type": "integer", "notes": "register/coil count; source for quantity_value, quantity_present, quantity_delta_valid and quantity_delta" },
+    { "name": "matched", "type": "boolean", "notes": "response causal-match flag; source for response_matched on a response record, ignored on a request" },
+    { "name": "request_values", "type": "array", "notes": "array of numeric request values; source for request_values_present, request_value_count/min/max/mean" },
+    { "name": "response_values", "type": "array", "notes": "array of numeric response values; source for response_values_present, response_value_count/min/max/mean" },
+    { "name": "src_ip", "type": "string", "notes": "client address; part of the sequence_context key, excluded from the vector itself as state/orientation only" },
+    { "name": "dst_ip", "type": "string", "notes": "server address; part of the sequence_context key, excluded from the vector itself as state/orientation only" },
+    { "name": "src_port", "type": "integer", "notes": "excluded from the vector itself as transport context only" },
+    { "name": "dst_port", "type": "integer", "notes": "excluded from the vector itself as transport context only" }
+  ],
+  "excludedRawFields": [
+    { "name": "exception_code", "notes": "excluded per the upstream feature contract: zero Normal support in the training data" },
+    { "name": "request_data", "notes": "excluded per the upstream feature contract: raw string, exact byte semantics not proven" },
+    { "name": "response_data", "notes": "excluded per the upstream feature contract: raw string, exact byte semantics not proven" },
+    { "name": "request_subfunction_code", "notes": "excluded per the upstream feature contract: zero Normal support in the training data" },
+    { "name": "response_subfunction_code", "notes": "excluded per the upstream feature contract: zero Normal support in the training data" },
+    { "name": "mei_type", "notes": "excluded per the upstream feature contract: zero Normal support in the training data" },
+    { "name": "modbus_detailed_link_id", "notes": "not part of the upstream feature contract's feature_order or excluded_raw_fields list; carried by some Zeek builds but never read" }
+  ],
+  "invalidRecordPolicy": "Malformed JSON or a missing required field routes to the modbus DLQ topic with a reason code; unknown additive fields are tolerated and ignored."
+}

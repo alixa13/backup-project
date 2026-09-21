@@ -1,0 +1,566 @@
+{
+  "contract_id": "modbus_feature_contract_v1",
+  "version": 1,
+  "created_at_utc": "2026-09-19T10:28:03.252867+00:00",
+  "feature_vector_dimension": 42,
+  "feature_order": [
+    "is_response",
+    "fc_1",
+    "fc_2",
+    "fc_3",
+    "fc_4",
+    "fc_5",
+    "fc_6",
+    "fc_other",
+    "address_value",
+    "address_present",
+    "quantity_value",
+    "quantity_present",
+    "response_matched",
+    "request_values_present",
+    "request_value_count",
+    "request_value_min",
+    "request_value_max",
+    "request_value_mean",
+    "response_values_present",
+    "response_value_count",
+    "response_value_min",
+    "response_value_max",
+    "response_value_mean",
+    "prev_event_available",
+    "inter_arrival_s",
+    "function_changed",
+    "address_delta_valid",
+    "address_delta",
+    "quantity_delta_valid",
+    "quantity_delta",
+    "outstanding_requests_before_event",
+    "response_without_request",
+    "request_overwrite_same_tid",
+    "rtt_valid",
+    "rtt_s",
+    "event_rate_1s",
+    "event_rate_10s",
+    "event_rate_60s",
+    "unique_function_count_10s",
+    "unique_address_count_10s",
+    "read_ratio_10s",
+    "write_ratio_10s"
+  ],
+  "sequence_context": {
+    "key": [
+      "client_ip",
+      "server_ip",
+      "unit_id"
+    ],
+    "gap_seconds": 15.0,
+    "L": 20,
+    "causal_only": true
+  },
+  "function_registry": {
+    "one_hot": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "other": "fc_other",
+    "read": [
+      1,
+      2,
+      3,
+      4,
+      20,
+      24
+    ],
+    "write": [
+      5,
+      6,
+      15,
+      16,
+      21,
+      22
+    ],
+    "read_write": [
+      23
+    ]
+  },
+  "window_rule": "(t-window,t], includes current event, reset at capture and >15s segment boundary",
+  "transaction_rule": "compute before-event state features; mutate pending-TID state only after current feature extraction",
+  "features": [
+    {
+      "index": 1,
+      "name": "is_response",
+      "group": "A_MODBUS_SEMANTIC",
+      "mode": "event",
+      "definition": "1=response; 0=request",
+      "dependencies": "direction",
+      "missing_rule": "required"
+    },
+    {
+      "index": 2,
+      "name": "fc_1",
+      "group": "A_MODBUS_SEMANTIC",
+      "mode": "event",
+      "definition": "1 iff FC=1",
+      "dependencies": "function_code",
+      "missing_rule": "required"
+    },
+    {
+      "index": 3,
+      "name": "fc_2",
+      "group": "A_MODBUS_SEMANTIC",
+      "mode": "event",
+      "definition": "1 iff FC=2",
+      "dependencies": "function_code",
+      "missing_rule": "required"
+    },
+    {
+      "index": 4,
+      "name": "fc_3",
+      "group": "A_MODBUS_SEMANTIC",
+      "mode": "event",
+      "definition": "1 iff FC=3",
+      "dependencies": "function_code",
+      "missing_rule": "required"
+    },
+    {
+      "index": 5,
+      "name": "fc_4",
+      "group": "A_MODBUS_SEMANTIC",
+      "mode": "event",
+      "definition": "1 iff FC=4",
+      "dependencies": "function_code",
+      "missing_rule": "required"
+    },
+    {
+      "index": 6,
+      "name": "fc_5",
+      "group": "A_MODBUS_SEMANTIC",
+      "mode": "event",
+      "definition": "1 iff FC=5",
+      "dependencies": "function_code",
+      "missing_rule": "required"
+    },
+    {
+      "index": 7,
+      "name": "fc_6",
+      "group": "A_MODBUS_SEMANTIC",
+      "mode": "event",
+      "definition": "1 iff FC=6",
+      "dependencies": "function_code",
+      "missing_rule": "required"
+    },
+    {
+      "index": 8,
+      "name": "fc_other",
+      "group": "A_MODBUS_SEMANTIC",
+      "mode": "event",
+      "definition": "1 iff FC not in {1..6}",
+      "dependencies": "function_code",
+      "missing_rule": "required"
+    },
+    {
+      "index": 9,
+      "name": "address_value",
+      "group": "A_MODBUS_SEMANTIC",
+      "mode": "event",
+      "definition": "numeric address; 0 if absent",
+      "dependencies": "address",
+      "missing_rule": "use address_present"
+    },
+    {
+      "index": 10,
+      "name": "address_present",
+      "group": "A_MODBUS_SEMANTIC",
+      "mode": "event",
+      "definition": "1 iff address present",
+      "dependencies": "address",
+      "missing_rule": "never missing"
+    },
+    {
+      "index": 11,
+      "name": "quantity_value",
+      "group": "A_MODBUS_SEMANTIC",
+      "mode": "event",
+      "definition": "numeric quantity; 0 if absent",
+      "dependencies": "quantity",
+      "missing_rule": "use quantity_present"
+    },
+    {
+      "index": 12,
+      "name": "quantity_present",
+      "group": "A_MODBUS_SEMANTIC",
+      "mode": "event",
+      "definition": "1 iff quantity present",
+      "dependencies": "quantity",
+      "missing_rule": "never missing"
+    },
+    {
+      "index": 13,
+      "name": "response_matched",
+      "group": "A_MODBUS_SEMANTIC",
+      "mode": "event",
+      "definition": "response current causal matched flag; request=0",
+      "dependencies": "direction+matched",
+      "missing_rule": "no future leakage"
+    },
+    {
+      "index": 14,
+      "name": "request_values_present",
+      "group": "B_MODBUS_VALUE",
+      "mode": "event",
+      "definition": "1 iff numeric request values present",
+      "dependencies": "request_values",
+      "missing_rule": "never missing"
+    },
+    {
+      "index": 15,
+      "name": "request_value_count",
+      "group": "B_MODBUS_VALUE",
+      "mode": "event",
+      "definition": "count numeric request values",
+      "dependencies": "request_values",
+      "missing_rule": "0 if absent"
+    },
+    {
+      "index": 16,
+      "name": "request_value_min",
+      "group": "B_MODBUS_VALUE",
+      "mode": "event",
+      "definition": "min numeric request value",
+      "dependencies": "request_values",
+      "missing_rule": "0 if absent"
+    },
+    {
+      "index": 17,
+      "name": "request_value_max",
+      "group": "B_MODBUS_VALUE",
+      "mode": "event",
+      "definition": "max numeric request value",
+      "dependencies": "request_values",
+      "missing_rule": "0 if absent"
+    },
+    {
+      "index": 18,
+      "name": "request_value_mean",
+      "group": "B_MODBUS_VALUE",
+      "mode": "event",
+      "definition": "mean numeric request value",
+      "dependencies": "request_values",
+      "missing_rule": "0 if absent"
+    },
+    {
+      "index": 19,
+      "name": "response_values_present",
+      "group": "B_MODBUS_VALUE",
+      "mode": "event",
+      "definition": "1 iff numeric response values present",
+      "dependencies": "response_values",
+      "missing_rule": "never missing"
+    },
+    {
+      "index": 20,
+      "name": "response_value_count",
+      "group": "B_MODBUS_VALUE",
+      "mode": "event",
+      "definition": "count numeric response values",
+      "dependencies": "response_values",
+      "missing_rule": "0 if absent"
+    },
+    {
+      "index": 21,
+      "name": "response_value_min",
+      "group": "B_MODBUS_VALUE",
+      "mode": "event",
+      "definition": "min numeric response value",
+      "dependencies": "response_values",
+      "missing_rule": "0 if absent"
+    },
+    {
+      "index": 22,
+      "name": "response_value_max",
+      "group": "B_MODBUS_VALUE",
+      "mode": "event",
+      "definition": "max numeric response value",
+      "dependencies": "response_values",
+      "missing_rule": "0 if absent"
+    },
+    {
+      "index": 23,
+      "name": "response_value_mean",
+      "group": "B_MODBUS_VALUE",
+      "mode": "event",
+      "definition": "mean numeric response value",
+      "dependencies": "response_values",
+      "missing_rule": "0 if absent"
+    },
+    {
+      "index": 24,
+      "name": "prev_event_available",
+      "group": "C_TRANSACTION_TEMPORAL",
+      "mode": "stateful",
+      "definition": "1 iff prior event exists in current C3 segment",
+      "dependencies": "ts",
+      "missing_rule": "never missing"
+    },
+    {
+      "index": 25,
+      "name": "inter_arrival_s",
+      "group": "C_TRANSACTION_TEMPORAL",
+      "mode": "stateful",
+      "definition": "current ts - previous ts in segment",
+      "dependencies": "ts",
+      "missing_rule": "0 at segment start"
+    },
+    {
+      "index": 26,
+      "name": "function_changed",
+      "group": "C_TRANSACTION_TEMPORAL",
+      "mode": "stateful",
+      "definition": "1 iff FC differs from previous event",
+      "dependencies": "function_code",
+      "missing_rule": "0 at segment start"
+    },
+    {
+      "index": 27,
+      "name": "address_delta_valid",
+      "group": "C_TRANSACTION_TEMPORAL",
+      "mode": "stateful",
+      "definition": "1 iff current and previous applicable address exist",
+      "dependencies": "address",
+      "missing_rule": "never missing"
+    },
+    {
+      "index": 28,
+      "name": "address_delta",
+      "group": "C_TRANSACTION_TEMPORAL",
+      "mode": "stateful",
+      "definition": "current address - previous applicable address",
+      "dependencies": "address",
+      "missing_rule": "0 if invalid"
+    },
+    {
+      "index": 29,
+      "name": "quantity_delta_valid",
+      "group": "C_TRANSACTION_TEMPORAL",
+      "mode": "stateful",
+      "definition": "1 iff current and previous applicable quantity exist",
+      "dependencies": "quantity",
+      "missing_rule": "never missing"
+    },
+    {
+      "index": 30,
+      "name": "quantity_delta",
+      "group": "C_TRANSACTION_TEMPORAL",
+      "mode": "stateful",
+      "definition": "current quantity - previous applicable quantity",
+      "dependencies": "quantity",
+      "missing_rule": "0 if invalid"
+    },
+    {
+      "index": 31,
+      "name": "outstanding_requests_before_event",
+      "group": "C_TRANSACTION_TEMPORAL",
+      "mode": "stateful",
+      "definition": "pending TID count before current event",
+      "dependencies": "transaction_id+direction+ts",
+      "missing_rule": "reset per segment"
+    },
+    {
+      "index": 32,
+      "name": "response_without_request",
+      "group": "C_TRANSACTION_TEMPORAL",
+      "mode": "stateful",
+      "definition": "response with no pending matching TID",
+      "dependencies": "transaction_id+direction+ts",
+      "missing_rule": "never missing"
+    },
+    {
+      "index": 33,
+      "name": "request_overwrite_same_tid",
+      "group": "C_TRANSACTION_TEMPORAL",
+      "mode": "stateful",
+      "definition": "request reuses already-pending TID",
+      "dependencies": "transaction_id+direction+ts",
+      "missing_rule": "never missing"
+    },
+    {
+      "index": 34,
+      "name": "rtt_valid",
+      "group": "C_TRANSACTION_TEMPORAL",
+      "mode": "stateful",
+      "definition": "1 iff response matched prior request causally",
+      "dependencies": "transaction_id+direction+ts",
+      "missing_rule": "never missing"
+    },
+    {
+      "index": 35,
+      "name": "rtt_s",
+      "group": "C_TRANSACTION_TEMPORAL",
+      "mode": "stateful",
+      "definition": "response ts - matched request ts",
+      "dependencies": "transaction_id+direction+ts",
+      "missing_rule": "0 if invalid"
+    },
+    {
+      "index": 36,
+      "name": "event_rate_1s",
+      "group": "D_WINDOW_BEHAVIOR",
+      "mode": "windowed",
+      "definition": "count in (t-1,t] / 1s",
+      "dependencies": "ts",
+      "missing_rule": "current segment only"
+    },
+    {
+      "index": 37,
+      "name": "event_rate_10s",
+      "group": "D_WINDOW_BEHAVIOR",
+      "mode": "windowed",
+      "definition": "count in (t-10,t] / 10s",
+      "dependencies": "ts",
+      "missing_rule": "current segment only"
+    },
+    {
+      "index": 38,
+      "name": "event_rate_60s",
+      "group": "D_WINDOW_BEHAVIOR",
+      "mode": "windowed",
+      "definition": "count in (t-60,t] / 60s",
+      "dependencies": "ts",
+      "missing_rule": "current segment only"
+    },
+    {
+      "index": 39,
+      "name": "unique_function_count_10s",
+      "group": "D_WINDOW_BEHAVIOR",
+      "mode": "windowed",
+      "definition": "distinct FCs in (t-10,t]",
+      "dependencies": "function_code+ts",
+      "missing_rule": "current segment only"
+    },
+    {
+      "index": 40,
+      "name": "unique_address_count_10s",
+      "group": "D_WINDOW_BEHAVIOR",
+      "mode": "windowed",
+      "definition": "distinct present addresses in (t-10,t]",
+      "dependencies": "address+ts",
+      "missing_rule": "current segment only"
+    },
+    {
+      "index": 41,
+      "name": "read_ratio_10s",
+      "group": "D_WINDOW_BEHAVIOR",
+      "mode": "windowed",
+      "definition": "READ/READ_WRITE fraction in (t-10,t]",
+      "dependencies": "function_code+ts",
+      "missing_rule": "current segment only"
+    },
+    {
+      "index": 42,
+      "name": "write_ratio_10s",
+      "group": "D_WINDOW_BEHAVIOR",
+      "mode": "windowed",
+      "definition": "WRITE/READ_WRITE fraction in (t-10,t]",
+      "dependencies": "function_code+ts",
+      "missing_rule": "current segment only"
+    }
+  ],
+  "excluded_raw_fields": [
+    {
+      "field": "uid",
+      "reason": "state identity only"
+    },
+    {
+      "field": "src_ip",
+      "reason": "state/orientation only"
+    },
+    {
+      "field": "dst_ip",
+      "reason": "state/orientation only"
+    },
+    {
+      "field": "src_port",
+      "reason": "transport context only"
+    },
+    {
+      "field": "dst_port",
+      "reason": "transport context only"
+    },
+    {
+      "field": "transaction_id",
+      "reason": "transaction state key only"
+    },
+    {
+      "field": "unit_id",
+      "reason": "sequence key only"
+    },
+    {
+      "field": "exception_code",
+      "reason": "zero Normal support"
+    },
+    {
+      "field": "request_subfunction_code",
+      "reason": "zero Normal support"
+    },
+    {
+      "field": "response_subfunction_code",
+      "reason": "zero Normal support"
+    },
+    {
+      "field": "mei_type",
+      "reason": "zero Normal support"
+    },
+    {
+      "field": "request_data",
+      "reason": "raw string; exact byte semantics not proven"
+    },
+    {
+      "field": "response_data",
+      "reason": "raw string; exact byte semantics not proven"
+    },
+    {
+      "field": "packet_index",
+      "reason": "forensic/label provenance only"
+    },
+    {
+      "field": "capture_key",
+      "reason": "offline provenance only"
+    }
+  ],
+  "preprocessing": {
+    "status": "NOT_FROZEN",
+    "rule": "fit only on capture-disjoint Normal Train"
+  },
+  "future_information_allowed": false,
+  "acceptance_gates": {
+    "stage06a_passed": true,
+    "stage06b_passed": true,
+    "stage06c_passed": true,
+    "sequence_key_c3": true,
+    "gap_15s": true,
+    "L20": true,
+    "value_vectors_100pct_numeric": true,
+    "raw_string_payload_detected": true,
+    "fc_encoding_expected": true,
+    "feature_count_42": true,
+    "indices_1_to_42": true,
+    "feature_names_unique": true,
+    "attack_labels_not_used": true,
+    "attack_separability_not_used": true
+  },
+  "source_sha256": {
+    "FEATURE_SPEC_V1.csv": "0a46364a58cc2602e182d2a4ddbe0603b5df05e32aedc524415807cfe2f4e9a1",
+    "stage06a_summary.json": "26ec6b630b2a11c4eedb6ca3bcda3f32478b47f7c854a7fad6eb68e3611e4560",
+    "stage06b_summary.json": "aad5d1427345d954bc6d34015de41e8cdf87e585e66be9f086e6d163ccf71bbf",
+    "stage06c_summary.json": "a265c5532f79b21bf8502763ee7da1a89cf546560445b9fe04ed22117a33e090",
+    "value_numeric_parseability.csv": "0e85560aa6c5e8d7069bf1f72774e1ff4e991dc8987ee6febfcb11d6599c1024",
+    "payload_representation_interpretation.csv": "a8b425962a58c37b072d02cc6190ad06cf9b9279ab7a5f2a18caca27464158a5",
+    "function_encoding_proposal.csv": "35f155d76a8b989b9f4ddec5f20724c7d0a8aa7a2e39a68055da940f84597de4",
+    "SEQUENCE_STATE_CONTRACT_V1.json": "55f2429ed1b225802187dc6c836ea1a20e1338002e23cfda17ead9383e6c53a0",
+    "LSTM_SEQUENCE_LENGTH_CONTRACT_V1.json": "7f4fcaa730922276a7c0526ac67ff17c2210acf17c687d528a996804f95c79f2"
+  }
+}

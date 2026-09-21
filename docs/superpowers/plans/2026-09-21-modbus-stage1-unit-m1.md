@@ -198,11 +198,17 @@ git commit -m "feat(domain): register modbus-feature-v1, mirroring the frozen up
 
 **Interfaces:**
 - Consumes: `ModbusFeatureSchemaV1.SCHEMA` from Task 1 — the sealed hierarchy's rule is that a record joins `permits` only once it has a parser, a mapper and a feature schema, and Task 1 supplies the schema.
-- Produces: `record ModbusEvent(EventEnvelope envelope, ModbusDirection direction, int functionCode, String transactionId, String unitId, Double address, Double quantity, boolean matched, double[] requestValues, double[] responseValues) implements NetworkEvent`, and `enum ModbusDirection { REQUEST, RESPONSE }` nested in `ModbusEvent`.
+- Produces: `record ModbusEvent(EventEnvelope envelope, ModbusDirection direction, String sourceIp, String destinationIp, int functionCode, String transactionId, String unitId, Double address, Double quantity, boolean matched, double[] requestValues, double[] responseValues) implements NetworkEvent`, and `enum ModbusDirection { REQUEST, RESPONSE }` nested in `ModbusEvent`.
+
+`sourceIp` and `destinationIp` are components of the record, not of the envelope. Verified: `EventEnvelope` carries only `(eventId, eventTime, sensor, logType, connectionUid)` — no addresses — and `DnsEvent` carries its own `String sourceIp` for the same reason. Task 5's orientation normalization needs BOTH addresses, so modbus carries both rather than just the source.
+
+Adding `ModbusEvent` to `permits` breaks `SourceKeySelector.getKey`'s exhaustive `switch` at compile time. That is the mechanism working as designed. Add `case ModbusEvent modbus -> modbus.sourceIp();` — the arm is required to compile but is never exercised, because modbus is keyed by `ModbusEntityKey` (Task 5) and never flows through this selector. Comment that, so the next reader does not assume modbus uses `SourceKey`.
 
 `address` and `quantity` are boxed `Double` because absence is meaningful and drives the `*_present` masks — a primitive with a sentinel would make "absent" indistinguishable from a real 0. The two value arrays need defensive copies in the compact constructor **and** the accessor.
 
 Adding `ModbusEvent` to `permits` will fail compilation at every non-exhaustive pattern `switch`. That is the point of sealing. Add an explicit `case ModbusEvent` arm at each site; never a `default`.
+
+The hierarchy's rule is that a record joins `permits` only once it has "a parser, a mapper and a feature schema" behind it. Task 1 supplied the schema and Task 3 supplies the parser, but the mapper arrives in Task 4 — it cannot come first, because its return type *is* `ModbusEvent`. The obligation is a unit-completion property, discharged by Task 4. Say so in this task's commit message so a reader of the history does not read the intermediate commit as a violation.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -705,11 +711,9 @@ git commit -m "feat(domain): add the modbus causal state machine"
 
 **Interfaces:**
 - Consumes: `ModbusEvent`, `ModbusEntityState` (the state **before** this event), `ModbusFunctionCode`.
-- Produces: `ModbusFeatureExtractor.extract(ModbusEvent event, ModbusEntityState before, boolean newSegment) → float[]` of length 42.
+- Produces: `ModbusFeatureExtractor.extract(ModbusEvent event, ModbusEntityState before, ModbusEntityState after, boolean newSegment) → float[]` of length 42.
 
-The caller passes the state as it stands before the event and the `newSegment` decision already made, so this method is a pure function and the whole of Ruling 5 lives in the caller (Task 8). Window counts must be read from the state **after** the current event has been folded in — so `extract` takes the *before* state for groups C and the *after* state for group D. Give it both explicitly rather than mutating inside:
-
-`extract(ModbusEvent event, ModbusEntityState before, ModbusEntityState after, boolean newSegment) → float[]`
+Four arguments, not three. Groups A, B and C are read from `before` — the state as it stood when the event arrived — while group D's window counts must be read from `after`, because the upstream engine appends the current event to its windows *before* reading their sizes. Passing both explicitly keeps this a pure function and leaves the whole of Ruling 5 in the caller (Task 8).
 
 Index-by-index rules, all from the upstream engine:
 

@@ -190,93 +190,89 @@ merely differs from the incoming one — but it reaches more features.
 
 ## 9. Rulings this design makes
 
-> **Revised 2026-09-21, on the user's instruction: change no existing rule, and if
-> something would break the system, do not do it — raise it instead.** Rulings 1 and 2
-> below were both rule changes. Both are now WITHDRAWN as decisions and recorded as OPEN
-> QUESTIONS. Neither blocks the bulk of M1 (see §10).
+> **Revision history.** These were first written as rulings, withdrawn the same day on the
+> user's instruction to change no existing rule and raise anything that would break the
+> system, then resolved by the user after the analysis below. Both are now DECIDED. The
+> analysis is kept because it is the argument for each decision, not decoration.
 
-**OPEN QUESTION 1 — does `modbus-feature-v1` carry the common tier?**
+**DECIDED 1 — `modbus-feature-v1` is exactly 42 values, and the invariant gains a scope
+clause rather than an exception.**
 
-The invariant says "a protocol's feature schema is the common tier (12 values, frozen)
-followed by that protocol's own tier", and every schema from `dns-feature-v1` onward leads
-with it. Honouring it makes the modbus vector 54 wide; the frozen autoencoder expects 42.
+The chosen resolution (option D below): CLAUDE.md's invariant becomes *platform-designed
+schemas lead with the common tier; a schema that mirrors an externally frozen contract
+carries exactly what that contract specifies.* The rule keeps its purpose — a shared
+vocabulary across protocols the platform designs for — and gains wording it never needed
+before, because every schema until now was platform-designed.
 
-This is NOT merely a width preference. The two tiers require **different keys**, verified
-against the code: the common tier is computed from `RollingCounters`, `RecordTimingState`
-and `ConnEnrichment`, which live in state keyed by `SourceKey(sensor, logType, sourceIp)`
-(`SourceKeySelector.getKey`), while the frozen 42 require state keyed by
-`(sensor, clientIp, serverIp, unitId)`. A Flink keyed operator has exactly one key, so the
-two cannot be produced by the same operator.
+The framing that made this decidable: **this is a category, not an exception.** S7comm's
+frozen contract is 16 features with the same structure, so whatever holds for modbus holds
+for it and for every future ported contract. "An exception for modbus" was never the real
+choice. Note also that the invariant already carried one exception (`conn-feature-v1`,
+frozen without the tier), so it has never been absolute.
 
-The options, with their real costs:
+Deciding cost, stated plainly: modbus and s7 vectors carry no conn-derived context, so a
+later model wanting it needs a `-v2`. Survivable, because the archived vectors are raw and
+stay re-fittable.
 
-- **A — 54 values, invariant honoured.** Needs two keyed operators and a join to reassemble
-  one vector. That join is processing-order dependent, which is already a recorded known
-  limit for the dns enrichment join. Most of the 12 would also be near-constant for modbus
-  for the same reason they are for dns: Zeek writes a connection's `conn.log` line only
-  after the connection ends, so enrichment is absent for nearly every OT record.
-- **B — 42 values, invariant gains a second recorded exception.** (`conn-feature-v1` is
-  already the first, being frozen without the tier.) Exact parity with the frozen graph,
-  no join, no extra state. Cost: a rule change, and modbus vectors carry no conn-derived
-  context, so a later model wanting it needs `modbus-feature-v2`.
-- **C — defer.** Build every part of M1 that does not depend on the width, and freeze the
-  schema last. This is what §10 now does.
+The rejected options and why, kept so the decision can be re-audited:
 
-A feature schema is frozen forever once registered, so this is the one decision in M1 that
-cannot be cheaply reversed. It is parked for the user, not decided here.
+- **A — 54 values, honouring the invariant literally.** Needs a second keyed operator and a
+  join to reassemble one vector, because (verified against the code) the common tier comes
+  from state keyed by `SourceKey(sensor, logType, sourceIp)` via `SourceKeySelector.getKey`
+  while the frozen 42 need `(sensor, clientIp, serverIp, unitId)`, and a Flink keyed
+  operator has exactly one key. That join would be processing-order dependent — a second
+  instance of a limit already recorded for the dns enrichment join.
+- **B — 54 values, common tier computed under the modbus key.** One operator, no join, but
+  `record_count_5m` would then mean "records in this client/server/unit stream" rather than
+  "records from this source IP" — the same feature name meaning different things for
+  different protocols. Rejected as a silent trap for the next cross-protocol model.
+- **C — 54 values, first twelve always zero.** Honours the letter with no join, but writes
+  twelve known-meaningless floats per record to ClickHouse forever and makes
+  `conn_enrichment_present` misleading.
 
-**OPEN QUESTION 2 — how does an unbounded reconstruction error reach `Prediction`?**
+**DECIDED 2 — the reconstruction error is calibrated to 0..1 inside the ONNX graph.
+Nothing in the platform changes.**
 
-Stage 1 is an autoencoder, so its score is unbounded and ≥ 0, while `Prediction` and
-`ModelRef` require score and threshold finite AND within 0..1. Those bounds are
-load-bearing: they were hardened across four fix rounds, and one of them catches a null
-threshold that would otherwise score every record as an attack.
+The export already fuses the frozen preprocessor into the graph (§3); a calibration node —
+reconstruction error mapped to its percentile against the Normal-train error distribution —
+is the same kind of fitted artifact baked in beside the scaler. `Prediction` and `ModelRef`
+keep their 0..1 bounds exactly as they are, and those bounds are load-bearing: they were
+hardened across four fix rounds, and one of them catches a null threshold that would
+otherwise score every record as an attack.
 
-Adding a `scoreKind` component to `ModelRef` would resolve it, but it modifies a frozen
-domain type and makes an existing validation conditional — a rule change. **It is also not
-needed by M1, which never touches `ModelRef`.** Deferred to M2, by which point the
-re-exported graph exists and may settle the question on its own: if the export calibrates
-its error to 0..1, nothing in the domain needs to change at all.
+`scoreKind` on `ModelRef` is therefore NOT added. The earlier objection to calibration —
+that a threshold stops being readable in error units — does not survive contact with how
+detection thresholds are actually set, which is by target false-positive rate; a percentile
+is that, more directly than a raw error value is.
 
-**Ruling 3 — this work branches from `feat/conn-scoring-path` at `f15f9f8`, not `main`.**
-Its foundations (`ModelRef`, `Prediction`, the `ModelScorer` port, the filesystem registry,
-`OnnxModelScorer`, the prediction serializers) exist only there, and `scoreKind` modifies
-one of them. `main` additionally still cannot run the online job at all. Cost if wrong: the
-modbus branch inherits any unmerged defect from the conn branch, which the whole-branch
-review is the net for.
+Revisit only if the frozen detector already ships a threshold artifact in error units that
+the team wants to keep.
 
 ## 10. Unit decomposition
 
-**Unit M1 — the source contract, the parser, and the 42-value causal engine.**
-Deliberately scoped to touch NO existing invariant, so that OPEN QUESTION 1 blocks none
-of it:
+**Unit M1 — ingest and the 42-value vector. No scoring.**
+Now that the schema width is decided, M1 is a single coherent unit of the same shape as
+the dns protocol unit, which is the proven pattern in this repo:
 
-- `contracts/source/zeek-modbus-source-v1.json`
-- a `ZeekModbusRecord` DTO and `JsonZeekModbusParser` in `adapter-kafka`
-- `ModbusEntityKey` in `domain` — a new type, colliding with nothing
-- the causal engine: orientation normalization, the segment rule, the pending-TID machine,
-  the trailing windows, and all 42 values, as a standalone component with no Flink and no
-  schema registration
+- `contracts/source/zeek-modbus-source-v1.json` and
+  `contracts/features/modbus-feature-schema-v1.json` (42, mirroring `feature_order`)
+- `LogType.MODBUS` and a `ModbusEvent` record joining the sealed `NetworkEvent` hierarchy
+- `ZeekModbusRecord` DTO, `JsonZeekModbusParser`, `ModbusEventMapper`, event identity
+- `ModbusEntityKey` and the causal engine: orientation normalization, the 15 s segment
+  rule, the pending-TID machine, trailing windows, all 42 values
+- the Flink operator hosting that state, its topics and DLQ, the archive chain
+- end-to-end proof, and CLAUDE.md's invariant gaining the scope clause from DECIDED 1
 
-In particular M1 does **not** add `LogType.MODBUS` or a `ModbusEvent` record. The sealed
-hierarchy's own rule is that `permits` lists only log types that have "a parser, a mapper
-and a feature schema" behind them, and M1 has no schema by design — so adding the record
-in M1 would break that invariant exactly as registering a schema would.
-
-This is the right order on risk as well as on rules: reproducing the Python engine's causal
-semantics exactly is the hard part of this whole design, and M1 makes it independently
-verifiable against worked vectors before anything is wired or frozen. **M1 has no
-dependency on the model**, so it proceeds while the ONNX re-export happens.
-
-**Unit M1b — hierarchy, schema, operator and end-to-end.** Unblocked by an answer to
-OPEN QUESTION 1. Adds `LogType.MODBUS`, `ModbusEvent` and its mapper, registers
-`modbus-feature-v1`, hosts M1's engine in a `KeyedProcessFunction`, wires topics, the DLQ
-and the archive chain, and proves it end to end.
+**M1 has no dependency on the model at all**, so it proceeds while the ONNX re-export
+happens.
 
 **Unit M2 — sequence assembly and scoring.**
-`scoreKind`, a sequence-assembly operator holding the last L=20 vectors per entity key, a
-sequence-aware scorer taking `[1, 20, 42]`, the prediction sink, and end-to-end proof
-against a fixture autoencoder. Depends on M1 and on the re-exported bundle.
+A sequence-assembly operator holding the last L=20 vectors per entity key, a sequence-aware
+scorer taking `[1, 20, 42]`, the prediction sink, and end-to-end proof against a fixture
+autoencoder. Depends on M1 and on the re-exported bundle. It adds nothing to `ModelRef` or
+`Prediction`: per DECIDED 2 the graph emits an already-calibrated 0..1 score, so the
+existing bounds hold and the existing serving path from the conn scoring unit is reused
+unchanged apart from the input rank.
 
 M1 is the larger and the one that carries the parity risk. It is also the one that can be
 verified without a model, which is why it goes first.

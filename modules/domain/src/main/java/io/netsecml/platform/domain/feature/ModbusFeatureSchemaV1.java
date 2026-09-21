@@ -2,33 +2,43 @@ package io.netsecml.platform.domain.feature;
 
 import java.util.List;
 import static io.netsecml.platform.domain.feature.FeatureDefinition.MissingPolicy.DEFAULT_ZERO;
+import static io.netsecml.platform.domain.feature.FeatureDefinition.MissingPolicy.REQUIRED;
 
-// The frozen modbus.log feature schema: 42 values in the exact name/order of the
-// externally frozen upstream contract at tests/fixtures/contracts/modbus_feature_contract_v1.json
-// (feature_order, indices 1-42 there; 0-based here -- the numbering differs by one
-// on purpose, the names and their order are what must match). Every feature is
-// DEFAULT_ZERO: the upstream contract's missing_rule values ("required", "never
-// missing", "0 if absent", "use address_present") all describe a value that is
-// present or defaulted to zero, never one this schema rejects as missing, so
-// REQUIRED is never used here.
+// The frozen modbus_detailed.log (ICSNPP's icsnpp-modbus package) feature schema: 42
+// values in the exact name/order of the externally frozen upstream contract at
+// tests/fixtures/contracts/modbus_feature_contract_v1.json (feature_order, indices
+// 1-42 there; 0-based here -- the numbering differs by one on purpose, the names and
+// their order are what must match). Base Zeek's own modbus.log carries no address,
+// quantity, request_values or response_values, so it cannot supply 15 of these 42
+// features; modbus_detailed.log is the only source this schema reads.
+//
+// missingPolicy follows one rule: REQUIRED when the absence of the feature's source
+// field rejects the whole record to the DLQ, DEFAULT_ZERO when the value is simply
+// absent and the upstream contract defines a zero for it. is_response and fc_1..fc_other
+// (indices 0-7) derive from direction and function_code, and a record whose direction
+// cannot be resolved or whose function code is missing is rejected before any feature
+// is computed -- exactly what REQUIRED means elsewhere in this codebase (see
+// DnsFeatureSchemaV1's dns_qtype and DnsEventMapper's matching rejection). The other 34
+// features are DEFAULT_ZERO: their upstream missing_rule always resolves to a present or
+// zero-defaulted value, never a rejection.
 //
 // Unlike dns-feature-v1, this schema carries NO common tier: it mirrors an
 // externally frozen contract, so it carries exactly what that contract specifies
 // (docs/superpowers/specs/2026-09-21-modbus-stage1-design.md section 9, DECIDED 1).
 public final class ModbusFeatureSchemaV1 {
     public static final String CONTENT_HASH =
-        "0284907ec63d911e1275c5a343a0b82fbddb52b6e0dc55bd550a55ac349de00b";
+        "8173edc501a9ef191405cb475e88e9f028d91e9b1377ac847d1e71db2ddb5b9c";
 
     public static final FeatureSchema SCHEMA = new FeatureSchema(
         "modbus-feature-v1", "1.0.0", CONTENT_HASH, List.of(
-            new FeatureDefinition(0, "is_response", "boolean", DEFAULT_ZERO, "1=response; 0=request"),
-            new FeatureDefinition(1, "fc_1", "boolean", DEFAULT_ZERO, "1 iff FC=1"),
-            new FeatureDefinition(2, "fc_2", "boolean", DEFAULT_ZERO, "1 iff FC=2"),
-            new FeatureDefinition(3, "fc_3", "boolean", DEFAULT_ZERO, "1 iff FC=3"),
-            new FeatureDefinition(4, "fc_4", "boolean", DEFAULT_ZERO, "1 iff FC=4"),
-            new FeatureDefinition(5, "fc_5", "boolean", DEFAULT_ZERO, "1 iff FC=5"),
-            new FeatureDefinition(6, "fc_6", "boolean", DEFAULT_ZERO, "1 iff FC=6"),
-            new FeatureDefinition(7, "fc_other", "boolean", DEFAULT_ZERO, "1 iff FC not in {1..6}"),
+            new FeatureDefinition(0, "is_response", "boolean", REQUIRED, "1=response; 0=request"),
+            new FeatureDefinition(1, "fc_1", "boolean", REQUIRED, "1 iff FC=1"),
+            new FeatureDefinition(2, "fc_2", "boolean", REQUIRED, "1 iff FC=2"),
+            new FeatureDefinition(3, "fc_3", "boolean", REQUIRED, "1 iff FC=3"),
+            new FeatureDefinition(4, "fc_4", "boolean", REQUIRED, "1 iff FC=4"),
+            new FeatureDefinition(5, "fc_5", "boolean", REQUIRED, "1 iff FC=5"),
+            new FeatureDefinition(6, "fc_6", "boolean", REQUIRED, "1 iff FC=6"),
+            new FeatureDefinition(7, "fc_other", "boolean", REQUIRED, "1 iff FC not in {1..6}"),
             new FeatureDefinition(8, "address_value", "address", DEFAULT_ZERO, "numeric address; 0 if absent"),
             new FeatureDefinition(9, "address_present", "boolean", DEFAULT_ZERO, "1 iff address present"),
             new FeatureDefinition(10, "quantity_value", "count", DEFAULT_ZERO, "numeric quantity; 0 if absent"),

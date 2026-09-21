@@ -1,6 +1,6 @@
 {
   "id": "zeek-modbus-source-v1",
-  "description": "Required and optional fields for a Zeek modbus.log record delivered as one Kafka JSON message.",
+  "description": "Required and optional fields for an ICSNPP modbus_detailed.log record (icsnpp-modbus package) delivered as one Kafka JSON message. Base Zeek's own modbus.log carries only tid, unit, func, pdu_type and exception -- it has no address, quantity, request_values or response_values, four fields this contract reads below, without which 15 of the 42 modbus-feature-v1 features could not be computed. modbus_detailed.log is therefore the only source this contract reads.",
   "requiredFields": [
     { "name": "ts", "type": "number", "notes": "epoch seconds, fractional part allowed; negative rejected; stored at millisecond precision" },
     { "name": "uid", "type": "string", "notes": "Zeek uid; state identity only per the upstream feature contract's excluded_raw_fields -- not itself a feature" },

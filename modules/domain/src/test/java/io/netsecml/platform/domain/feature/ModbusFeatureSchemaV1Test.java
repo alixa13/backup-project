@@ -63,14 +63,22 @@ class ModbusFeatureSchemaV1Test {
     }
 
     @Test
-    void everyFeatureIsDefaultZero() {
-        // The brief's stated ruling: none of the upstream contract's missing_rule
-        // values describe a rejection, so REQUIRED must never appear here -- a
-        // single REQUIRED entry would silently reintroduce a throw path the
-        // upstream contract does not have.
+    void onlyTheDirectionAndFunctionCodeFeaturesAreRequired() {
+        // is_response and fc_1..fc_other (indices 0-7) derive from direction and
+        // function_code; a record whose direction cannot be resolved or whose func
+        // is missing is rejected to the DLQ before any feature is computed, which
+        // is exactly what REQUIRED means elsewhere in this codebase (see
+        // DnsFeatureSchemaV1's dns_qtype and DnsEventMapper's matching rejection).
+        // Every other feature is simply absent-or-zero, never a rejection reason,
+        // so it must stay DEFAULT_ZERO.
+        java.util.Set<String> requiredNames = java.util.Set.of(
+            "is_response", "fc_1", "fc_2", "fc_3", "fc_4", "fc_5", "fc_6", "fc_other");
         for (FeatureDefinition definition : ModbusFeatureSchemaV1.SCHEMA.definitions()) {
-            assertEquals(FeatureDefinition.MissingPolicy.DEFAULT_ZERO, definition.missingPolicy(),
-                definition.name() + " must be DEFAULT_ZERO");
+            FeatureDefinition.MissingPolicy expected = requiredNames.contains(definition.name())
+                ? FeatureDefinition.MissingPolicy.REQUIRED
+                : FeatureDefinition.MissingPolicy.DEFAULT_ZERO;
+            assertEquals(expected, definition.missingPolicy(),
+                definition.name() + " has the wrong missingPolicy");
         }
     }
 

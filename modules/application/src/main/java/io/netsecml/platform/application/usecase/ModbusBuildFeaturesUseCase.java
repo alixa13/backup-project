@@ -8,6 +8,7 @@ import io.netsecml.platform.domain.feature.FeatureSchema;
 import io.netsecml.platform.domain.feature.FeatureSchemaRegistry;
 import io.netsecml.platform.domain.feature.FeatureVector;
 import io.netsecml.platform.domain.feature.ModbusEntityState;
+import io.netsecml.platform.domain.feature.ModbusFeatureSchemaV1;
 import io.netsecml.platform.domain.feature.QualityFlags;
 import io.netsecml.platform.port.in.BuildFeaturesUseCase;
 import java.time.Clock;
@@ -55,6 +56,32 @@ public final class ModbusBuildFeaturesUseCase implements BuildFeaturesUseCase<Mo
     ModbusBuildFeaturesUseCase(Clock clock, FeatureSchema schema) {
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.schema = Objects.requireNonNull(schema, "schema must not be null");
+
+        // This class stamps the emitted FeatureVector's schemaId/schemaHash from
+        // `schema` (above), but ModbusFeatureExtractor sizes and orders every
+        // value it writes from the hardcoded ModbusFeatureSchemaV1.SCHEMA static
+        // -- two structurally INDEPENDENT sources that happen to agree today only
+        // because FeatureSchemaRegistry.byLogType(LogType.MODBUS) currently
+        // returns that same static. Nothing enforces that they keep agreeing: if
+        // the registry were ever remapped to a modbus-feature-v2 without this
+        // class's own extractor field changing in the same edit, every vector
+        // this class emits would be labelled v2 while still sized and ordered as
+        // v1, and no existing test would catch it, because every test constructs
+        // against whatever the registry currently returns. Checking once here, at
+        // construction, turns that silent mislabel into a fail-fast startup
+        // check instead.
+        FeatureSchema extractorSchema = ModbusFeatureSchemaV1.SCHEMA;
+        if (!schema.id().equals(extractorSchema.id())
+            || !schema.contentHash().equals(extractorSchema.contentHash())
+            || schema.featureCount() != extractorSchema.featureCount()) {
+            throw new IllegalArgumentException(
+                "schema '" + schema.id() + "' (hash " + schema.contentHash() + ", " + schema.featureCount()
+                    + " features) does not match ModbusFeatureExtractor's own ModbusFeatureSchemaV1.SCHEMA ('"
+                    + extractorSchema.id() + "', hash " + extractorSchema.contentHash() + ", "
+                    + extractorSchema.featureCount() + " features) -- ModbusBuildFeaturesUseCase would label "
+                    + "vectors with one schema while ModbusFeatureExtractor sizes and orders them against "
+                    + "another");
+        }
     }
 
     @Override

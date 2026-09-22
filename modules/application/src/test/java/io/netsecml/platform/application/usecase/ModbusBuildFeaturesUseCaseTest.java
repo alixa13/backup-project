@@ -6,6 +6,7 @@ import io.netsecml.platform.domain.event.LogType;
 import io.netsecml.platform.domain.event.ModbusEvent;
 import io.netsecml.platform.domain.event.ModbusEvent.ModbusDirection;
 import io.netsecml.platform.domain.event.SensorId;
+import io.netsecml.platform.domain.feature.DnsFeatureSchemaV1;
 import io.netsecml.platform.domain.feature.FeatureBuildResult;
 import io.netsecml.platform.domain.feature.ModbusEntityState;
 import io.netsecml.platform.domain.feature.ModbusFeatureSchemaV1;
@@ -17,6 +18,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 // Pins Ruling 5 -- decide the segment, reset-then-extract-then-advance, in
@@ -102,6 +104,17 @@ class ModbusBuildFeaturesUseCaseTest {
             float ia = useCase().build(request(ts, 3, "18"), state).vector().values()[24];
             assertTrue(ia >= 0.0f && ia <= 15.0f, "inter_arrival_s out of range: " + ia);
         }
+    }
+
+    @Test
+    void constructorRejectsASchemaThatDisagreesWithTheExtractorsOwnStatic() {
+        // DnsFeatureSchemaV1.SCHEMA is a convenient wrong-but-real schema: not
+        // ModbusFeatureSchemaV1.SCHEMA, so it must be rejected regardless of
+        // which of id/contentHash/featureCount differs. The package-private
+        // (Clock, FeatureSchema) constructor is what lets this test drive that
+        // mismatch directly, without touching the registry.
+        assertThrows(IllegalArgumentException.class,
+            () -> new ModbusBuildFeaturesUseCase(Clock.systemUTC(), DnsFeatureSchemaV1.SCHEMA));
     }
 
     @Test

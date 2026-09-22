@@ -8,7 +8,8 @@ import java.util.HashSet;
 import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
-// The two-protocol topology's structure, asserted without Docker or Kafka --
+// The online job's topology structure -- the two-protocol build and, since
+// modbus was wired in, the three-protocol one -- asserted without Docker or Kafka --
 // mirrors ArchiveJobTopologyTest's own env.getStreamGraph() inspection, for the
 // same reason: this is the only way to cover operator uids (checkpoint state
 // identity) without paying for the containers this module's own E2E test needs.
@@ -101,21 +102,41 @@ class OnlineFeatureJobTopologyTest {
             + "committers -- no dns operator and no snapshot-extraction branch, found: " + uids);
     }
 
-    // Every operator and sink-writer uid across the WHOLE topology must be
-    // pairwise distinct -- two operators sharing one is how Flink collides
-    // checkpoint state across them. Set.add returning false is the signal; this
-    // walks every StreamNode (not just the twelve this job assigns explicitly)
-    // so it also catches a uid this job assigns colliding with one Flink
-    // generates for a two-phase-commit sink's committer (see the comment on
-    // noStreamNodeLacksAUid below for what that generated uid looks like).
+    // Every operator and sink uid across the WHOLE topology must be pairwise
+    // distinct, in BOTH topologies this class builds: the two-protocol
+    // buildJob() and the three-protocol buildThreeProtocol() that main() now
+    // runs. Flink does reject a repeated user-specified uid on its own, but
+    // only when it hashes the graph into a JobGraph at submission
+    // (StreamGraphHasherV2: "Hash collision on user-specified ID").
+    // getStreamGraph() stops before that step, so this walk is what catches a
+    // collision without submitting the job.
+    //
+    // Set.add returning false is the signal, and the message names the
+    // repeated uid. The walk covers every StreamNode, not just the uids this
+    // job assigns explicitly, so it also catches an assigned uid colliding
+    // with one Flink derives for a two-phase-commit sink's committer (see the
+    // comment on noStreamNodeLacksAUid below for what that derived uid looks
+    // like). A per-node walk rather than only a distinct-uid count (which the
+    // three-protocol test further down also asserts): an operator added with
+    // a uid that collides leaves the distinct count unchanged, so a count
+    // alone would pass it.
     @Test
     void everyOperatorUidIsUniqueAcrossTheTopology() {
-        StreamExecutionEnvironment env = buildJob();
+        // assertAll, so a collision in one topology cannot hide a collision
+        // in the other.
+        assertAll(
+            () -> assertNoUidRepeats("two-protocol", buildJob()),
+            () -> assertNoUidRepeats("three-protocol", buildThreeProtocol()));
+    }
+
+    // Walks one built topology's StreamNodes and fails on the first uid seen
+    // twice.
+    private static void assertNoUidRepeats(String topology, StreamExecutionEnvironment env) {
         Set<String> seen = new HashSet<>();
         env.getStreamGraph(false).getStreamNodes().forEach(node -> {
             String uid = node.getTransformationUID();
             if (uid != null) {
-                assertTrue(seen.add(uid), "duplicate operator uid across the topology: " + uid);
+                assertTrue(seen.add(uid), "duplicate operator uid across the " + topology + " topology: " + uid);
             }
         });
     }
@@ -165,10 +186,11 @@ class OnlineFeatureJobTopologyTest {
     }
 
     // Builds the three-protocol topology (conn + dns + modbus) the way
-    // OnlineFeatureJob.main() now does, for the two tests below that need a
-    // third ProtocolTopics on the graph -- kept separate from buildJob() above
-    // so every existing test in this class keeps exercising exactly the
-    // two-protocol topology it always has.
+    // OnlineFeatureJob.main() now does, for the tests that need a third
+    // ProtocolTopics on the graph (everyOperatorUidIsUniqueAcrossTheTopology
+    // above, and the three-protocol test below) -- kept separate from
+    // buildJob() above so every test that predates modbus keeps exercising
+    // exactly the two-protocol topology it always has.
     private static StreamExecutionEnvironment buildThreeProtocol() {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
@@ -191,17 +213,40 @@ class OnlineFeatureJobTopologyTest {
         return uids;
     }
 
-    // The third protocol's five uids must land on the graph, and conn's five
+    // The third protocol's six uids must land on the graph, and conn's five
     // historical uids -- unrelated to modbus's own wiring -- must survive
     // completely unchanged sitting alongside a third protocol's chain, exactly
     // as connsFiveHistoricalUidsAreByteIdentical already proves for the
     // two-protocol topology above.
+    //
+    // The exact distinct-uid count is asserted FIRST, mirroring
+    // ArchiveJobTopologyTest.sixChainsProduceEighteenDistinctUids: containsAll
+    // over a Set cannot see a collision, so on its own it would still pass if
+    // two operators shared a uid. MEASURED, not assumed: printing every
+    // StreamNode of buildThreeProtocol() showed twenty-four nodes, each with a
+    // non-null uid, and twenty-four distinct uids:
+    //   - twelve the two-protocol build() assigns: conn's five (CONN_UIDS)
+    //     and dns's seven (DNS_UIDS, conn-snapshot-extract included);
+    //   - six modbusChain assigns: modbus-source, modbus-parse,
+    //     modbus-event-narrow, modbus-features, modbus-sink, modbus-dlq-sink;
+    //   - six Flink derives, one "Sink Committer: <uid>" per KafkaSink, for
+    //     the six sinks among the eighteen above (see noStreamNodeLacksAUid's
+    //     comment for that Writer/Committer split).
+    // The count also changes if an operator with a new uid is added, or one
+    // is dropped or left without a uid -- but an operator added with a
+    // colliding uid leaves it unchanged, which is why
+    // everyOperatorUidIsUniqueAcrossTheTopology above also walks this same
+    // topology node by node.
     @Test
     void theThreeProtocolTopologyCarriesModbusUidsAndLeavesConnsUntouched() {
         Set<String> uids = uidsOf(buildThreeProtocol());
+        assertEquals(24, uids.size(),
+            "a uid collision, or an operator added with a new uid, dropped or left uid-less, changes this "
+            + "count, found: " + uids);
         assertTrue(uids.containsAll(Set.of(
-            "modbus-source", "modbus-parse", "modbus-features", "modbus-sink", "modbus-dlq-sink")),
-            "expected modbus's five operator uids, found: " + uids);
+            "modbus-source", "modbus-parse", "modbus-event-narrow", "modbus-features", "modbus-sink",
+            "modbus-dlq-sink")),
+            "expected modbus's six operator uids, found: " + uids);
         assertTrue(uids.containsAll(CONN_UIDS), "conn's historical uids must be byte-identical, found: " + uids);
     }
 }

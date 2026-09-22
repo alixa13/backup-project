@@ -248,6 +248,27 @@ public final class OnlineFeatureJob {
     // ConnEvent or DnsEvent reaching here is a wiring error, not a runtime
     // condition -- modbus-parse above, built from ModbusParseMapValidateFunction,
     // can only ever have produced a ModbusEvent.
+    //
+    // WHERE THE NARROWING HAPPENS differs between the protocols, so the next
+    // protocol's author should choose between the two shapes deliberately.
+    // ParseMapValidateFunction emits NetworkEvent for every subclass, so every
+    // chain has to get from NetworkEvent to its own event type somewhere:
+    //   - conn and dns narrow INSIDE each operator that consumes their parsed
+    //     stream: SourceKeySelector (which the two share),
+    //     ConnFeatureProcessFunction, DnsFeatureProcessFunction, and on dns's
+    //     enrichment path ConnSnapshotExtractFunction and
+    //     ConnSnapshotJoinFunction. Each is typed on NetworkEvent and switches
+    //     over its sealed permits, with a throw arm for every event type its
+    //     chain never receives -- so each one needed a new ModbusEvent arm when
+    //     ModbusEvent joined the permits. No extra operator sits on the graph,
+    //     and one selector can serve both protocols.
+    //   - modbus narrows ONCE, here, at the chain's boundary, so
+    //     ModbusEntityKeySelector and ModbusFeatureProcessFunction are typed on
+    //     ModbusEvent and carry no throw arms of their own; the throw arms for
+    //     the other event types live in this one switch instead. This adds one
+    //     stateless operator (and its uid) to the graph, and those two
+    //     operators accept only a ModbusEvent stream, so they cannot be shared
+    //     with another protocol the way SourceKeySelector is.
     private static final class NarrowToModbusEvent implements MapFunction<NetworkEvent, ModbusEvent> {
         @Override
         public ModbusEvent map(NetworkEvent event) {

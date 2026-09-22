@@ -125,4 +125,46 @@ class ModbusEntityStateTest {
         }
         assertEquals(4096, state.outstandingRequests());
     }
+
+    @Test
+    void anEventOlderThanEveryPendingRequestDoesNotEvictItself() {
+        // Fix round 1, F2: an eviction keyed on the MINIMUM recorded
+        // timestamp across the whole map (including the entry just
+        // inserted) could evict the entry this very call just added, if
+        // its own timestamp happened to be older than everything already
+        // pending. Insertion-order eviction only ever drops the map's
+        // current head, never the entry just appended at the tail, so this
+        // must survive regardless of how old its own timestamp is.
+        ModbusEntityState state = ModbusEntityState.empty();
+        for (int i = 0; i < 4096; i++) {
+            state = state.afterEvent(2000.0 + i, 3, "tid-" + i, ModbusDirection.REQUEST, null, null);
+        }
+        state = state.afterEvent(1.0, 3, "tid-ancient", ModbusDirection.REQUEST, null, null);
+        assertEquals(4096, state.outstandingRequests());
+        assertTrue(state.hasPending("tid-ancient"),
+            "the entry just added must not be the one evicted, regardless of its own timestamp");
+    }
+
+    @Test
+    void reInsertingAStillPendingTidMovesItToTheEndOfEvictionOrder() {
+        // Fix round 1's pinned decision: a request that reuses a
+        // still-pending tid (request_overwrite_same_tid) is removed and
+        // re-put, so it moves to the tail of insertion order instead of
+        // keeping its original (now stale) position. Without that move,
+        // the just-renewed tid-0 below would still look like the eldest
+        // entry despite carrying the newest timestamp of all -- exactly
+        // backwards for a cap meant to drop the genuinely oldest request
+        // first.
+        ModbusEntityState state = ModbusEntityState.empty();
+        for (int i = 0; i < 4096; i++) {
+            state = state.afterEvent(2000.0 + i, 3, "tid-" + i, ModbusDirection.REQUEST, null, null);
+        }
+        state = state.afterEvent(2000.0 + 4096, 3, "tid-0", ModbusDirection.REQUEST, null, null);
+        assertTrue(state.hasPending("tid-0"), "tid-0 was just re-requested and must still be outstanding");
+
+        state = state.afterEvent(2000.0 + 4097, 3, "tid-new", ModbusDirection.REQUEST, null, null);
+        assertEquals(4096, state.outstandingRequests());
+        assertTrue(state.hasPending("tid-0"), "the just-renewed tid-0 must not be the one evicted");
+        assertFalse(state.hasPending("tid-1"), "tid-1 is now the genuinely oldest outstanding request");
+    }
 }

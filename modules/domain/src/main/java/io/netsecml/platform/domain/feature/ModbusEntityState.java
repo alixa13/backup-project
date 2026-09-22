@@ -4,8 +4,9 @@ import io.netsecml.platform.domain.event.ModbusEvent.ModbusDirection;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
-import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
@@ -73,11 +74,11 @@ public final class ModbusEntityState {
     // response (itself one of the attack shapes this detector exists to
     // catch) would otherwise grow this map without limit, which breaks the
     // bounded-state invariant every other keyed state in this codebase
-    // holds to. Capped at 4096 entries, evicted oldest-first BY THE
-    // REQUEST'S OWN RECORDED TIMESTAMP (not insertion order, though the two
-    // usually coincide): a genuine long-lived outstanding request is
-    // dropped before a recently-issued one is. Recorded as a known limit in
-    // Task 11.
+    // holds to. Capped at 4096 entries, evicted oldest-first BY INSERTION
+    // ORDER (see the `pending` field's own comment for why that equals
+    // timestamp order here, and evictOldestIfOverCap for the O(1) mechanics):
+    // a genuine long-lived outstanding request is dropped before a
+    // recently-issued one is. Recorded as a known limit in Task 11.
     private static final int MAX_PENDING = 4096;
 
     private final Double lastTs;
@@ -86,7 +87,22 @@ public final class ModbusEntityState {
     private final Double lastQuantity;
 
     // transaction_id -> the REQUEST's own timestamp. Mirrors the upstream
-    // engine's `pending: dict[Any, float]`.
+    // engine's `pending: dict[Any, float]`, but held as a LinkedHashMap
+    // (insertion-order iteration, NOT access-order -- access-order would
+    // reorder on a plain get() inside pendingTs(), mutating this supposedly
+    // read-only accessor's target map) rather than a HashMap, specifically
+    // so evictOldestIfOverCap can find the entry to drop in O(1) instead of
+    // scanning every entry for the minimum timestamp.
+    //
+    // That only gives the right answer if insertion order tracks timestamp
+    // order, which requires two things this class enforces itself:
+    //   - a REQUEST that reuses a still-pending tid is removed and
+    //     re-inserted (see afterEvent's pending mutation), so it moves to
+    //     the tail instead of keeping the stale position from its first,
+    //     now-superseded, timestamp;
+    //   - see evictOldestIfOverCap's own comment for the deployment
+    //     assumption that makes "insertion order" and "timestamp order"
+    //     the same order for a well-behaved caller.
     private final Map<String, Double> pending;
 
     // Trailing-window deques. w1/w60 need only the timestamp (upstream's
@@ -126,7 +142,7 @@ public final class ModbusEntityState {
     // The zero state a fresh (client_ip, server_ip, unit) key starts from.
     public static ModbusEntityState empty() {
         return new ModbusEntityState(null, null, null, null,
-            new HashMap<>(), new ArrayDeque<>(), new ArrayDeque<>(), new ArrayDeque<>());
+            new LinkedHashMap<>(), new ArrayDeque<>(), new ArrayDeque<>(), new ArrayDeque<>());
     }
 
     // True when the given timestamp is far enough past this state's last
@@ -306,7 +322,10 @@ public final class ModbusEntityState {
         Deque<Double> newWindow1s = new ArrayDeque<>(window1s);
         Deque<Double> newWindow60s = new ArrayDeque<>(window60s);
         Deque<Window10Entry> newWindow10s = new ArrayDeque<>(window10s);
-        Map<String, Double> newPending = new HashMap<>(pending);
+        // LinkedHashMap's copy constructor iterates its source in that
+        // source's own order, so copying a LinkedHashMap here preserves
+        // insertion order rather than falling back to hash-bucket order.
+        Map<String, Double> newPending = new LinkedHashMap<>(pending);
 
         // 1a. Purge (strict upstream semantics: stored <= cutoff is dropped).
         purgeTimeDeque(newWindow1s, ts - WINDOW_1S);
@@ -324,8 +343,20 @@ public final class ModbusEntityState {
         boolean isWrite = WRITE_FUNCTIONS.contains(functionCode);
         newWindow10s.addLast(new Window10Entry(ts, functionCode, addressPresent, address, isRead, isWrite));
 
-        // 2. Pending-TID mutation.
+        // 2. Pending-TID mutation. A request that reuses a still-pending
+        // tid (request_overwrite_same_tid, feature index 32) is removed
+        // before being re-put, DELIBERATELY, so it moves to the tail of
+        // insertion order instead of keeping its original position:
+        // LinkedHashMap's plain put() on an already-present key overwrites
+        // the value in place WITHOUT moving it, and leaving a renewed
+        // request at its stale position would make it look like the
+        // eldest outstanding request when it is in fact the newest --
+        // exactly backwards for a cap whose purpose is dropping the
+        // genuinely oldest request first (see evictOldestIfOverCap and
+        // the `pending` field's own comment; pinned by
+        // ModbusEntityStateTest.reInsertingAStillPendingTidMovesItToTheEndOfEvictionOrder).
         if (direction == ModbusDirection.REQUEST) {
+            newPending.remove(tid);
             newPending.put(tid, ts);
             evictOldestIfOverCap(newPending);
         } else {
@@ -349,22 +380,34 @@ public final class ModbusEntityState {
         }
     }
 
-    // Cap enforcement: evicts the single oldest-by-recorded-timestamp entry
-    // if the map is now over MAX_PENDING. A single afterEvent call adds at
-    // most one pending entry, so one eviction per call is always enough to
-    // restore the invariant.
+    // Cap enforcement: evicts the single eldest-BY-INSERTION entry if the
+    // map is now over MAX_PENDING -- O(1) via LinkedHashMap's own iteration
+    // order (removing its first key), not an O(map size) scan for the
+    // minimum timestamp. A single afterEvent call adds, or moves, at most
+    // one entry to the tail (see the pending mutation above), so that
+    // entry is always the newest in iteration order and can never be the
+    // one this method evicts -- an event whose own timestamp is older than
+    // everything already pending still cannot evict itself, because
+    // eviction only ever looks at the head.
+    //
+    // "Eldest by insertion" only equals "eldest by timestamp" under this
+    // deployment's required per-key arrival ordering -- the same
+    // requirement RollingCounters' own comment records for conn/dns: the
+    // sensor's Kafka producer must partition by the record's key (here,
+    // (client_ip, server_ip, unit)) so that one key's events arrive with
+    // non-decreasing timestamps. Under that ordering, this map's insertion
+    // order and timestamp order are the same order, so evicting the head is
+    // evicting the genuinely oldest outstanding request. An out-of-order
+    // arrival for this key does not silently break that assumption: a
+    // negative gap makes startsNewSegment(ts) report a new segment, and a
+    // new segment resets pending to empty before any further event reaches
+    // this method with a stale ordering to exploit.
     private static void evictOldestIfOverCap(Map<String, Double> pending) {
         if (pending.size() <= MAX_PENDING) {
             return;
         }
-        String oldestTid = null;
-        double oldestTs = Double.POSITIVE_INFINITY;
-        for (Map.Entry<String, Double> entry : pending.entrySet()) {
-            if (entry.getValue() < oldestTs) {
-                oldestTs = entry.getValue();
-                oldestTid = entry.getKey();
-            }
-        }
-        pending.remove(oldestTid);
+        Iterator<String> insertionOrder = pending.keySet().iterator();
+        insertionOrder.next();
+        insertionOrder.remove();
     }
 }

@@ -126,16 +126,21 @@ public final class ModbusFeatureExtractor {
                             boolean newSegment) {
         // newSegment implies the caller already reset `before` to
         // ModbusEntityState.empty() ahead of this call -- see this class's
-        // javadoc. If that ever stops holding, indices 23-34 would stop
-        // being zero not because of special-case code here (there is none)
-        // but because the state feeding the ordinary computation below
-        // would no longer be empty; this assertion catches that drift at
-        // the source instead of a wrong vector downstream.
-        assert !newSegment || (before.lastTs() == null && before.lastAddress() == null
-            && before.lastQuantity() == null && before.outstandingRequests() == 0)
-            : "newSegment=true requires the caller to have already reset `before` to "
-            + "ModbusEntityState.empty(); a non-empty before-state here would silently "
-            + "break the zeroed-at-segment-start guarantee for indices 23-34.";
+        // javadoc. If that ever stops holding, indices 23-34 would silently
+        // compute non-zero, wrong values with no signal anywhere: a Java
+        // `assert` would not do it, since neither bootstrap module runs its
+        // JVM with -ea, so an `assert` here would be inert in the one place
+        // (a real Flink job) a caller bug would actually matter. An explicit
+        // throw is a runtime check that fires the same way in tests and in
+        // production, and matches how every other invariant in this codebase
+        // is enforced (throw new Illegal...Exception, never `assert`).
+        if (newSegment && !(before.lastTs() == null && before.lastAddress() == null
+            && before.lastQuantity() == null && before.outstandingRequests() == 0)) {
+            throw new IllegalArgumentException(
+                "newSegment=true requires the caller to have already reset `before` to "
+                + "ModbusEntityState.empty(); a non-empty before-state here would silently "
+                + "break the zeroed-at-segment-start guarantee for indices 23-34.");
+        }
 
         float[] vector = new float[ModbusFeatureSchemaV1.SCHEMA.featureCount()];
 

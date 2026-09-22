@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 // Pins process_capture's per-index rules (two-models-info/modbus_/
 // 07b_materialize_feature_engine_v1.py) against ModbusFeatureExtractor.extract,
@@ -189,5 +190,25 @@ class ModbusFeatureExtractorTest {
         float[] v = extractFor(requestWithAddress(1001.0, 40005.0, before), before);
         assertEquals(1.0f, v[26]);
         assertEquals(4.0f, v[27], 1e-6f);
+    }
+
+    // Guards fix-round-1's F1: newSegment=true must reject a non-empty
+    // `before` with a real runtime check, not a Java `assert` -- Surefire
+    // enables assertions for this module's own tests, but nothing in either
+    // bootstrap module runs its JVM with -ea, so an `assert` would be inert
+    // in production. This is the one test in the unit whose whole point is
+    // behaviour the default JVM configuration (assertions off) would hide;
+    // see this class's own javadoc-adjacent note in the task's fix report
+    // for the two-run proof (assertions disabled: fails; assertions'
+    // irrelevant, throw restored: passes).
+    @Test
+    void newSegmentWithANonEmptyBeforeStateIsRejected() {
+        ModbusEntityState nonEmptyBefore = ModbusEntityState.empty()
+            .afterEvent(1000.0, 3, "17", ModbusDirection.REQUEST, null, null);
+        ModbusEvent event = request(1000.5, 3, "18");
+        ModbusEntityState after = nonEmptyBefore.afterEvent(1000.5, 3, "18", ModbusDirection.REQUEST, null, null);
+
+        assertThrows(IllegalArgumentException.class,
+            () -> extractor.extract(event, nonEmptyBefore, after, true));
     }
 }

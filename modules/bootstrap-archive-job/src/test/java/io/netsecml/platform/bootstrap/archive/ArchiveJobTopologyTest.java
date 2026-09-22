@@ -230,4 +230,37 @@ class ArchiveJobTopologyTest {
             "dns-dlq-source", "dns-invalid-event-row", "dns-invalid-events-clickhouse-sink")),
             "dns's six uids must follow the shared prefix pattern, found: " + uids);
     }
+
+    // A third protocol's six-chain list (connDnsAndModbusChains, alongside
+    // connAndDnsChains rather than widening it -- see that method's own
+    // signature comment) must produce eighteen non-colliding uids: conn's
+    // six historical ones, dns's six under the shared prefix pattern, and
+    // modbus's own six under the identical pattern. Using the SET's size, not
+    // only containsAll, is what actually proves the eighteen are pairwise
+    // distinct -- a uid collision would silently merge two chains' checkpoint
+    // state onto one operator.
+    @Test
+    void sixChainsProduceEighteenDistinctUids() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        ArchiveJob.build(env, "localhost:9092", ArchiveJob.connDnsAndModbusChains(
+            "netsec.conn.feature-vector.v1", "netsec.conn.dlq.v1",
+            "netsec.dns.feature-vector.v1", "netsec.dns.dlq.v1",
+            "netsec.modbus.feature-vector.v1", "netsec.modbus.dlq.v1"),
+            ClickHouseConfig.of("localhost", 8123, "netsec_ml", "default", "test-password"));
+
+        Set<String> uids = new HashSet<>();
+        env.getStreamGraph(false).getStreamNodes().forEach(node -> {
+            if (node.getTransformationUID() != null) {
+                uids.add(node.getTransformationUID());
+            }
+        });
+
+        assertEquals(18, uids.size(), "a uid collision would silently merge two chains' state, found: " + uids);
+
+        assertTrue(uids.containsAll(Set.of(
+            "modbus-feature-vector-source", "modbus-feature-vector-row", "modbus-feature-vectors-clickhouse-sink",
+            "modbus-dlq-source", "modbus-invalid-event-row", "modbus-invalid-events-clickhouse-sink")),
+            "modbus's six uids must follow the shared prefix pattern, found: " + uids);
+    }
 }

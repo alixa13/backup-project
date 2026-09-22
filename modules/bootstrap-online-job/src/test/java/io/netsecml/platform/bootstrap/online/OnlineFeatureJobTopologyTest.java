@@ -163,4 +163,45 @@ class OnlineFeatureJobTopologyTest {
         });
         return uids;
     }
+
+    // Builds the three-protocol topology (conn + dns + modbus) the way
+    // OnlineFeatureJob.main() now does, for the two tests below that need a
+    // third ProtocolTopics on the graph -- kept separate from buildJob() above
+    // so every existing test in this class keeps exercising exactly the
+    // two-protocol topology it always has.
+    private static StreamExecutionEnvironment buildThreeProtocol() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        OnlineFeatureJob.build(env, "localhost:9092",
+            new OnlineFeatureJob.ProtocolTopics("conn", "netsec.conn.feature-vector.v1", "netsec.conn.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("dns", "netsec.dns.feature-vector.v1", "netsec.dns.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("netsec.modbus.raw.v1", "netsec.modbus.feature-vector.v1",
+                "netsec.modbus.dlq.v1"),
+            new SensorId("sensor-eu-1"));
+        return env;
+    }
+
+    private static Set<String> uidsOf(StreamExecutionEnvironment env) {
+        Set<String> uids = new HashSet<>();
+        env.getStreamGraph(false).getStreamNodes().forEach(node -> {
+            if (node.getTransformationUID() != null) {
+                uids.add(node.getTransformationUID());
+            }
+        });
+        return uids;
+    }
+
+    // The third protocol's five uids must land on the graph, and conn's five
+    // historical uids -- unrelated to modbus's own wiring -- must survive
+    // completely unchanged sitting alongside a third protocol's chain, exactly
+    // as connsFiveHistoricalUidsAreByteIdentical already proves for the
+    // two-protocol topology above.
+    @Test
+    void theThreeProtocolTopologyCarriesModbusUidsAndLeavesConnsUntouched() {
+        Set<String> uids = uidsOf(buildThreeProtocol());
+        assertTrue(uids.containsAll(Set.of(
+            "modbus-source", "modbus-parse", "modbus-features", "modbus-sink", "modbus-dlq-sink")),
+            "expected modbus's five operator uids, found: " + uids);
+        assertTrue(uids.containsAll(CONN_UIDS), "conn's historical uids must be byte-identical, found: " + uids);
+    }
 }

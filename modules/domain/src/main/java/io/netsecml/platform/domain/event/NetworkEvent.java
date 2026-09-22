@@ -23,7 +23,27 @@ import java.time.Instant;
 // DnsEvent arm, never a default. NetworkEventSurfaceTest's permittedSubclasses
 // assertion also had to change, though it is a reflective assertion rather than
 // a switch, so it did not fail until run rather than at compile time.
-public sealed interface NetworkEvent permits ConnEvent, DnsEvent {
+//
+// ModbusEvent joining permits repeated the same mechanism at a larger scale:
+// nine files failed to compile -- five pattern-switch sites in adapter-flink's
+// process package (ConnFeatureProcessFunction, ConnSnapshotExtractFunction,
+// ConnSnapshotJoinFunction, DnsFeatureProcessFunction, SourceKeySelector) plus
+// four test files whose own switches exist to narrow or prove exhaustiveness
+// (ConnSnapshotJoinFunctionTest, DnsEventMapperTest, EventMapperTest,
+// NetworkEventTest) -- every one resolved with an explicit case ModbusEvent
+// arm, never a default, and NetworkEventSurfaceTest's permittedSubclasses
+// assertion needed the same reflective-not-compile-time update DnsEvent's
+// arrival required.
+//
+// ModbusEvent joins permits here one task ahead of its mapper (the mapper is
+// what actually produces a ModbusEvent, and it is a later task in this same
+// unit): the schema and the parser exist, but "a parser, a mapper and a
+// feature schema" -- this doc's own admission rule, restated below -- is a
+// unit-completion property, not a per-commit one. A record with no mapper yet
+// cannot itself be constructed by anything in production code, so nothing
+// downstream can observe unimplemented support; only the mapper's own commit
+// discharges the obligation in full.
+public sealed interface NetworkEvent permits ConnEvent, DnsEvent, ModbusEvent {
 
     // Every log type carries the same identity block; only the payload differs.
     EventEnvelope envelope();

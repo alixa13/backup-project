@@ -2,6 +2,7 @@ package io.netsecml.platform.adapter.flink.process;
 
 import io.netsecml.platform.domain.event.ConnEvent;
 import io.netsecml.platform.domain.event.DnsEvent;
+import io.netsecml.platform.domain.event.ModbusEvent;
 import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.feature.ConnSnapshot;
 import io.netsecml.platform.domain.feature.ConnSnapshotDelta;
@@ -127,6 +128,14 @@ public final class ConnSnapshotJoinFunction
                 "ConnSnapshotJoinFunction received a ConnEvent on input 1; this operator's first input is "
                 + "the DNS chain only "
                 + "(docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md section 6.2) "
+                + "and this is a wiring error, not a runtime condition");
+            // Same rule, for modbus: it has its own Flink operator, keyed
+            // state, topics and DLQ (docs/superpowers/specs/2026-09-21-modbus-
+            // stage1-design.md section 10), never routed through this
+            // dns-only join's first input, so reaching here is a wiring error too.
+            case ModbusEvent ignored -> throw new IllegalStateException(
+                "ConnSnapshotJoinFunction received a ModbusEvent on input 1; the modbus chain is separate "
+                + "by design (docs/superpowers/specs/2026-09-21-modbus-stage1-design.md section 10) "
                 + "and this is a wiring error, not a runtime condition");
         };
 

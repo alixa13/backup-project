@@ -2,6 +2,7 @@ package io.netsecml.platform.adapter.flink.process;
 
 import io.netsecml.platform.domain.event.ConnEvent;
 import io.netsecml.platform.domain.event.DnsEvent;
+import io.netsecml.platform.domain.event.ModbusEvent;
 import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.feature.SourceKey;
 import org.apache.flink.api.java.functions.KeySelector;
@@ -29,6 +30,17 @@ public final class SourceKeySelector implements KeySelector<NetworkEvent, Source
             // narrow through), so this arm is a plain accessor call rather than
             // the narrowing conn's arm needs.
             case DnsEvent dns -> dns.sourceIp();
+            // A ModbusEvent reaching this selector is a wiring error, not a
+            // value to compute: conn and dns are keyed by SourceKey, but modbus
+            // is keyed by its own ModbusEntityKey (a later task in this unit --
+            // client/server roles, normalized from direction, not a plain
+            // sourceIp) and never flows through this selector at all. Throwing
+            // is more honest than returning modbus.sourceIp() from a path that
+            // cannot execute: it does not silently imply modbus uses SourceKey.
+            case ModbusEvent ignored -> throw new IllegalStateException(
+                "SourceKeySelector received a ModbusEvent; the modbus chain is separate by design "
+                + "(docs/superpowers/specs/2026-09-21-modbus-stage1-design.md section 10) "
+                + "and this is a wiring error, not a runtime condition");
         };
         // logType is the new middle component
         // (docs/superpowers/specs/2026-09-04-multi-protocol-feature-schema-design.md

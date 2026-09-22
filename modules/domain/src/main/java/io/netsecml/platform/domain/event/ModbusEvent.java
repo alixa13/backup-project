@@ -7,18 +7,26 @@ import java.util.Objects;
 // detailed log can supply all 42 frozen features): the shared envelope plus
 // the request/response fields the frozen upstream contract reads.
 //
-// sourceIp and destinationIp are components of THIS record, not of
-// EventEnvelope, for the same reason DnsEvent carries its own sourceIp:
-// EventEnvelope is (eventId, eventTime, sensor, logType, connectionUid) --
-// no addresses at all. Modbus needs BOTH endpoints, not just one, because the
-// causal engine's state key normalizes them into client/server roles
-// (docs/superpowers/specs/2026-09-21-modbus-stage1-design.md section 7):
+// sourceIp and destinationIp are PER-PACKET: the source and destination of
+// THIS record -- for a request, the client and the server; for its response,
+// the server and the client. They are NOT the connection's originator and
+// responder (Zeek's connection-level id_orig_h/id_resp_h, which are identical
+// on a request and its response). The mapper that builds this record is
+// responsible for orienting connection-level input into this per-packet form
+// by direction; per-packet input (source_h/destination_h) already is in it.
+//
+// They are components of THIS record, not of EventEnvelope, for the same
+// reason DnsEvent carries its own sourceIp: EventEnvelope is (eventId,
+// eventTime, sensor, logType, connectionUid) -- no addresses at all. Modbus
+// needs BOTH endpoints, not just one, because the causal engine's state key
+// turns them back into client/server roles:
 //
 //   client_ip = (direction == request) ? sourceIp : destinationIp
 //   server_ip = (direction == request) ? destinationIp : sourceIp
 //
-// That normalization is a later task's job (ModbusEntityKey); this record
-// only has to carry both addresses for it to read.
+// That swap is correct ONLY for per-packet endpoints, and it lives in
+// ModbusEntityKey.of; this record only has to carry both addresses for it
+// to read.
 //
 // direction is a nested enum, not a boolean "isRequest": the upstream
 // contract's own direction normalization
@@ -42,9 +50,6 @@ import java.util.Objects;
 // the accessor (so a caller reading requestValues()/responseValues() cannot
 // mutate this record's internal copy). Both accessors are overridden below
 // for exactly that reason.
-//
-// No parser or mapper exists yet: this record only becomes reachable once
-// both land (see the class-level note on NetworkEvent.permits below).
 public record ModbusEvent(EventEnvelope envelope, ModbusDirection direction, String sourceIp,
                           String destinationIp, int functionCode, String transactionId, String unitId,
                           Double address, Double quantity, boolean matched, double[] requestValues,

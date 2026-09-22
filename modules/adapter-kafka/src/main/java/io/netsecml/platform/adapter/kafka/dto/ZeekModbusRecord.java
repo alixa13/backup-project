@@ -33,19 +33,34 @@ public record ZeekModbusRecord(
     @JsonProperty(value = "ts", required = true) double ts,
     @JsonProperty(value = "uid", required = true) String uid,
 
-    // Endpoint hosts: underscored id_orig_h/id_resp_h is PRIMARY because it is
-    // what this platform's sensor actually emits and what the working
-    // end-to-end fixtures carry -- ZeekConnEvent and ZeekDnsEvent both bind
-    // exactly these underscored names as required=true, and both protocols
-    // consume real Kafka records through passing Testcontainers E2E tests.
-    // The dotted id.orig_h/id.resp_h form is Zeek's own native JSON naming
-    // (and the design spec's own table lists it first), and source_h/
-    // destination_h is the plugin's alternate normalized pair; both are
-    // accepted as aliases so this parser does not depend on which spelling a
-    // given sensor build produces, but underscored is what to expect from
-    // THIS deployment's wire.
-    @JsonProperty("id_orig_h") @JsonAlias({"id.orig_h", "source_h"}) String sourceHost,
-    @JsonProperty("id_resp_h") @JsonAlias({"id.resp_h", "destination_h"}) String destinationHost,
+    // Endpoint hosts come in two KINDS, and they are bound to four separate
+    // fields so the two kinds can never share one again:
+    //
+    //  - origHost/respHost are CONNECTION-level: Zeek's id_orig_h/id_resp_h
+    //    name the connection's originator and responder, so a request and its
+    //    own response carry the SAME pair. Underscored id_orig_h/id_resp_h is
+    //    PRIMARY because it is what this platform's sensor actually emits --
+    //    ZeekConnEvent and ZeekDnsEvent both bind exactly these underscored
+    //    names as required=true, and both protocols consume real Kafka records
+    //    through passing Testcontainers E2E tests. The dotted id.orig_h/
+    //    id.resp_h form is Zeek's own native JSON naming, accepted as an alias
+    //    of the same connection-level field.
+    //
+    //  - sourceHost/destinationHost are PER-PACKET: source_h/destination_h
+    //    name the sender and receiver of THIS record's packet, so they flip
+    //    between a request and its response.
+    //
+    // All four are nullable: a record may carry either pair, or both. Which
+    // pair wins, and how a connection-level pair is oriented into per-packet
+    // form, is ModbusEventMapper's decision -- this DTO only keeps the two
+    // kinds apart. Folding source_h into id_orig_h's field (as an alias) made
+    // per-packet and connection-level values indistinguishable after
+    // binding, which is what let a response's endpoints reach the entity key
+    // un-oriented.
+    @JsonProperty("id_orig_h") @JsonAlias("id.orig_h") String origHost,
+    @JsonProperty("id_resp_h") @JsonAlias("id.resp_h") String respHost,
+    @JsonProperty("source_h") String sourceHost,
+    @JsonProperty("destination_h") String destinationHost,
 
     // Direction of THIS record (request vs. response), FALLBACK source.
     // requestResponse (below) is the PRIMARY direction source per the design

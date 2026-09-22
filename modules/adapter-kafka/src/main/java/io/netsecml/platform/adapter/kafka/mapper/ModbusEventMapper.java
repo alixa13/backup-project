@@ -56,19 +56,6 @@ public final class ModbusEventMapper {
             return MappingResult.invalid(ReasonCode.INVALID_TIMESTAMP, "ts must be a non-negative number, was " + dto.ts());
         }
 
-        // sourceHost/destinationHost become ModbusEvent.sourceIp/
-        // destinationIp below; ModbusEvent's compact constructor throws
-        // IllegalArgumentException on either being blank -- unlike DnsEvent,
-        // which carries only one endpoint, ModbusEvent needs both (the
-        // causal engine's state key normalizes them into client/server
-        // roles -- see ModbusEvent's own javadoc), so both are validated
-        // ahead of that call instead of behind a catch.
-        if (dto.sourceHost() == null || dto.sourceHost().isBlank()
-                || dto.destinationHost() == null || dto.destinationHost().isBlank()) {
-            return MappingResult.invalid(ReasonCode.MISSING_REQUIRED_FIELD,
-                "id_orig_h and id_resp_h are required");
-        }
-
         // Direction is validated, never guessed (ModbusEvent's own javadoc,
         // and docs/superpowers/specs/2026-09-21-modbus-stage1-design.md
         // section 5: "Direction normalization is a validation, not a
@@ -97,6 +84,19 @@ public final class ModbusEventMapper {
         } else {
             return MappingResult.invalid(ReasonCode.MISSING_REQUIRED_FIELD,
                 "direction is required: neither request_response nor is_orig resolved");
+        }
+
+        // Endpoints are resolved only now, AFTER direction, because turning
+        // connection-level input into ModbusEvent's per-packet form needs to
+        // know which way this record travelled -- see
+        // resolvePerPacketEndpoints below. ModbusEvent's compact constructor
+        // throws IllegalArgumentException on a blank sourceIp/destinationIp,
+        // and unlike DnsEvent (one endpoint) ModbusEvent needs both, so a
+        // record with no usable endpoint pair is rejected here instead of
+        // reaching that constructor.
+        MappingResult<PerPacketEndpoints> endpoints = resolvePerPacketEndpoints(dto, direction);
+        if (!endpoints.isValid()) {
+            return MappingResult.invalid(endpoints.reason(), endpoints.detail());
         }
 
         // function_code is required; the upstream engine hard-fails on a
@@ -175,10 +175,78 @@ public final class ModbusEventMapper {
 
         NetworkEvent event = new ModbusEvent(
             new EventEnvelope(eventId, eventTime, sensor, logType, connectionUid),
-            direction, dto.sourceHost(), dto.destinationHost(), functionCode.getAsInt(),
+            direction, endpoints.value().sourceIp(), endpoints.value().destinationIp(), functionCode.getAsInt(),
             String.valueOf(dto.tid()), unitId, dto.address(), dto.quantity(), matched,
             requestValues.value(), responseValues.value());
         return MappingResult.valid(event);
+    }
+
+    // A resolved endpoint pair in PER-PACKET form: the sender and receiver of
+    // this one record -- which is what ModbusEvent.sourceIp/destinationIp
+    // mean -- as opposed to the connection's originator and responder.
+    private record PerPacketEndpoints(String sourceIp, String destinationIp) {
+    }
+
+    // This mapper is the orientation stage in front of the entity key: it
+    // turns whichever endpoint pair the record carries into PER-PACKET form,
+    // because ModbusEntityKey.of expects per-packet sourceIp/destinationIp
+    // and itself swaps a RESPONSE's pair back into client/server order.
+    // Handing it a connection-level pair un-oriented would swap an
+    // already-client/server pair on every response and put a request and its
+    // own response into different keys.
+    //
+    // Precedence follows the upstream research code, which looks for the
+    // connection-level pair first ("Preferred: canonical initiator/
+    // responder") and falls back to the per-packet pair only without it. The
+    // upstream makes that choice once per capture file, by which columns
+    // exist; this mapper makes it per record, which agrees with it whenever a
+    // record's pair is fully present.
+    //
+    //  1. id_orig_h AND id_resp_h both present (CONNECTION-level, identical
+    //     on a request and its response): oriented by direction --
+    //        REQUEST:  source = orig, destination = resp
+    //        RESPONSE: source = resp, destination = orig
+    //     i.e. a request travels originator -> responder and its response
+    //     travels back. When direction came from is_orig this is exact by
+    //     definition (is_orig marks a packet sent by the originator); when it
+    //     came from request_response it rests on Modbus/TCP's client/server
+    //     model, where the client opens the connection and sends the
+    //     requests. Either way ModbusEntityKey.of then keys BOTH directions
+    //     as client = orig, server = resp -- the key the upstream builds from
+    //     a connection-level pair, which it uses as client/server directly.
+    //  2. Otherwise, source_h AND destination_h both present (already
+    //     PER-PACKET): passed through unchanged.
+    //  3. Otherwise: rejected as MISSING_REQUIRED_FIELD, never defaulted -- a
+    //     record that cannot be keyed cannot be scored.
+    //
+    // "Present" means non-null and non-blank, and a pair counts only when
+    // BOTH of its halves are present: a record carrying id_orig_h without
+    // id_resp_h falls through to the per-packet pair rather than mixing one
+    // half of each kind. When both pairs are complete the connection-level
+    // pair wins, per the same "Preferred" ordering.
+    private static MappingResult<PerPacketEndpoints> resolvePerPacketEndpoints(
+            ZeekModbusRecord dto, ModbusEvent.ModbusDirection direction) {
+        // 1. Connection-level pair: orient it into per-packet form.
+        if (isPresent(dto.origHost()) && isPresent(dto.respHost())) {
+            return MappingResult.valid(switch (direction) {
+                case REQUEST -> new PerPacketEndpoints(dto.origHost(), dto.respHost());
+                case RESPONSE -> new PerPacketEndpoints(dto.respHost(), dto.origHost());
+            });
+        }
+        // 2. Per-packet pair: already the form ModbusEvent carries.
+        if (isPresent(dto.sourceHost()) && isPresent(dto.destinationHost())) {
+            return MappingResult.valid(new PerPacketEndpoints(dto.sourceHost(), dto.destinationHost()));
+        }
+        // 3. Neither pair complete: nothing to key this record by.
+        return MappingResult.invalid(ReasonCode.MISSING_REQUIRED_FIELD,
+            "endpoints are required: neither id_orig_h+id_resp_h nor source_h+destination_h is fully present");
+    }
+
+    // Non-null and non-blank -- the same test ModbusEvent's compact
+    // constructor applies to sourceIp/destinationIp, so an endpoint that
+    // passes here cannot make that constructor throw.
+    private static boolean isPresent(String host) {
+        return host != null && !host.isBlank();
     }
 
     // request_values/response_values are strict JSON arrays of numbers

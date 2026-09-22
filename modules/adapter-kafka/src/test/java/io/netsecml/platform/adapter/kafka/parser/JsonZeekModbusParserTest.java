@@ -58,8 +58,13 @@ class JsonZeekModbusParserTest {
         assertEquals(ReasonCode.MALFORMED_JSON, result.reason());
     }
 
+    // source_h/destination_h are PER-PACKET (they flip between a request and
+    // its response), so they bind to their own sourceHost/destinationHost
+    // fields and must NOT land in the connection-level origHost/respHost --
+    // they used to be aliases of id_orig_h/id_resp_h, which made the two
+    // kinds indistinguishable after binding.
     @Test
-    void bothEndpointSpellingsBindToTheSameFields() {
+    void perPacketEndpointSpellingBindsToThePerPacketFieldsOnly() {
         String alternate = """
             {"ts":1758000000.5,"uid":"CXY1","source_h":"10.0.0.5","destination_h":"10.0.0.9",
              "is_orig":true,"tid":17,"uint":3,"func":3}
@@ -67,7 +72,47 @@ class JsonZeekModbusParserTest {
         MappingResult<ZeekModbusRecord> result = parser.parse(alternate.getBytes(StandardCharsets.UTF_8));
         assertTrue(result.isValid(), () -> "unexpected rejection: " + describe(result));
         assertEquals("10.0.0.5", result.value().sourceHost());
+        assertEquals("10.0.0.9", result.value().destinationHost());
+        assertNull(result.value().origHost());
+        assertNull(result.value().respHost());
         assertEquals("3", result.value().unitId());
+    }
+
+    // Zeek's native dotted id.orig_h/id.resp_h is an alias of the same
+    // CONNECTION-level fields the underscored spelling binds -- not of the
+    // per-packet ones.
+    @Test
+    void dottedEndpointSpellingBindsToTheConnectionLevelFields() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","id.orig_h":"10.0.0.5","id.resp_h":"10.0.0.9",
+             "is_orig":true,"tid":17,"unit":1,"func":3}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertTrue(result.isValid(), () -> "unexpected rejection: " + describe(result));
+        assertEquals("10.0.0.5", result.value().origHost());
+        assertEquals("10.0.0.9", result.value().respHost());
+        assertNull(result.value().sourceHost());
+        assertNull(result.value().destinationHost());
+    }
+
+    // A record carrying BOTH kinds -- the connection-level pair and a
+    // per-packet pair that, on this response, runs the other way -- binds
+    // each into its own fields, so the mapper still sees both and can apply
+    // its precedence. Under the old aliasing these four keys competed for two
+    // fields.
+    @Test
+    void bothEndpointKindsInOneRecordBindToFourSeparateFields() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","id_orig_h":"10.0.0.5","id_resp_h":"10.0.0.9",
+             "source_h":"10.0.0.9","destination_h":"10.0.0.5",
+             "is_orig":false,"tid":17,"unit":1,"func":3}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertTrue(result.isValid(), () -> "unexpected rejection: " + describe(result));
+        assertEquals("10.0.0.5", result.value().origHost());
+        assertEquals("10.0.0.9", result.value().respHost());
+        assertEquals("10.0.0.9", result.value().sourceHost());
+        assertEquals("10.0.0.5", result.value().destinationHost());
     }
 
     // -- Fix round 1 (F1, F2): request_response/network_direction and the
@@ -82,19 +127,22 @@ class JsonZeekModbusParserTest {
     // ZeekConnEvent and ZeekDnsEvent bind, and what this deployment's sensor
     // actually emits per the working conn/dns Testcontainers E2E tests. If
     // id_orig_h/id_resp_h were not bound as primary (or not bound at all),
-    // sourceHost()/destinationHost() would come back null here even though the
-    // JSON carries real addresses, silently keying every modbus record to the
-    // same ModbusEntityKey bucket downstream.
+    // origHost()/respHost() would come back null here even though the JSON
+    // carries real addresses, and the mapper would reject every such record
+    // for having no endpoints. They bind to the CONNECTION-level fields, not
+    // the per-packet sourceHost/destinationHost, which stay null.
     @Test
-    void underscoredEndpointSpellingBindsToTheSameFields() {
+    void underscoredEndpointSpellingBindsToTheConnectionLevelFields() {
         String json = """
             {"ts":1758000000.5,"uid":"CXY1","id_orig_h":"10.0.0.5","id_resp_h":"10.0.0.9",
              "is_orig":true,"tid":17,"unit":1,"func":3}
             """;
         MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
         assertTrue(result.isValid(), () -> "unexpected rejection: " + describe(result));
-        assertEquals("10.0.0.5", result.value().sourceHost());
-        assertEquals("10.0.0.9", result.value().destinationHost());
+        assertEquals("10.0.0.5", result.value().origHost());
+        assertEquals("10.0.0.9", result.value().respHost());
+        assertNull(result.value().sourceHost());
+        assertNull(result.value().destinationHost());
     }
 
     // F1: request_response is the PRIMARY direction source per the design
@@ -114,7 +162,7 @@ class JsonZeekModbusParserTest {
 
     // network_direction is request_response's alternate spelling per the
     // design spec's §5 table, treated identically -- same pattern as
-    // unit/uint and the two endpoint alias pairs above.
+    // unit/uint and the dotted id.orig_h/id.resp_h endpoint aliases above.
     @Test
     void networkDirectionAliasBindsToRequestResponse() {
         String json = """

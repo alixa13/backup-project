@@ -47,8 +47,16 @@ class ModbusEntityKeyTest {
 
     @Test
     void aRequestAndItsResponseShareOneKey() {
-        // Orientation normalization is the whole reason this key exists: the two
-        // directions carry src and dst swapped and must land in the same state.
+        // Orientation normalization is the whole reason this key exists. This
+        // test constructs PER-PACKET events directly -- the form ModbusEvent's
+        // sourceIp/destinationIp are defined to carry, in which a response's
+        // source/destination are its request's destination/source -- and pins
+        // that of(...) folds the two back into one key. It says nothing about
+        // what the wire sends: the platform's sensor emits CONNECTION-level
+        // id_orig_h/id_resp_h, identical on both records, and the mapper's
+        // orientation of that into this per-packet form is proven end to end
+        // (real parser, real mapper, this real key) in
+        // ModbusEventMapperTest.aRequestAndItsResponseFromTheRealWireShareOneEntityKey.
         ModbusEvent request = event(ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.9", "1");
         ModbusEvent response = event(ModbusDirection.RESPONSE, "10.0.0.9", "10.0.0.5", "1");
         assertEquals(ModbusEntityKey.of(request), ModbusEntityKey.of(response));

@@ -109,6 +109,30 @@ public final class ModbusEventMapper {
                 "func did not resolve to a known function code, was \"" + dto.func() + "\"");
         }
 
+        // request_values/response_values feed request_value_min/max/mean and
+        // their response-side counterparts -- the same "numeric measurement
+        // data this record carries" role EventMapper's ConnectionMeasurements
+        // fields (including durationMillis, itself not literally a count)
+        // already play under INVALID_COUNTER. The authoritative engine's
+        // parse_numeric_vector (two-models-info/modbus_/
+        // 07b_materialize_feature_engine_v1.py, ~lines 90-144) raises on a
+        // null member (float(None) is a TypeError) and on a non-finite one
+        // (an explicit math.isfinite check), and process_capture lets that
+        // exception abort the whole record -- no vector is produced. The
+        // streaming equivalent of that abort is this rejection, not a
+        // default: 0.0 is a plausible real register value, so defaulting a
+        // null member to it would have silently corrupted those features
+        // instead of failing, and letting Infinity through would have
+        // written a non-finite value into the vector.
+        MappingResult<double[]> requestValues = toValidatedArray(dto.requestValues(), "request_values");
+        if (!requestValues.isValid()) {
+            return MappingResult.invalid(requestValues.reason(), requestValues.detail());
+        }
+        MappingResult<double[]> responseValues = toValidatedArray(dto.responseValues(), "response_values");
+        if (!responseValues.isValid()) {
+            return MappingResult.invalid(responseValues.reason(), responseValues.detail());
+        }
+
         // Every field this event needs is now known valid, so none of the
         // domain constructors below can throw.
         //
@@ -153,30 +177,42 @@ public final class ModbusEventMapper {
             new EventEnvelope(eventId, eventTime, sensor, logType, connectionUid),
             direction, dto.sourceHost(), dto.destinationHost(), functionCode.getAsInt(),
             String.valueOf(dto.tid()), unitId, dto.address(), dto.quantity(), matched,
-            toArray(dto.requestValues()), toArray(dto.responseValues()));
+            requestValues.value(), responseValues.value());
         return MappingResult.valid(event);
     }
 
     // request_values/response_values are strict JSON arrays of numbers
     // (ZeekModbusRecord's own comment), but a JSON array element can still be
-    // an explicit null (e.g. "[7, null, 9]") -- Jackson accepts that into a
-    // List<Double> without complaint. ModbusEvent.requestValues/
-    // responseValues are primitive double[] arrays, so a null element is
-    // defaulted to 0.0 here rather than throwing a NullPointerException out
-    // of map() when unboxed -- the same crash-loop reasoning as every other
-    // check in this mapper, applied to an element rather than the whole
-    // field. An absent (null) list itself becomes an empty array, per
-    // ModbusEvent's compact constructor javadoc ("pass an empty array... not
-    // null").
-    private static double[] toArray(List<Double> values) {
+    // an explicit null (e.g. "[7, null, 9]") or a value that overflows to a
+    // non-finite double (e.g. "[1e400]" binds to Double.POSITIVE_INFINITY --
+    // ModbusEventMapperTest.aNonFiniteRequestValueFromTheRealParserIsRejected
+    // proves this by routing that exact literal through JsonZeekModbusParser,
+    // the real wire path, rather than assuming Jackson's behavior) -- both
+    // bind cleanly with no Jackson-level error. Rejected here by hand, by
+    // index, rather than left
+    // to reach ModbusEvent's compact constructor (which only clones the
+    // array; it has no per-element validity check to throw from) or
+    // defaulted -- see this method's call site above for why defaulting was
+    // the wrong repair. An absent (null) list, or an empty one, becomes an
+    // empty array, per ModbusEvent's compact constructor javadoc ("pass an
+    // empty array... not null").
+    private static MappingResult<double[]> toValidatedArray(List<Double> values, String fieldName) {
         if (values == null || values.isEmpty()) {
-            return new double[0];
+            return MappingResult.valid(new double[0]);
         }
         double[] array = new double[values.size()];
         for (int i = 0; i < array.length; i++) {
             Double value = values.get(i);
-            array[i] = value == null ? 0.0 : value;
+            if (value == null) {
+                return MappingResult.invalid(ReasonCode.INVALID_COUNTER,
+                    fieldName + "[" + i + "] must not be null");
+            }
+            if (!Double.isFinite(value)) {
+                return MappingResult.invalid(ReasonCode.INVALID_COUNTER,
+                    fieldName + "[" + i + "] must be finite, was " + value);
+            }
+            array[i] = value;
         }
-        return array;
+        return MappingResult.valid(array);
     }
 }

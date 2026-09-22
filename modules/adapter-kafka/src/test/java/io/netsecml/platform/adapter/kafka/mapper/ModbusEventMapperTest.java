@@ -1,10 +1,13 @@
 package io.netsecml.platform.adapter.kafka.mapper;
 
 import io.netsecml.platform.adapter.kafka.dto.ZeekModbusRecord;
+import io.netsecml.platform.adapter.kafka.parser.JsonZeekModbusParser;
 import io.netsecml.platform.domain.event.*;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -229,17 +232,79 @@ class ModbusEventMapperTest {
     }
 
     // A null element inside request_values/response_values (a valid JSON
-    // array shape: "[7, null, 9]") must default to 0.0, not throw a
-    // NullPointerException out of map() when unboxed -- same reasoning as
-    // DnsEventMapperTest's aNullFirstTtlDefaultsToZeroInsteadOfThrowing.
+    // array shape: "[7, null, 9]") must reject the record, not default to
+    // 0.0 and not throw a NullPointerException out of map() when unboxed.
+    // The authoritative engine's parse_numeric_vector raises TypeError from
+    // float(None) and process_capture lets that abort the whole record --
+    // 0.0 is a plausible real register value, so defaulting would have
+    // silently corrupted request_value_min/max/mean instead of failing (see
+    // ModbusEventMapper.toValidatedArray's own comment).
     @Test
-    void aNullElementInRequestValuesDefaultsToZeroInsteadOfThrowing() {
+    void aNullElementInRequestValuesIsRejectedRatherThanDefaultedOrThrown() {
         ZeekModbusRecord dto = new ZeekModbusRecord(1758000000.5, "CXY1", "10.0.0.5", "10.0.0.9",
             true, null, 17, "1", "READ_HOLDING_REGISTERS", null, null, null,
-            java.util.Arrays.asList(7.0, null, 9.0), List.of());
+            Arrays.asList(7.0, null, 9.0), List.of());
         MappingResult<NetworkEvent> result = assertDoesNotThrow(() -> map(dto));
-        assertTrue(result.isValid());
-        assertArrayEquals(new double[] {7.0, 0.0, 9.0}, asModbusEvent(result.value()).requestValues());
+        assertFalse(result.isValid());
+        assertEquals(ReasonCode.INVALID_COUNTER, result.reason());
+        assertTrue(result.detail().contains("request_values[1]"),
+            () -> "detail should name the field and offending index, was: " + result.detail());
+    }
+
+    // A non-finite element must also reject, built the way production
+    // actually would receive it: a JSON literal (1e400) overflowing double
+    // to Double.POSITIVE_INFINITY through the REAL parser, not a DTO
+    // hand-built with Double.POSITIVE_INFINITY -- proving this path is
+    // reachable from an actual Kafka record, mirroring
+    // DnsEventMapperTest.aPositiveInfiniteTimestampFromTheRealParserIsRejectedAsInvalidTimestamp.
+    @Test
+    void aNonFiniteRequestValueFromTheRealParserIsRejected() {
+        String json = "{\"ts\":1758000000.5,\"uid\":\"CXY1\",\"id_orig_h\":\"10.0.0.5\","
+            + "\"id_resp_h\":\"10.0.0.9\",\"is_orig\":true,\"tid\":17,\"unit\":\"1\","
+            + "\"func\":\"READ_HOLDING_REGISTERS\",\"request_values\":[1e400]}";
+        MappingResult<ZeekModbusRecord> parsed =
+            new JsonZeekModbusParser().parse(json.getBytes(StandardCharsets.UTF_8));
+        assertTrue(parsed.isValid(), () -> "parser rejected the fixture: " + parsed);
+        assertTrue(Double.isInfinite(parsed.value().requestValues().get(0)),
+            "1e400 must overflow to POSITIVE_INFINITY, proving this element is reachable from real JSON");
+
+        MappingResult<NetworkEvent> result = map(parsed.value());
+
+        assertFalse(result.isValid());
+        assertEquals(ReasonCode.INVALID_COUNTER, result.reason());
+        assertTrue(result.detail().contains("request_values[0]"),
+            () -> "detail should name the field and offending index, was: " + result.detail());
+    }
+
+    // An ordinary array of finite values must still map successfully --
+    // this fix must not reject valid data, only null/non-finite elements.
+    @Test
+    void anOrdinaryFiniteValueArrayStillMapsSuccessfully() {
+        ZeekModbusRecord dto = new ZeekModbusRecord(1758000000.5, "CXY1", "10.0.0.5", "10.0.0.9",
+            true, null, 17, "1", "READ_HOLDING_REGISTERS", null, null, null,
+            List.of(7.0, 9.0, -3.5), List.of());
+        MappingResult<NetworkEvent> result = map(dto);
+        assertTrue(result.isValid(), () -> "unexpected rejection: " + describe(result));
+        assertArrayEquals(new double[] {7.0, 9.0, -3.5}, asModbusEvent(result.value()).requestValues());
+    }
+
+    // An empty array and an absent field both still map to an empty
+    // double[] -- unchanged by this fix, and correct: the authoritative
+    // engine's parse_numeric_vector also returns [] for both None and [].
+    @Test
+    void anEmptyArrayAndAnAbsentFieldBothMapToAnEmptyDoubleArray() {
+        ZeekModbusRecord emptyArray = new ZeekModbusRecord(1758000000.5, "CXY1", "10.0.0.5", "10.0.0.9",
+            true, null, 17, "1", "READ_HOLDING_REGISTERS", null, null, null, List.of(), List.of());
+        ZeekModbusRecord absentField = new ZeekModbusRecord(1758000000.5, "CXY1", "10.0.0.5", "10.0.0.9",
+            true, null, 17, "1", "READ_HOLDING_REGISTERS", null, null, null, null, null);
+
+        MappingResult<NetworkEvent> emptyResult = map(emptyArray);
+        MappingResult<NetworkEvent> absentResult = map(absentField);
+
+        assertTrue(emptyResult.isValid());
+        assertTrue(absentResult.isValid());
+        assertArrayEquals(new double[0], asModbusEvent(emptyResult.value()).requestValues());
+        assertArrayEquals(new double[0], asModbusEvent(absentResult.value()).requestValues());
     }
 
     // Happy path, narrowed to ModbusEvent so every field can be checked at

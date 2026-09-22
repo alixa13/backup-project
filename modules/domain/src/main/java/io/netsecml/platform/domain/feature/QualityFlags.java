@@ -19,13 +19,14 @@ public final class QualityFlags {
     // 0 (CONN_ENRICHMENT_ABSENT) is PROTOCOL-AGNOSTIC -- every protocol that
     // consumes the common tier's conn.log enrichment shares this exact bit,
     // rather than each protocol defining its own copy of it. Bit 1 onward is
-    // where each protocol's OWN bits start; DNS claims only bit 1
-    // (DNS_RESPONSE_ABSENT) here, so bit 1 remains free for the next
-    // protocol's own first flag -- a future protocol must not reuse bit 1 for
-    // an unrelated meaning while DNS vectors carrying it are still archived,
-    // since a consumer reads this word relative to a row's own `log_type` and
-    // has no other way to know which protocol's bit convention applied when
-    // the row was written.
+    // where each protocol-specific flag lives, but each bit still has ONE
+    // GLOBAL MEANING, not a per-protocol one: every protocol-specific flag
+    // takes the next unused bit and keeps that meaning permanently, because
+    // archived rows outlive the code that wrote them. DNS claims bit 1
+    // (DNS_RESPONSE_ABSENT); modbus takes the next free bit, 2
+    // (MODBUS_OUT_OF_ORDER); a consumer that forgets to check a row's own
+    // `log_type` still reads the word correctly, and no two constants in this
+    // class ever share a value.
     public static final int CONN_ENRICHMENT_ABSENT = 1;
 
     // No dns.log answer had arrived for this query at build time. The frozen
@@ -39,6 +40,18 @@ public final class QualityFlags {
     // join, this one is about the DNS protocol tier's own response, and either
     // can be set independently of the other for the same record.
     public static final int DNS_RESPONSE_ABSENT = 2;
+
+    // Set when ModbusBuildFeaturesUseCase resets a (client_ip, server_ip,
+    // unit) key's segment because the incoming event's timestamp went
+    // BACKWARDS relative to the state's own lastTs -- never for an ordinary
+    // >15s gap, which also starts a new segment but is not a data-quality
+    // event. The upstream offline engine raises on a negative gap because it
+    // has already asserted its whole capture is in strictly increasing
+    // order; a streaming operator cannot make that assumption and resets
+    // instead, recording the condition here so it stays observable. Bit 2:
+    // modbus-feature-v1 carries no common tier (ModbusFeatureSchemaV1's own
+    // javadoc), so a modbus vector never sets bit 0.
+    public static final int MODBUS_OUT_OF_ORDER = 4;
 
     // Non-instantiable: every member is a constant.
     private QualityFlags() {

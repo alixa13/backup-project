@@ -117,8 +117,20 @@ public final class ModbusFeatureExtractor {
     // ModbusEntityState accessor (windowCount10s(ts), etc.) takes. Uses
     // getNano(), not toEpochMilli()/1000.0, so a sub-millisecond fractional
     // second (as this class's own test fixtures construct, e.g. a 0.25s RTT)
-    // round-trips exactly instead of being truncated to whole milliseconds.
-    private static double epochSeconds(Instant instant) {
+    // keeps sub-microsecond precision instead of being truncated to whole
+    // milliseconds. This does NOT round-trip a true nanosecond input exactly:
+    // at today's epoch magnitude (~1.79e9 seconds) a double's precision is
+    // roughly 0.4 microseconds, so the conversion is lossy below that -- but
+    // it matches the upstream engine's own float64 `ts` (identical ceiling),
+    // and is strictly better than the millisecond truncation
+    // toEpochMilli()/1000.0 would introduce.
+    //
+    // public static, not private: ModbusBuildFeaturesUseCase (application.usecase)
+    // must feed ModbusEntityState.afterEvent the SAME double this class computes
+    // for extract's own `ts`, or inter_arrival_s, rtt_s and every window boundary
+    // would silently drift between two independently-written conversions. One
+    // definition, shared by both callers, is what keeps that impossible.
+    public static double epochSeconds(Instant instant) {
         return instant.getEpochSecond() + instant.getNano() / 1_000_000_000.0;
     }
 

@@ -9,8 +9,9 @@ import java.util.List;
 // A single ICSNPP modbus_detailed.log record (icsnpp-modbus package), NOT
 // base Zeek's own modbus.log -- see contracts/source/zeek-modbus-source-v1.json
 // and ModbusFeatureSchemaV1's javadoc for why only the detailed log carries
-// address, quantity, request_values and response_values, without which 15 of
-// the 42 frozen modbus-feature-v1 features could not be computed.
+// address, quantity, request_values and response_values, none of which base
+// modbus.log has at all, and without which the frozen modbus-feature-v1
+// features that read them could not be computed.
 //
 // This is a pure binding step: it stops at "did the JSON bind to these
 // fields", never at domain validation. Resolving direction (isOrig),
@@ -32,20 +33,38 @@ public record ZeekModbusRecord(
     @JsonProperty(value = "ts", required = true) double ts,
     @JsonProperty(value = "uid", required = true) String uid,
 
-    // Endpoint hosts: some Zeek/ICSNPP configurations emit the raw
-    // connection-id fields (id.orig_h/id.resp_h, matching conn/dns's own
-    // wire shape), others emit the plugin's normalized source_h/destination_h
-    // pair instead. Both spellings are accepted so this parser does not
-    // depend on which one a given sensor build produces.
-    @JsonProperty("id.orig_h") @JsonAlias("source_h") String sourceHost,
-    @JsonProperty("id.resp_h") @JsonAlias("destination_h") String destinationHost,
+    // Endpoint hosts: underscored id_orig_h/id_resp_h is PRIMARY because it is
+    // what this platform's sensor actually emits and what the working
+    // end-to-end fixtures carry -- ZeekConnEvent and ZeekDnsEvent both bind
+    // exactly these underscored names as required=true, and both protocols
+    // consume real Kafka records through passing Testcontainers E2E tests.
+    // The dotted id.orig_h/id.resp_h form is Zeek's own native JSON naming
+    // (and the design spec's own table lists it first), and source_h/
+    // destination_h is the plugin's alternate normalized pair; both are
+    // accepted as aliases so this parser does not depend on which spelling a
+    // given sensor build produces, but underscored is what to expect from
+    // THIS deployment's wire.
+    @JsonProperty("id_orig_h") @JsonAlias({"id.orig_h", "source_h"}) String sourceHost,
+    @JsonProperty("id_resp_h") @JsonAlias({"id.resp_h", "destination_h"}) String destinationHost,
 
-    // Direction of THIS record (request vs. response): the source contract
-    // marks is_orig required, but that is a MAP-stage (direction-resolution)
-    // obligation per ModbusEvent's javadoc, not a PARSE-stage one -- an
-    // unresolvable direction is a DLQ rejection the mapper makes deliberately,
-    // never a guess this parser should make by treating absence as malformed.
+    // Direction of THIS record (request vs. response), FALLBACK source.
+    // requestResponse (below) is the PRIMARY direction source per the design
+    // spec's §5 table; is_orig is read only when requestResponse is absent.
+    // Neither is required=true here: resolving that either/or, and rejecting
+    // a record where NEITHER resolves, is a MAP-stage obligation per
+    // ModbusEvent's javadoc ("an unresolvable direction is a DLQ rejection,
+    // never a guess") -- a Jackson-level required=true cannot express an
+    // either/or across two independently named keys, so this parser leaves
+    // both nullable and lets the mapper enforce the real rule.
     @JsonProperty("is_orig") Boolean isOrig,
+
+    // Direction of THIS record, PRIMARY source: the design spec's §5 table
+    // names request_response (or its network_direction alias) as the field
+    // to check BEFORE falling back to is_orig above. Nullable for the same
+    // either/or reason isOrig is nullable: a record may legitimately carry
+    // only is_orig, and the mapper -- not this parser -- decides whether the
+    // two together resolve to a usable direction.
+    @JsonProperty("request_response") @JsonAlias("network_direction") String requestResponse,
 
     // Modbus transaction id: keys the pending-TID state the mapper/causal
     // engine build on top of this record. required=true only enforces that

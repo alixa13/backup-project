@@ -9,8 +9,9 @@ import static io.netsecml.platform.domain.feature.FeatureDefinition.MissingPolic
 // tests/fixtures/contracts/modbus_feature_contract_v1.json (feature_order, indices
 // 1-42 there; 0-based here -- the numbering differs by one on purpose, the names and
 // their order are what must match). Base Zeek's own modbus.log carries no address,
-// quantity, request_values or response_values, so it cannot supply 15 of these 42
-// features; modbus_detailed.log is the only source this schema reads.
+// quantity, request_values or response_values at all, so it cannot supply any feature
+// that reads one of those four raw fields; modbus_detailed.log is the only source this
+// schema reads.
 //
 // missingPolicy follows one rule: REQUIRED when the absence of the feature's source
 // field rejects the whole record to the DLQ, DEFAULT_ZERO when the value is simply

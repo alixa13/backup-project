@@ -70,6 +70,76 @@ class JsonZeekModbusParserTest {
         assertEquals("3", result.value().unitId());
     }
 
+    // -- Fix round 1 (F1, F2): request_response/network_direction and the
+    // underscored endpoint spelling this platform's wire actually uses --
+
+    // THE regression guard for F2: the original fixture above
+    // (aWellFormedModbusDetailedLineParses) used the DOTTED id.orig_h/id.resp_h
+    // spelling, which was PRIMARY before this fix and is now only an alias --
+    // so that test alone would keep passing even if underscored binding were
+    // silently broken. This test uses ONLY the underscored id_orig_h/id_resp_h
+    // spelling (no dotted, no source_h/destination_h) -- exactly what
+    // ZeekConnEvent and ZeekDnsEvent bind, and what this deployment's sensor
+    // actually emits per the working conn/dns Testcontainers E2E tests. If
+    // id_orig_h/id_resp_h were not bound as primary (or not bound at all),
+    // sourceHost()/destinationHost() would come back null here even though the
+    // JSON carries real addresses, silently keying every modbus record to the
+    // same ModbusEntityKey bucket downstream.
+    @Test
+    void underscoredEndpointSpellingBindsToTheSameFields() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","id_orig_h":"10.0.0.5","id_resp_h":"10.0.0.9",
+             "is_orig":true,"tid":17,"unit":1,"func":3}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertTrue(result.isValid(), () -> "unexpected rejection: " + describe(result));
+        assertEquals("10.0.0.5", result.value().sourceHost());
+        assertEquals("10.0.0.9", result.value().destinationHost());
+    }
+
+    // F1: request_response is the PRIMARY direction source per the design
+    // spec's §5 table, and Task 4's mapper is specified to read it BEFORE
+    // falling back to is_orig. Without this field bound, that precedence rule
+    // has nothing to read and silently always falls back -- this pins that
+    // the field actually reaches the DTO.
+    @Test
+    void requestResponseBindsWhenPresent() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","tid":17,"func":3,"request_response":"REQUEST"}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertTrue(result.isValid(), () -> "unexpected rejection: " + describe(result));
+        assertEquals("REQUEST", result.value().requestResponse());
+    }
+
+    // network_direction is request_response's alternate spelling per the
+    // design spec's §5 table, treated identically -- same pattern as
+    // unit/uint and the two endpoint alias pairs above.
+    @Test
+    void networkDirectionAliasBindsToRequestResponse() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","tid":17,"func":3,"network_direction":"RESPONSE"}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertTrue(result.isValid(), () -> "unexpected rejection: " + describe(result));
+        assertEquals("RESPONSE", result.value().requestResponse());
+    }
+
+    // A record may legitimately carry only is_orig (no request_response at
+    // all) -- neither is required=true, and the fallback-to-is_orig case must
+    // still parse cleanly at PARSE stage; the mapper, not this parser, is
+    // where the either/or is actually enforced.
+    @Test
+    void isOrigAloneStillParsesWithoutRequestResponse() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","tid":17,"func":3,"is_orig":true}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertTrue(result.isValid(), () -> "unexpected rejection: " + describe(result));
+        assertNull(result.value().requestResponse());
+        assertEquals(Boolean.TRUE, result.value().isOrig());
+    }
+
     // -- Extra coverage beyond the brief's floor of 4 --
 
     // ts and tid are the DTO's other two required=true fields, and both are

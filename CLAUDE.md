@@ -89,11 +89,7 @@ domain → ports → application → adapters → bootstrap
   engine, which consumes per-packet source/destination and does the swap itself. Break it
   and every request and its response silently land in different state buckets, so no
   response ever matches. The mapper's `resolvePerPacketEndpoints` comment is the account to
-  trust. Two documents predate this rule and still describe the two kinds of field as
-  interchangeable: the design spec's §5 and §7
-  (`docs/superpowers/specs/2026-09-21-modbus-stage1-design.md`), and the `id_orig_h`/`id_resp_h`
-  notes in `contracts/source/zeek-modbus-source-v1.json`, which call `source_h`/`destination_h`
-  aliases.
+  trust.
 - CPU-only: no GPU, no CUDA, no deep-learning frameworks. ONNX Runtime Java with intra/inter-op threads pinned to 1 per subtask.
 - Model bundle is pinned in job config and loaded once in `open()`. No live hot reload.
 - ClickHouse is never on the online scoring path. Predictions go to Kafka first; the archive job writes to ClickHouse asynchronously.
@@ -101,8 +97,10 @@ domain → ports → application → adapters → bootstrap
 - Bounded per-key state only — no unbounded per-IP maps or event history. Conn and dns key
   per `(sensor, sourceIp)`; modbus keys per `(sensor, clientIp, serverIp, unitId)`
   (`ModbusEntityKey`). This is the rule the code aims at and holds per key — five one-minute
-  buckets each for conn and dns; for modbus, trailing windows holding at most the last 60
-  seconds of events plus a pending-TID map capped at 4096 entries — but not yet in aggregate:
+  buckets each for conn and dns; for modbus, a pending-TID map capped at 4096 entries, but the
+  trailing windows themselves are bounded by TIME (the last 60 seconds), not by a constant —
+  their size is O(events in that 60s), not O(1), so a flood inflates both per-key memory and
+  per-event cost (see "Modbus limits and decisions" below, F2) — but not yet in aggregate:
   none of `ConnFeatureProcessFunction`'s `rolling-counters`, `DnsFeatureProcessFunction`'s
   `dns-window-state` or `ModbusFeatureProcessFunction`'s `modbus-entity-state` carries a TTL,
   so the KEY SET keeps every key ever seen, for all three protocols, forever (see
@@ -211,19 +209,21 @@ skips were hiding real defects — including a deduplication query that was
 syntactically invalid and could never have executed. **Do not read a skipped
 container test as a passing one.**
 
-Verified fresh for the Modbus unit's last task, at `9f2e97d` plus the two
-end-to-end test files that task's commit changes (the commit that records this
-changes only those two files and this one). Each suite was run on its own, one
-module at a time — see Commands for why no single command proves the whole
+Verified fresh for the final fix wave (F1/F2/F3/F4 and the documentation
+corrections), at `a8446d4` (commit 2 of that wave; commit 3, this file, changes
+no code). Superseded the Modbus unit's own last-task verification at `9f2e97d`,
+which this repeats in full and extends with `ModbusGoldenVectorTest`. Each
+suite was run on its own, one module at a time, `target/surefire-reports/`
+cleared first — see Commands for why no single command proves the whole
 reactor at once. No containers were involved in this table:
 
 | Suite | Result |
 |---|---|
-| `domain` | 155/155, 0 skipped |
+| `domain` | 156/156, 0 skipped (+1 over the prior 155: `ModbusEventTest.tsSecondsMustBeFinite`) |
 | `ports` | no tests exist (no test sources in the module) |
 | `application` | 68/68, 0 skipped |
-| `adapter-kafka` | 120/120, 0 skipped |
-| `adapter-flink` | 37/37, 0 skipped |
+| `adapter-kafka` | 121/121, 0 skipped (+1 over the prior 120: `ModbusEventMapperTest.tsSecondsIsTheUnroundedWireValueWhileEventTimeIsMillisecondRounded`) |
+| `adapter-flink` | 40/40, 0 skipped (+3 over the prior 37: `ModbusGoldenVectorTest`, F3's golden vector, proving all 42 values bit-identical to a hand derivation of `07b`'s `process_capture` on microsecond wire timestamps, including the 15s segment boundary and the 1s window edge) |
 | `adapter-clickhouse`, `InvalidEventRowMapperTest` only (filtered; the module's container tests were not run here) | 9/9, 0 skipped |
 | `bootstrap-online-job`, `OnlineFeatureJobTopologyTest` only (filtered) | 6/6, 0 skipped |
 | `bootstrap-archive-job`, `ArchiveJobTopologyTest` only (filtered) | 9/9, 0 skipped |
@@ -234,7 +234,7 @@ filtered to its one class, never either bootstrap module unfiltered:
 
 | Suite | Result | What it actually proves |
 |---|---|---|
-| `OnlineFeatureJobE2ETest` | 3/3, 0 skipped | conn and dns feature vectors both arrive from a real broker; the joined dns record carries `qualityFlags()==NONE`, an orphan dns record carries `CONN_ENRICHMENT_ABSENT`, and a malformed dns record reaches dns's own DLQ (`netsec.dns.dlq.v1`), never conn's. Through the three-protocol `build(...)` that `main()` calls, a modbus request and its response that carry IDENTICAL, unswapped connection-level `id_orig_h`/`id_resp_h` (direction from `request_response` alone) share one entity state: the response's 42-value vector has `outstanding_requests_before_event` 1, `response_without_request` 0, `rtt_valid` 1 and `rtt_s` equal to the published 0.25 s gap. A malformed modbus record reaches `netsec.modbus.dlq.v1`, and conn's and dns's DLQs stay empty. The same modbus method, run against the pre-fix DTO and mapper (from `7d0f685`), fails: the response finds no pending request (`outstanding_requests_before_event` 0) |
+| `OnlineFeatureJobE2ETest` | 3/3, 0 skipped | conn and dns feature vectors both arrive from a real broker; the joined dns record carries `qualityFlags()==NONE`, an orphan dns record carries `CONN_ENRICHMENT_ABSENT`, and a malformed dns record reaches dns's own DLQ (`netsec.dns.dlq.v1`), never conn's. Through the three-protocol `build(...)` that `main()` calls, a modbus request and its response that carry IDENTICAL, unswapped connection-level `id_orig_h`/`id_resp_h` (direction from `request_response` alone) share one entity state: the response's 42-value vector has `outstanding_requests_before_event` 1, `response_without_request` 0, `rtt_valid` 1 and `rtt_s` equal to the published 0.25 s gap. A malformed modbus record reaches `netsec.modbus.dlq.v1`, and conn's and dns's DLQs stay empty. The same modbus method, run against the pre-fix DTO and mapper (from `7d0f685`), fails: the response finds no pending request (`outstanding_requests_before_event` 0). This fixture's timestamps are millisecond-exact, so F1's fix changes nothing about this test's own numbers — the golden vector above, not this suite, is what proves F1 |
 | `ArchiveJobE2ETest` | 3/3, 0 skipped | A 24-value dns feature vector and a dns rejection both reach ClickHouse under `log_type = 'dns'`, and a conn vector/rejection under `log_type = 'conn'`, through `connAndDnsChains(...)`. A 42-value modbus vector (carrying the `MODBUS_OUT_OF_ORDER` bit) and a map-stage modbus rejection both reach ClickHouse under `log_type = 'modbus'`, alongside exactly one conn and one dns row per table, through the exact six chains `ArchiveJob.main()` wires via `connDnsAndModbusChains(...)` |
 
 Verified earlier against real containers, and not re-run for this update
@@ -354,6 +354,72 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   (`modbus-event-narrow`), so its key selector and process function are typed on
   `ModbusEvent`. See `OnlineFeatureJob`'s `NarrowToModbusEvent` comment, so the
   next protocol's author chooses between the two deliberately.
+- **Flood cost (F2): measured, deliberately NOT fixed in this unit.** The trailing
+  windows are bounded by TIME, not count (see the bounded-state invariant above),
+  and `ModbusEntityState.afterEvent` copies them (and the pending-TID map) on
+  every event, then `ModbusFeatureExtractor` scans the 10s deque six times.
+  Measured on the real use case, single thread, one key, no Flink or Kryo
+  overhead (production will be no faster): an answered flood of ~1000 events/s
+  saturates one core just keeping pace; an unanswered request flood reaches the
+  4096 pending cap after ~41s at 100 req/s, and at 1000 req/s throughput drops to
+  ~800 events/s — the operator falls behind real time, and consumer lag grows for
+  every modbus key on that subtask. Cost is ~192r element operations per event,
+  where r is the current event rate in events/s (~192r² per second) plus up to
+  4096 per event once the cap is full. No parity
+  impact, and M1 has no scoring path, so it does not block merge. **It blocks
+  deployment against live OT traffic.** The parity-preserving repair (mutate in
+  place; restore `07b`'s incrementally maintained 10s counters; read event rates
+  as deque sizes) must land before first deployment — it changes
+  `ModbusEntityState`'s Kryo layout, which is free only before a savepoint
+  exists — and in any case before M2.
+- **`ModbusEntityState` falls back to Kryo (`GenericTypeInfo`)**, like
+  `DnsWindowState`'s two components (`RollingCounters`, `RecordTimingState`):
+  Flink's POJO analysis requires a public no-arg constructor and bean-style
+  get/is-prefixed no-argument accessors, and this class has neither (private
+  constructor; several accessors take a `ts` argument). Its savepoint-evolution
+  story is therefore Kryo's, not the POJO serializer's — F2's repair changes its
+  field layout, so that repair is free only before a savepoint exists.
+- **Modbus event-id residual collision.** Two records sharing the same uid, tid
+  and direction inside one millisecond get one event id
+  (`sensor:uid:tid:direction:ts_millis`). Under a flood the tid is
+  attacker-controlled, so `ReplacingMergeTree` can collapse archived rows onto
+  each other; the Kafka stream itself is unaffected (its records still carry
+  distinct offsets). The DNS equivalent (`trans_id` collision risk) is already
+  listed above; this is modbus's.
+- **Exception, unknown and vendor function names are DLQ'd (F4), and their
+  requests stay pending.** `ModbusFunctionCode.codeOf` resolves the 21
+  transcribed upstream names, digits, `FUNCTION_<n>` and `(FC|FUNCTION)_?<n>`
+  only. Zeek's `<NAME>_EXCEPTION` PDUs, vendor names such as `PROGRAM_484`, and
+  `unknown-<n>` all reach the DLQ as `MISSING_REQUIRED_FIELD` and are never
+  scored — so exception storms and function-code scans, classic Modbus attack
+  signatures, are not scored — and a DLQ'd exception response leaves its
+  request pending in state, which inflates `outstanding_requests_before_event`
+  on that key's later, scored records and can set `request_overwrite_same_tid`
+  when the tid comes round again. This matches `07b`, which raises on an
+  unparseable function code, so it is not a parity defect: resolving these
+  codes would feed out-of-distribution records to a frozen model, and is the
+  model team's call, not a Java-side fix. Unverified offline: no real
+  `modbus_detailed` sample exists in the repo.
+- **Partitioning precision.** The per-key arrival-order requirement above,
+  "partition the modbus topic by `(client_ip, server_ip)`", means the
+  CONNECTION-level pair (Zeek's `id_orig_h`/`id_resp_h`), never the per-packet
+  pair (`source_h`/`destination_h`): partitioning by the per-packet pair would
+  send a request and its response — which carry OPPOSITE per-packet
+  source/destination — to different partitions, defeating the whole point of
+  partitioning by key.
+- **Timestamp precision (F1, fixed 2026-09-23).** The causal engine reads
+  `ModbusEvent.tsSeconds()` — the wire `ts` exactly, unrounded — never a value
+  derived from `envelope().eventTime()`, which stays millisecond-rounded for
+  the event id and the ClickHouse `DateTime64(3)` column only. Before the fix,
+  both were derived from the same millisecond-rounded Instant, so
+  `inter_arrival_s`/`rtt_s` and every window boundary were wrong on
+  sub-millisecond wire timestamps (which Zeek's JSON writer routinely emits) --
+  proved 84% high on a measured RTT pair, and shown to miss the 15s segment
+  reset and the 1s window edge. `ModbusGoldenVectorTest`
+  (`modules/adapter-flink`) is the regression test: it drives raw
+  microsecond-timestamped JSON through the real parser, mapper and use case and
+  asserts all 42 values, exactly, against a hand derivation of `07b`'s
+  `process_capture`.
 
 The common feature tier (`contracts/features/common-feature-tier-v1.json`) and
 its `conn.log` enrichment carrier are implemented and now consumed:
@@ -373,8 +439,8 @@ Design records: `docs/conn-foundation-pipeline.md` (Steps 2-7),
 `docs/superpowers/specs/2026-08-27-clickhouse-archive-job-design.md` and
 `docs/clickhouse.md` (Step 8), and
 `docs/superpowers/specs/2026-09-21-modbus-stage1-design.md` (the Modbus unit;
-see the endpoint-orientation invariant for the two sections of it that are
-out of date).
+its §5 and §7 carried a defect-shaped description of the endpoint fields,
+corrected in place 2026-09-23 with dated notes).
 
 ## Key reference files
 

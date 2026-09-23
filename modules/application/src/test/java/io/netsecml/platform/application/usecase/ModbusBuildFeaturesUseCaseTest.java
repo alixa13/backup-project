@@ -31,10 +31,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ModbusBuildFeaturesUseCaseTest {
     private static final SensorId SENSOR = new SensorId("sensor-eu-1");
 
-    // ts -> Instant via nanos, matched by ModbusFeatureExtractor's own
-    // epochSeconds(Instant), so a fractional ts (e.g. 1000.25) keeps
-    // sub-millisecond precision instead of being rounded to whole
-    // milliseconds. Mirrors ModbusFeatureExtractorTest's own helper.
+    // ts -> Instant for envelope().eventTime() only (nanosecond-rounded, for
+    // realism); the causal engine itself reads tsSeconds -- the same `ts`
+    // double passed to each helper below, unrounded -- not this Instant.
+    // Mirrors ModbusFeatureExtractorTest's own helper.
     private static Instant instantOf(double ts) {
         long seconds = (long) Math.floor(ts);
         long nanos = Math.round((ts - seconds) * 1_000_000_000.0);

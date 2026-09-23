@@ -36,15 +36,13 @@ public final class ModbusBuildFeaturesUseCase implements BuildFeaturesUseCase<Mo
     // record).
     private final FeatureSchema schema;
 
-    // Kept so a future ModbusFeatureProcessFunction.open()'s no-arg
-    // construction compiles unchanged, same as Conn/DnsBuildFeaturesUseCase's
-    // no-arg constructor.
+    // Used by ModbusFeatureProcessFunction.open(), same as
+    // Conn/DnsBuildFeaturesUseCase's own no-arg constructor.
     public ModbusBuildFeaturesUseCase() {
         this(Clock.systemUTC());
     }
 
-    // Overload used by callers (tests, and a later task) that need a fixed or
-    // fake Clock.
+    // Overload used by callers (tests) that need a fixed or fake Clock.
     public ModbusBuildFeaturesUseCase(Clock clock) {
         this(clock, FeatureSchemaRegistry.byLogType(LogType.MODBUS));
     }
@@ -86,14 +84,15 @@ public final class ModbusBuildFeaturesUseCase implements BuildFeaturesUseCase<Mo
 
     @Override
     public FeatureBuildResult<ModbusEntityState> build(ModbusEvent event, ModbusEntityState currentState) {
-        // Shared, not duplicated: both this class and ModbusFeatureExtractor
-        // need the event's timestamp as the same fractional-second double, and
-        // ModbusFeatureExtractor.epochSeconds is the ONE place that conversion
-        // is defined (see its own comment). Calling it here, rather than
-        // reimplementing getEpochSecond()+getNano()/1e9 a second time, is what
-        // keeps `after` built against the exact ts the extractor itself used
+        // event.tsSeconds() is the ONE value both this class and
+        // ModbusFeatureExtractor read for "this event's timestamp" -- the
+        // wire ts exactly, unrounded (see ModbusEvent's own javadoc). Reading
+        // the same record component here, rather than each independently
+        // deriving a fractional-second double from envelope().eventTime()
+        // (which is millisecond-rounded and NOT the causal clock), is what
+        // keeps `after` built against the exact ts the extractor itself uses
         // for inter_arrival_s, rtt_s and every window boundary.
-        double ts = ModbusFeatureExtractor.epochSeconds(event.envelope().eventTime());
+        double ts = event.tsSeconds();
 
         // Step 1: decide, from the state as it stood BEFORE this event,
         // whether this event starts a new causal segment -- a first event for

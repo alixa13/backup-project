@@ -104,6 +104,25 @@ class ModbusEventMapperTest {
         assertTrue(beforeCeiling.isValid());
     }
 
+    // Pins F1's fix: tsSeconds is the wire ts EXACTLY (same double, no
+    // rounding), while envelope().eventTime() is that same ts rounded to the
+    // nearest millisecond -- two different values, deliberately, not one
+    // value read two ways. A microsecond-resolution ts (as Zeek's JSON writer
+    // emits) is what would have exposed the pre-fix bug, where the causal
+    // engine read a millisecond-rounded value derived from eventTime instead
+    // of this unrounded one.
+    @Test
+    void tsSecondsIsTheUnroundedWireValueWhileEventTimeIsMillisecondRounded() {
+        double microsecondTs = 1758000000.123456;
+        MappingResult<NetworkEvent> result = map(record(microsecondTs, "CXY1", 17, true));
+        assertTrue(result.isValid());
+
+        ModbusEvent modbus = asModbusEvent(result.value());
+        assertEquals(microsecondTs, modbus.tsSeconds(), "tsSeconds must be the exact wire double, not rounded");
+        assertEquals(Instant.ofEpochMilli(Math.round(microsecondTs * 1000.0)), modbus.eventTime(),
+            "eventTime stays millisecond-rounded for the event id and the ClickHouse DateTime64(3) column");
+    }
+
     // -- Endpoint orientation: connection-level wire input vs. per-packet ModbusEvent --
 
     // THE regression test for the endpoint-orientation defect, built from the

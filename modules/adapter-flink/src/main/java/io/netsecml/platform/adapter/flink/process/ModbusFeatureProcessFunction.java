@@ -50,8 +50,8 @@ public final class ModbusFeatureProcessFunction
             currentState = ModbusEntityState.empty();
         }
 
-        // The use case owns the Instant-to-epoch-seconds conversion
-        // (ModbusFeatureExtractor.epochSeconds) and the whole decide segment
+        // The use case owns reading event.tsSeconds() (the causal engine's
+        // clock; see ModbusEvent's own javadoc) and the whole decide segment
         // / reset / extract / advance sequence; this operator does nothing
         // with timestamps itself, matching Conn/DnsFeatureProcessFunction's
         // own division of labour between operator and use case.

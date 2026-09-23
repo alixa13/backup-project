@@ -29,10 +29,14 @@ class ModbusEntityKeyTest {
     // can exist at all (ModbusEvent's compact constructor rejects a null
     // unitId), so this helper performs that same substitution rather than
     // bypassing the invariant it is testing against.
+    // tsSeconds consistent with EVENT_TIME (exact on a whole second here, so
+    // epochSecond + nano/1e9 loses nothing).
+    private static final double TS_SECONDS = EVENT_TIME.getEpochSecond() + EVENT_TIME.getNano() / 1_000_000_000.0;
+
     private ModbusEvent event(ModbusDirection direction, String sourceIp, String destinationIp, String unitId) {
         EventEnvelope envelope = new EventEnvelope(EventId.derive(SENSOR, "Mabc"), EVENT_TIME, SENSOR,
             LogType.MODBUS, "Mabc");
-        return new ModbusEvent(envelope, direction, sourceIp, destinationIp, 3, "1",
+        return new ModbusEvent(envelope, TS_SECONDS, direction, sourceIp, destinationIp, 3, "1",
             unitId == null ? "NA" : unitId, null, null, false, new double[0], new double[0]);
     }
 

@@ -55,7 +55,9 @@ class ModbusFeatureProcessFunctionTest {
     // helper -- only ts, functionCode and tid vary, per that test's reduction
     // for the same reason.
     private ModbusEvent request(double ts, int functionCode, String tid) {
-        return new ModbusEvent(envelope(ts, tid), ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.9",
+        // tsSeconds is the same `ts` double, not re-derived from instantOf(ts)'s
+        // Instant -- see ModbusBuildFeaturesUseCaseTest's own request() helper.
+        return new ModbusEvent(envelope(ts, tid), ts, ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.9",
             functionCode, tid, "1", null, null, false, new double[0], new double[0]);
     }
 
@@ -63,7 +65,7 @@ class ModbusFeatureProcessFunctionTest {
     // unit -- so two calls at different units key to two different
     // ModbusEntityKeys and must not share a window.
     private ModbusEvent requestForUnit(double ts, String unitId) {
-        return new ModbusEvent(envelope(ts, unitId), ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.9",
+        return new ModbusEvent(envelope(ts, unitId), ts, ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.9",
             3, "tid-" + unitId, unitId, null, null, false, new double[0], new double[0]);
     }
 

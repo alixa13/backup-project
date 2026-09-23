@@ -47,7 +47,11 @@ class ModbusBuildFeaturesUseCaseTest {
     }
 
     private ModbusEvent request(double ts, int functionCode, String tid) {
-        return new ModbusEvent(envelope(ts), ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.9",
+        // tsSeconds is the same `ts` double the caller passed, not re-derived
+        // from the Instant instantOf(ts) built above -- the whole point of F1
+        // is that the causal engine reads the wire value directly, not a
+        // value round-tripped through Instant.
+        return new ModbusEvent(envelope(ts), ts, ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.9",
             functionCode, tid, "1", null, null, false, new double[0], new double[0]);
     }
 

@@ -23,9 +23,9 @@ class ModbusFeatureExtractorTest {
     private static final SensorId SENSOR = new SensorId("sensor-eu-1");
     private final ModbusFeatureExtractor extractor = new ModbusFeatureExtractor();
 
-    // ts -> Instant, matched by ModbusFeatureExtractor's own epochSeconds(Instant)
-    // so a fractional ts (e.g. 1000.25) round-trips exactly through nanos rather
-    // than losing precision the way a millis-only conversion would.
+    // ts -> Instant for envelope().eventTime() only (nanosecond-rounded, for
+    // realism); the causal engine itself reads tsSeconds -- the same `ts`
+    // double passed to each helper below, unrounded -- not this Instant.
     private static Instant instantOf(double ts) {
         long seconds = (long) Math.floor(ts);
         long nanos = Math.round((ts - seconds) * 1_000_000_000.0);
@@ -37,8 +37,11 @@ class ModbusFeatureExtractorTest {
         return new EventEnvelope(EventId.derive(SENSOR, uid), instantOf(ts), SENSOR, LogType.MODBUS, uid);
     }
 
+    // tsSeconds is the same `ts` double passed in, not re-derived from
+    // instantOf(ts)'s Instant -- see ModbusBuildFeaturesUseCaseTest's own
+    // request() helper for the identical reasoning.
     private ModbusEvent request(double ts, int functionCode, String tid) {
-        return new ModbusEvent(envelope(ts), ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.9",
+        return new ModbusEvent(envelope(ts), ts, ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.9",
             functionCode, tid, "1", null, null, false, new double[0], new double[0]);
     }
 
@@ -47,18 +50,18 @@ class ModbusFeatureExtractorTest {
     }
 
     private ModbusEvent requestWithValues(double[] values) {
-        return new ModbusEvent(envelope(1000.0), ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.9",
+        return new ModbusEvent(envelope(1000.0), 1000.0, ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.9",
             3, "17", "1", null, null, false, values, new double[0]);
     }
 
     private ModbusEvent requestWithAddress(double ts, double address, ModbusEntityState before) {
-        return new ModbusEvent(envelope(ts), ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.9",
+        return new ModbusEvent(envelope(ts), ts, ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.9",
             3, "99", "1", address, null, false, new double[0], new double[0]);
     }
 
     private ModbusEvent response(double ts, int functionCode, String tid, ModbusEntityState before) {
         boolean matched = before.hasPending(tid);
-        return new ModbusEvent(envelope(ts), ModbusDirection.RESPONSE, "10.0.0.9", "10.0.0.5",
+        return new ModbusEvent(envelope(ts), ts, ModbusDirection.RESPONSE, "10.0.0.9", "10.0.0.5",
             functionCode, tid, "1", null, null, matched, new double[0], new double[0]);
     }
 
@@ -68,8 +71,11 @@ class ModbusFeatureExtractorTest {
     }
 
     private float[] extractFor(ModbusEvent event, ModbusEntityState before) {
-        double ts = event.envelope().eventTime().getEpochSecond()
-            + event.envelope().eventTime().getNano() / 1_000_000_000.0;
+        // event.tsSeconds(), not a recomputation from envelope().eventTime():
+        // the whole point of F1 is that the causal engine reads the wire
+        // value directly, so this helper must feed afterEvent the same ts
+        // extract() itself will read from the event.
+        double ts = event.tsSeconds();
         ModbusEntityState after = before.afterEvent(ts, event.functionCode(), event.transactionId(),
             event.direction(), event.address(), event.quantity());
         boolean newSegment = before.lastTs() == null;

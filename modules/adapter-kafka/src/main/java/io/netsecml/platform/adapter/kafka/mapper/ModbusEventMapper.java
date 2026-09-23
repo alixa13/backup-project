@@ -144,7 +144,11 @@ public final class ModbusEventMapper {
         // SCADA poll loop exhausts in under two hours on connections that
         // live far longer -- so BOTH direction and a millisecond timestamp
         // are folded in to keep same-tid, same-direction records from
-        // colliding on the same identity.
+        // colliding on the same identity. This eventTime is DELIBERATELY
+        // millisecond-rounded -- it feeds only the event id and (via the
+        // envelope) ClickHouse's DateTime64(3) column, never the causal
+        // engine, which reads dto.ts() unrounded through ModbusEvent's own
+        // tsSeconds component below instead (see that component's javadoc).
         Instant eventTime = Instant.ofEpochMilli(Math.round(dto.ts() * 1000.0));
         String upstreamId = dto.uid() + ":" + dto.tid() + ":" + direction.name() + ":" + eventTime.toEpochMilli();
         EventId eventId = EventId.derive(sensor, upstreamId);
@@ -173,8 +177,11 @@ public final class ModbusEventMapper {
         // not one of the fields whose absence corrupts a required feature.
         boolean matched = dto.matched() != null && dto.matched();
 
+        // dto.ts() -- the wire value exactly, never re-derived from eventTime
+        // above -- is the causal engine's clock. Validated finite and
+        // non-negative already, by this method's own ts check near the top.
         NetworkEvent event = new ModbusEvent(
-            new EventEnvelope(eventId, eventTime, sensor, logType, connectionUid),
+            new EventEnvelope(eventId, eventTime, sensor, logType, connectionUid), dto.ts(),
             direction, endpoints.value().sourceIp(), endpoints.value().destinationIp(), functionCode.getAsInt(),
             String.valueOf(dto.tid()), unitId, dto.address(), dto.quantity(), matched,
             requestValues.value(), responseValues.value());

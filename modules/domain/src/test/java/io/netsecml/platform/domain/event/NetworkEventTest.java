@@ -129,9 +129,11 @@ class NetworkEventTest {
                 Instant.parse("2026-09-11T10:00:00Z"), new SensorId("s"), LogType.DNS, "D"),
             new DnsQuery("example.com", DnsQType.A, 1, DnsQType.A.code()), null, "10.0.0.5", true, null);
 
+        Instant modbusEventTime = Instant.parse("2026-09-11T10:00:00Z");
         NetworkEvent modbusEvent = new ModbusEvent(
             new EventEnvelope(EventId.derive(new SensorId("s"), "M"),
-                Instant.parse("2026-09-11T10:00:00Z"), new SensorId("s"), LogType.MODBUS, "M"),
+                modbusEventTime, new SensorId("s"), LogType.MODBUS, "M"),
+            modbusEventTime.getEpochSecond() + modbusEventTime.getNano() / 1_000_000_000.0,
             ModbusEvent.ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.6", 3, "1", "1",
             null, null, false, new double[0], new double[0]);
 

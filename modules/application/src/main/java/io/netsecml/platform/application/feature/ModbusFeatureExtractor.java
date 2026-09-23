@@ -6,7 +6,6 @@ import io.netsecml.platform.domain.feature.FeatureDefinition;
 import io.netsecml.platform.domain.feature.ModbusEntityState;
 import io.netsecml.platform.domain.feature.ModbusFeatureSchemaV1;
 
-import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -30,8 +29,8 @@ import java.util.Map;
 // fc_counter_10, addr_counter_10, read_count_10, write_count_10) BEFORE
 // reading their sizes for event_rate_1s/10s/60s, unique_function_count_10s,
 // unique_address_count_10s and read/write_ratio_10s -- so the current event
-// is always counted in its own windows. The caller (a later task) is
-// responsible for producing `after` via `before.afterEvent(...)` with this
+// is always counted in its own windows. The caller (ModbusBuildFeaturesUseCase)
+// is responsible for producing `after` via `before.afterEvent(...)` with this
 // same event's own fields, and for resetting to ModbusEntityState.empty()
 // across a segment boundary before calling afterEvent at all.
 //
@@ -42,8 +41,9 @@ import java.util.Map;
 // quantity_delta_valid, outstanding_requests_before_event, rtt_valid and
 // rtt_s all fall out at zero by ordinary computation -- exactly
 // process_capture's own `required_zero` sanity check (lines ~525-543), which
-// validates the same fact rather than causing it. The assertion below checks
-// that same invariant instead of special-casing newSegment in the body.
+// validates the same fact rather than causing it. The throw below (never a
+// Java `assert`; see its own comment) checks that same invariant instead of
+// special-casing newSegment in the body.
 public final class ModbusFeatureExtractor {
 
     // Resolved once, by name, against the frozen schema -- so a schema edit
@@ -113,27 +113,6 @@ public final class ModbusFeatureExtractor {
         return index;
     }
 
-    // event.envelope().eventTime() -> the fractional-second double every
-    // ModbusEntityState accessor (windowCount10s(ts), etc.) takes. Uses
-    // getNano(), not toEpochMilli()/1000.0, so a sub-millisecond fractional
-    // second (as this class's own test fixtures construct, e.g. a 0.25s RTT)
-    // keeps sub-microsecond precision instead of being truncated to whole
-    // milliseconds. This does NOT round-trip a true nanosecond input exactly:
-    // at today's epoch magnitude (~1.79e9 seconds) a double's precision is
-    // roughly 0.4 microseconds, so the conversion is lossy below that -- but
-    // it matches the upstream engine's own float64 `ts` (identical ceiling),
-    // and is strictly better than the millisecond truncation
-    // toEpochMilli()/1000.0 would introduce.
-    //
-    // public static, not private: ModbusBuildFeaturesUseCase (application.usecase)
-    // must feed ModbusEntityState.afterEvent the SAME double this class computes
-    // for extract's own `ts`, or inter_arrival_s, rtt_s and every window boundary
-    // would silently drift between two independently-written conversions. One
-    // definition, shared by both callers, is what keeps that impossible.
-    public static double epochSeconds(Instant instant) {
-        return instant.getEpochSecond() + instant.getNano() / 1_000_000_000.0;
-    }
-
     public float[] extract(ModbusEvent event, ModbusEntityState before, ModbusEntityState after,
                             boolean newSegment) {
         // newSegment implies the caller already reset `before` to
@@ -156,7 +135,15 @@ public final class ModbusFeatureExtractor {
 
         float[] vector = new float[ModbusFeatureSchemaV1.SCHEMA.featureCount()];
 
-        double ts = epochSeconds(event.envelope().eventTime());
+        // event.tsSeconds() -- the wire ts exactly as the mapper bound it,
+        // never re-derived from envelope().eventTime() -- is the causal
+        // engine's clock. See ModbusEvent's own javadoc for why the two are
+        // kept deliberately separate: envelope().eventTime() is
+        // millisecond-rounded (for the event id and the ClickHouse column
+        // only), and the upstream engine's `ts` (07b:259,303) is this exact
+        // float64, unrounded, so reading it here is what makes this class's
+        // float32 output bit-identical to 07b's.
+        double ts = event.tsSeconds();
         boolean isResponse = event.direction() == ModbusDirection.RESPONSE;
         int functionCode = event.functionCode();
         String tid = event.transactionId();

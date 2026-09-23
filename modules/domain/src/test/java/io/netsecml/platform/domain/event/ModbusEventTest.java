@@ -15,13 +15,17 @@ class ModbusEventTest {
     private static final SensorId SENSOR = new SensorId("sensor-eu-1");
     private static final Instant EVENT_TIME = Instant.parse("2026-09-21T10:00:00Z");
 
+    // tsSeconds consistent with EVENT_TIME: EVENT_TIME is exact on a whole
+    // second, so epochSecond + nano/1e9 loses nothing here.
+    private static final double TS_SECONDS = EVENT_TIME.getEpochSecond() + EVENT_TIME.getNano() / 1_000_000_000.0;
+
     // Builds a minimal, valid modbus event with the given request/response
     // value arrays; every other field is fixed because no test in this class
     // cares about their shape.
     private ModbusEvent event(double[] requestValues, double[] responseValues) {
         EventEnvelope envelope = new EventEnvelope(EventId.derive(SENSOR, "Mabc"), EVENT_TIME, SENSOR,
             LogType.MODBUS, "Mabc");
-        return new ModbusEvent(envelope, ModbusEvent.ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.6",
+        return new ModbusEvent(envelope, TS_SECONDS, ModbusEvent.ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.6",
             3, "1", "1", null, null, false, requestValues, responseValues);
     }
 
@@ -30,7 +34,7 @@ class ModbusEventTest {
     private ModbusEvent eventWithAddress(Double address) {
         EventEnvelope envelope = new EventEnvelope(EventId.derive(SENSOR, "Mabc"), EVENT_TIME, SENSOR,
             LogType.MODBUS, "Mabc");
-        return new ModbusEvent(envelope, ModbusEvent.ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.6",
+        return new ModbusEvent(envelope, TS_SECONDS, ModbusEvent.ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.6",
             3, "1", "1", address, null, false, new double[0], new double[0]);
     }
 
@@ -52,5 +56,24 @@ class ModbusEventTest {
         // zero would make a genuine address of 0 indistinguishable from an absent one.
         ModbusEvent event = eventWithAddress(null);
         assertNull(event.address());
+    }
+
+    // tsSeconds is the causal engine's clock; a non-finite value would make
+    // every timing computation downstream (inter_arrival_s, rtt_s, a window
+    // cutoff) produce NaN silently instead of failing anywhere. The mapper
+    // already rejects a non-finite wire ts to the DLQ before this constructor
+    // ever runs (ModbusEventMapper's own MAX_VALID_TS_SECONDS check), so this
+    // is a defended invariant, not a reachable production path -- but it must
+    // still fail loudly if that ever stops holding.
+    @Test
+    void tsSecondsMustBeFinite() {
+        EventEnvelope envelope = new EventEnvelope(EventId.derive(SENSOR, "Mabc"), EVENT_TIME, SENSOR,
+            LogType.MODBUS, "Mabc");
+        assertThrows(IllegalArgumentException.class, () -> new ModbusEvent(envelope, Double.NaN,
+            ModbusEvent.ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.6", 3, "1", "1", null, null, false,
+            new double[0], new double[0]));
+        assertThrows(IllegalArgumentException.class, () -> new ModbusEvent(envelope, Double.POSITIVE_INFINITY,
+            ModbusEvent.ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.6", 3, "1", "1", null, null, false,
+            new double[0], new double[0]));
     }
 }

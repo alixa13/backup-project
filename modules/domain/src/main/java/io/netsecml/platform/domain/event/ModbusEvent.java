@@ -7,6 +7,20 @@ import java.util.Objects;
 // detailed log can supply all 42 frozen features): the shared envelope plus
 // the request/response fields the frozen upstream contract reads.
 //
+// tsSeconds is the causal engine's clock: the wire `ts` exactly as the parser
+// bound it (epoch seconds, float64), never re-derived from envelope's Instant.
+// envelope().eventTime() is a SEPARATE, millisecond-rounded value used only for
+// the event id (its ts_millis component) and ClickHouse's DateTime64(3) column
+// -- it is not a source of truth for inter_arrival_s, rtt_s or any window
+// boundary. The two used to be conflated: ModbusFeatureExtractor derived its
+// causal `ts` from the rounded Instant, which fed the engine a value with only
+// millisecond resolution while the frozen upstream engine
+// (two-models-info/modbus_/07b_materialize_feature_engine_v1.py) uses the
+// capture's float64 `ts` directly -- wrong by construction whenever the wire
+// carries sub-millisecond precision, which Zeek's JSON writer's six decimal
+// places routinely do. See ModbusEventMapper for how the two are now kept
+// deliberately apart.
+//
 // sourceIp and destinationIp are PER-PACKET: the source and destination of
 // THIS record -- for a request, the client and the server; for its response,
 // the server and the client. They are NOT the connection's originator and
@@ -50,7 +64,7 @@ import java.util.Objects;
 // the accessor (so a caller reading requestValues()/responseValues() cannot
 // mutate this record's internal copy). Both accessors are overridden below
 // for exactly that reason.
-public record ModbusEvent(EventEnvelope envelope, ModbusDirection direction, String sourceIp,
+public record ModbusEvent(EventEnvelope envelope, double tsSeconds, ModbusDirection direction, String sourceIp,
                           String destinationIp, int functionCode, String transactionId, String unitId,
                           Double address, Double quantity, boolean matched, double[] requestValues,
                           double[] responseValues)
@@ -69,6 +83,22 @@ public record ModbusEvent(EventEnvelope envelope, ModbusDirection direction, Str
 
     public ModbusEvent {
         Objects.requireNonNull(envelope, "envelope must not be null");
+
+        // Deliberately NOT cross-checked against envelope.eventTime() here: the
+        // two are related (eventTime is tsSeconds rounded to the nearest
+        // millisecond) but computed independently by the mapper, and a future
+        // mapper change that lets them drift apart must fail a TEST, not crash
+        // a running Flink job from inside a record's own compact constructor.
+        // isFinite is the only check this constructor owns -- NaN and
+        // +/-Infinity are the shapes a wire value could take that no finite
+        // arithmetic below (inter_arrival_s, rtt_s, a window cutoff) can
+        // tolerate -- and ModbusEventMapper already rejects every non-finite
+        // `ts` to the DLQ before this constructor ever runs (see the mapper's
+        // own MAX_VALID_TS_SECONDS check), so this throw is a defended
+        // invariant, not a reachable DLQ gap.
+        if (!Double.isFinite(tsSeconds)) {
+            throw new IllegalArgumentException("tsSeconds must be finite, was " + tsSeconds);
+        }
         Objects.requireNonNull(direction, "direction must not be null");
 
         // Both endpoints are structural here, unlike EventEnvelope's optional

@@ -526,7 +526,7 @@ class OnlineFeatureJobE2ETest {
         return vector.values()[index];
     }
 
-    // Reads one committed fixture's raw bytes for the two-protocol method below to
+    // Reads one committed fixture's raw bytes for the two-protocol method above to
     // publish -- it needs four, where connFixtureFlowsToFeatureVectorTopic above
     // needs only its own one inline.
     private static byte[] fixture(String protocol, String name) throws IOException {

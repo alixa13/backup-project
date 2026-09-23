@@ -92,11 +92,23 @@ New `contracts/source/zeek-modbus-source-v1.json`, over `icsnpp-modbus`'s
 `modbus_detailed.log`. Canonical fields and their accepted Zeek spellings, per the
 specification's §1.1:
 
+> **Corrected 2026-09-23:** the endpoints row below originally read `id.orig_h`/`id.orig_p`,
+> `id.resp_h`/`id.resp_p` **"(or"** `source_h`/`source_p`, `destination_h`/`destination_p` **")"**
+> — framing the two pairs as alternate spellings of one field. They are not: `id_orig_h`/
+> `id_resp_h` are CONNECTION-level (identical on a request and its own response), and
+> `source_h`/`destination_h` are PER-PACKET (they flip between a request and its response).
+> That framing was the root cause of the endpoint-orientation defect fixed in commit `9f2e97d`
+> (see CLAUDE.md's endpoint-orientation invariant): a mapper written against this table's "or"
+> aliased the two kinds together, so a response's per-packet endpoints were never actually
+> computed, and its connection-level pair reached the entity key un-oriented. The corrected
+> row states the two as separate fields with a precedence rule, matching the fixed mapper and
+> the corrected `contracts/source/zeek-modbus-source-v1.json`.
+
 | Canonical | Zeek / ICSNPP | Role |
 |---|---|---|
 | `ts` | `ts` | event time; inter-arrival, RTT, windows |
 | `uid` | `uid` | state/join key only — never a feature |
-| endpoints | `id.orig_h`/`id.orig_p`, `id.resp_h`/`id.resp_p` (or `source_h`/`source_p`, `destination_h`/`destination_p`) | orientation and state key |
+| endpoints | `id.orig_h`/`id.orig_p`, `id.resp_h`/`id.resp_p` — CONNECTION-level, identical on a request and its response — PREFERRED when both halves are present. Falls back to `source_h`/`source_p`, `destination_h`/`destination_p` — PER-PACKET, flips between a request and its response — only when the connection-level pair is absent or incomplete. | orientation and state key |
 | `direction` | `request_response`, or `network_direction`/`is_orig` semantics | normalized to request/response BEFORE any feature is computed |
 | `transaction_id` | `tid` | pending-request state, matching, overwrite detection, RTT |
 | `unit_id` | `uint` or `unit` | sequence and transaction-state key |
@@ -146,6 +158,18 @@ is `(client_ip, server_ip, unit_id)`, with orientation normalized first:
 client_ip = (direction == request) ? src_ip : dst_ip
 server_ip = (direction == request) ? dst_ip : src_ip
 ```
+
+> **Corrected 2026-09-23:** `src_ip`/`dst_ip` in that formula are the PER-PACKET
+> `sourceIp`/`destinationIp` a `ModbusEvent` carries -- already oriented by the mapper -- NOT
+> the wire's connection-level `id_orig_h`/`id_resp_h` fed in directly. This section originally
+> left that unstated, which read, alongside §5's own pre-correction "or" framing, as if the
+> formula could be applied straight to either kind of wire field. It cannot: a connection-level
+> pair must first be oriented into per-packet form by direction (request: orig → resp;
+> response: resp → orig) -- the mapper's job, not this key's -- before this swap is correct.
+> Feeding it un-oriented connection-level input would swap an already-client/server pair on
+> every response and split a request from its own response into different keys, which is
+> exactly the defect fixed in commit `9f2e97d`. See `ModbusEntityKey`'s own javadoc and
+> `ModbusEventMapper.resolvePerPacketEndpoints`.
 
 The platform's `SourceKey(sensor, logType, sourceIp)` cannot express this. A new
 `ModbusEntityKey(SensorId sensor, String clientIp, String serverIp, String unitId)`

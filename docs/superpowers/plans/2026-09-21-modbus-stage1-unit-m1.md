@@ -283,7 +283,22 @@ git commit -m "feat(domain): add LogType.MODBUS and the ModbusEvent record"
 
 Bind with `@JsonProperty(required = true)` for `ts`, `uid`, `tid`, `func`. **`required = true` enforces PRESENCE, not non-nullness**, and Jackson's `FAIL_ON_NULL_FOR_PRIMITIVES` is off by default, so an explicit `"func": null` would silently become `0` — a valid-looking function code. Enable `DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES` on this parser's `ObjectMapper` and test it. This exact defect was found and fixed elsewhere in this repo; do not reintroduce it.
 
-Accept both endpoint spellings (`id.orig_h`/`id.resp_h` and `source_h`/`destination_h`) and both unit spellings (`unit`, `uint`) via `@JsonAlias`.
+> **Corrected 2026-09-23:** the line below originally instructed aliasing `id.orig_h`/`id.resp_h`
+> AND `source_h`/`destination_h` together via `@JsonAlias`, as if all four spellings named one
+> field. They do not: `id_orig_h`/`id_resp_h` (with `id.orig_h`/`id.resp_h` as Zeek's own dotted
+> alias of THAT SAME field) are CONNECTION-level -- identical on a request and its own response
+> -- while `source_h`/`destination_h` are a SEPARATE, PER-PACKET pair that flips between a
+> request and its response. Aliasing them together was the endpoint-orientation defect itself,
+> fixed in commit `9f2e97d`: it made the two kinds indistinguishable after binding, so a
+> response's connection-level pair reached the entity key un-oriented. Bind each kind to its own
+> DTO field instead (`ZeekModbusRecord.origHost`/`respHost` for the connection-level pair,
+> `sourceHost`/`destinationHost` for the per-packet pair), and let the mapper decide precedence
+> per record -- see `ModbusEventMapper.resolvePerPacketEndpoints` and CLAUDE.md's
+> endpoint-orientation invariant.
+
+Accept the dotted alias of the connection-level pair (`id.orig_h`/`id.resp_h`, aliasing
+`id_orig_h`/`id_resp_h`) via `@JsonAlias`, bind the per-packet pair (`source_h`/`destination_h`)
+to its own separate fields, and accept both unit spellings (`unit`, `uint`) via `@JsonAlias`.
 
 `request_values` and `response_values` arrive as JSON arrays of numbers. **Require strict JSON.** Do NOT reproduce the offline engine's `ast.literal_eval` fallback: it exists to tolerate Python-repr strings read back from research files, and on a production wire it would accept a malformed payload instead of rejecting it.
 
@@ -494,8 +509,22 @@ void theHashIsTheSpecifiedFormulaOverStringsOnly() {
 
 @Test
 void aRequestAndItsResponseShareOneKey() {
-    // Orientation normalization is the whole reason this key exists: the two
-    // directions carry src and dst swapped and must land in the same state.
+    // Orientation normalization is the whole reason this key exists. This test
+    // constructs PER-PACKET events directly -- the form ModbusEvent's
+    // sourceIp/destinationIp are defined to carry, in which a response's
+    // source/destination ARE its request's destination/source, swapped, by
+    // definition -- and pins that of(...) folds the two back into one key.
+    //
+    // Corrected 2026-09-23: this comment originally said "the two directions
+    // carry src and dst swapped", unqualified, which reads as a claim about
+    // the WIRE. It is not: Zeek's own id_orig_h/id_resp_h are CONNECTION-level
+    // and IDENTICAL on a request and its response -- never swapped. Reading
+    // this comment as a wire-level claim is exactly the misunderstanding
+    // behind the endpoint-orientation defect fixed in commit `9f2e97d`. This
+    // test says nothing about what the wire sends; the real wire's
+    // orientation-by-direction is proven end to end (real parser, real
+    // mapper, this real key) by
+    // ModbusEventMapperTest.aRequestAndItsResponseFromTheRealWireShareOneEntityKey.
     ModbusEvent request = event(ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.9", "1");
     ModbusEvent response = event(ModbusDirection.RESPONSE, "10.0.0.9", "10.0.0.5", "1");
     assertEquals(ModbusEntityKey.of(request), ModbusEntityKey.of(response));

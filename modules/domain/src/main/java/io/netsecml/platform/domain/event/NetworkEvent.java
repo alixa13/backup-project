@@ -35,14 +35,11 @@ import java.time.Instant;
 // assertion needed the same reflective-not-compile-time update DnsEvent's
 // arrival required.
 //
-// ModbusEvent joins permits here one task ahead of its mapper (the mapper is
-// what actually produces a ModbusEvent, and it is a later task in this same
-// unit): the schema and the parser exist, but "a parser, a mapper and a
-// feature schema" -- this doc's own admission rule, restated below -- is a
-// unit-completion property, not a per-commit one. A record with no mapper yet
-// cannot itself be constructed by anything in production code, so nothing
-// downstream can observe unimplemented support; only the mapper's own commit
-// discharges the obligation in full.
+// ModbusEvent's admission here is fully discharged: it has a parser
+// (JsonZeekModbusParser), a mapper (ModbusEventMapper) and a feature schema
+// (ModbusFeatureSchemaV1) -- the admission rule stated above this paragraph --
+// so, unlike DnsEvent's own arrival, nothing about its permits membership was
+// ever ahead of what it depends on.
 public sealed interface NetworkEvent permits ConnEvent, DnsEvent, ModbusEvent {
 
     // Every log type carries the same identity block; only the payload differs.

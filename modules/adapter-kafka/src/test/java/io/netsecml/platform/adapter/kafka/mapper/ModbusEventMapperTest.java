@@ -132,14 +132,16 @@ class ModbusEventMapperTest {
     //
     // Zeek's id_orig_h/id_resp_h are CONNECTION-level: they name the
     // connection's originator and responder, so a request and its own
-    // response carry the SAME pair. The earlier tests all built a response
-    // whose endpoints were already swapped (per-packet source/destination),
-    // which is the one shape this platform's wire never sends, so they could
-    // not see that a mapper passing id_orig_h/id_resp_h straight through --
-    // followed by ModbusEntityKey's per-packet swap for a response -- lands
-    // a response in a different key from its request. Two records of one
-    // transaction in two different keys never share causal state, so every
-    // stateful feature would be computed on split half-streams.
+    // response carry the SAME pair. The pre-fix mapsAFullyPopulatedResponseRecordToAModbusEvent
+    // below built exactly this UNSWAPPED connection-level response (orig
+    // 10.0.0.5, resp 10.0.0.9, same as its request) and asserted the
+    // defective pass-through -- sourceIp equal to id_orig_h -- as correct;
+    // see that test's own comment. A mapper passing id_orig_h/id_resp_h
+    // straight through -- followed by ModbusEntityKey's per-packet swap for a
+    // response -- lands a response in a different key from its request. Two
+    // records of one transaction in two different keys never share causal
+    // state, so every stateful feature would be computed on split
+    // half-streams.
     @Test
     void aRequestAndItsResponseFromTheRealWireShareOneEntityKey() {
         // One transaction as the sensor emits it: identical uid, tid and

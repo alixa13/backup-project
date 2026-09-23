@@ -19,10 +19,7 @@ public final class FeatureSchemaRegistry {
     // schema behind it -- the same rule LogType states about its own constants.
     // This is the third entry this map has ever had: everyLogTypeConstantHasARegisteredSchema
     // walks LogType.values() and previously asserted only two, exactly because a
-    // third log type had not arrived yet. Modbus's entry is registrable here even
-    // though its mapper is a later task in the same unit -- the mapper produces a
-    // ModbusEvent, not a schema, and ModbusFeatureSchemaV1.SCHEMA already exists
-    // (an earlier task in this unit), so nothing here is ahead of what it depends on.
+    // third log type had not arrived yet.
     private static final Map<LogType, FeatureSchema> BY_LOG_TYPE =
         Map.of(LogType.CONN, ConnFeatureSchemaV1.SCHEMA,
                LogType.DNS, DnsFeatureSchemaV1.SCHEMA,

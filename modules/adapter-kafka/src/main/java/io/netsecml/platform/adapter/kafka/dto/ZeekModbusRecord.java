@@ -94,7 +94,8 @@ public record ZeekModbusRecord(
     // ModbusEvent.unitId is itself a String: the upstream engine falls back
     // to a literal "NA" sentinel for an absent unit rather than dropping the
     // record, and that fallback -- like everything else domain-validation
-    // shaped -- is the next task's mapper's job, not this parser's.
+    // shaped -- is ModbusEventMapper's job (its own ABSENT_UNIT_ID constant),
+    // not this parser's.
     @JsonProperty("unit") @JsonAlias("uint") String unitId,
 
     // Modbus function code. Bound as a String, deliberately: ICSNPP emits it
@@ -103,7 +104,7 @@ public record ZeekModbusRecord(
     // target automatically, so one field handles both shapes without this
     // parser having to sniff which configuration produced the record.
     // Resolving the name/number to a numeric code against the frozen
-    // func-name table belongs to the next task's mapper.
+    // func-name table belongs to ModbusEventMapper, via ModbusFunctionCode.codeOf.
     //
     // required=true only enforces that the "func" KEY is present, not that
     // its value is non-null -- and because func is a String (a reference

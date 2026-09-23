@@ -226,7 +226,7 @@ class ArchiveJobE2ETest {
     // names, since KAFKA and CLICKHOUSE are static @Container fields shared by
     // every method in this class.
     @Test
-    void fourChainsFromMainWriteConnAndDnsFeatureVectorsAndRejectionsUnderTheirOwnLogType() throws Exception {
+    void connAndDnsChainsWriteFeatureVectorsAndRejectionsUnderTheirOwnLogType() throws Exception {
         // One timestamp for both rejections below. invalid_events has a 30-day
         // TTL on received_at, so "now" keeps this test from expiring the way a
         // fixed past date eventually would.

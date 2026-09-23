@@ -216,11 +216,11 @@ public final class OnlineFeatureJob {
         // comment) down to the ModbusEvent type ModbusEntityKeySelector and
         // ModbusFeatureProcessFunction require. This is a structural
         // consequence of modbus's operators being typed on ModbusEvent rather
-        // than NetworkEvent, not a uid the task brief enumerates alongside
-        // modbus's other five -- it carries no keyed state of its own, so an
-        // uid rename here (unlike the five stateful/checkpointed stages)
-        // costs nothing on restore, but it still gets an explicit one per
-        // this job's own "every operator gets a stable uid" rule.
+        // than NetworkEvent -- a sixth, stateless uid alongside the five
+        // stateful/checkpointed modbus stages: it carries no keyed state of
+        // its own, so a uid rename here (unlike those five) costs nothing on
+        // restore, but it still gets an explicit one per this job's own
+        // "every operator gets a stable uid" rule.
         DataStream<ModbusEvent> modbusEvents = modbusParsed
             .map(new NarrowToModbusEvent())
             .name("modbus-event-narrow")

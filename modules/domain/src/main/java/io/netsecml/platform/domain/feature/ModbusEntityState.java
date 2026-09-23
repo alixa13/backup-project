@@ -21,9 +21,11 @@ import java.util.Set;
 //
 // Immutable-returning, following RollingCounters' established pattern for
 // keyed state in this codebase: afterEvent(...) never mutates this instance,
-// it copies the deques and maps structurally (new ArrayDeque<>(old),
-// new HashMap<>(old)) and returns a new ModbusEntityState built from the
-// copies. That is a real cost, not a free choice: RollingCounters copies four
+// it copies the deques and the pending-TID map structurally (new
+// ArrayDeque<>(old), new LinkedHashMap<>(old) -- see the `pending` field's own
+// comment for why LinkedHashMap specifically, not HashMap) and returns a new
+// ModbusEntityState built from the copies. That is a real cost, not a free
+// choice: RollingCounters copies four
 // fixed five-element arrays (trivial), while this class copies whatever its
 // trailing windows currently hold -- at a 10 Hz poll rate the 60-second
 // deque holds roughly 600 entries. Still cheap at realistic Modbus TCP
@@ -40,10 +42,15 @@ import java.util.Set;
 // org.apache.flink.api.java.typeutils.GenericTypeInfo -- i.e. Kryo, not the
 // POJO/record serializer, exactly like RollingCounters and RecordTimingState
 // (DnsWindowState's own two components) already do. The reason is the same
-// one that sends those two to Kryo: Flink's POJO analysis requires a public
-// no-arg constructor and bean-style (get/is, no-argument) accessors, and
-// this class -- like RollingCounters -- has a private constructor and
-// accessors that take a `ts` argument instead. Practical consequence: state
+// one that sends those two to Kryo: Flink's POJO analysis requires (1) a
+// public no-arg constructor, which this class does not have (its constructor
+// is private, taking every field); and (2) bean-style get/is-prefixed,
+// no-argument accessors for every field, which this class also does not
+// have -- lastTs()/prevFunctionCode()/lastAddress()/lastQuantity() are
+// argument-less but not get/is-prefixed, and windowCount1s(ts) and its
+// siblings are neither prefixed nor argument-less, since they answer for a
+// caller-supplied instant rather than exposing a stored field directly (see
+// windowCount1s's own comment for why). Practical consequence: state
 // evolution here is Kryo's problem, not the POJO serializer's -- adding,
 // removing or reordering a field changes what a running job has serialized
 // under this operator's uid, and Kryo's own compatibility rules (not
@@ -78,7 +85,8 @@ public final class ModbusEntityState {
     // ORDER (see the `pending` field's own comment for why that equals
     // timestamp order here, and evictOldestIfOverCap for the O(1) mechanics):
     // a genuine long-lived outstanding request is dropped before a
-    // recently-issued one is. Recorded as a known limit in Task 11.
+    // recently-issued one is. Recorded as a known limit in CLAUDE.md's
+    // "Modbus limits and decisions".
     private static final int MAX_PENDING = 4096;
 
     private final Double lastTs;
@@ -107,7 +115,8 @@ public final class ModbusEntityState {
 
     // Trailing-window deques. w1/w60 need only the timestamp (upstream's
     // w1_ts / w60_ts are used purely as counts: event_rate_1s = len(w1_ts),
-    // event_rate_60s = len(w60_ts) / 60.0 -- both a later task's concern,
+    // event_rate_60s = len(w60_ts) / 60.0 -- both ModbusFeatureExtractor's
+    // concern, read via this class's own windowCount1s/windowCount60s below,
     // not this state's). w10 needs the fuller upstream w10_events tuple
     // (ts, function_code, address_present, address, is_read, is_write)
     // because the 10-second accessors below (uniqueFunctions10s,
@@ -155,8 +164,8 @@ public final class ModbusEntityState {
     // arrival order, not a pre-validated total order, and must not fail the
     // whole job over one out-of-order record; treating a negative gap as
     // "start a new segment" keeps every in-segment inter-arrival within
-    // [0, 15] by construction, which is the invariant a later task's
-    // inter-arrival bookkeeping depends on.
+    // [0, 15] by construction, which is the invariant ModbusFeatureExtractor's
+    // inter_arrival_s computation depends on.
     public boolean startsNewSegment(double ts) {
         if (lastTs == null) {
             return true;
@@ -167,9 +176,10 @@ public final class ModbusEntityState {
 
     // Mirrors the upstream engine's reset_for_new_segment(): every field this
     // class carries goes back to its zero value. (The upstream method also
-    // resets segment_local_id / position_in_segment, but those are segment
-    // bookkeeping for a later task's feature columns, not part of this
-    // class's interface.)
+    // resets segment_local_id / position_in_segment, but those are the
+    // upstream engine's own audit columns, outside modbus-feature-v1's 42
+    // frozen features -- not part of this class's interface, and not planned
+    // to become part of it.)
     public ModbusEntityState resetForNewSegment() {
         return empty();
     }
@@ -211,7 +221,7 @@ public final class ModbusEntityState {
     // a maintained running count: afterEvent purges (and so the deque's
     // *contents*) only ever advance to the timestamp of the event that was
     // just folded in, but an accessor can be asked about ANY later instant
-    // (that is exactly what this brief's own boundary tests do -- see
+    // (that is exactly what this class's own boundary tests do -- see
     // ModbusEntityStateTest.purgingTheTenSecondWindowDecrementsItsFunctionAndAddressCounters,
     // which queries a state whose last afterEvent call was at ts=1001.0
     // for both ts=1001.0 and ts=1010.5). A running counter frozen at the

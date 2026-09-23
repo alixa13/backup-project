@@ -107,12 +107,16 @@ public final class ArchiveJob {
             clickHouse);
     }
 
-    // The four-chain list main() wires today: conn's two chains (unchanged uids)
-    // followed by dns's two (the shared prefix pattern), in that order. Extracted
-    // into its own method so a test can build through it instead of hand-copying
-    // the list -- a hand-copied list in a test cannot catch main() itself binding,
-    // say, the dns feature topic to LogType.CONN, because the test would never
-    // exercise main()'s own wiring to find out.
+    // The two-protocol chain list: conn's two chains (unchanged uids) followed
+    // by dns's two (the shared prefix pattern), in that order. main() no
+    // longer calls this directly -- it now calls connDnsAndModbusChains
+    // below, whose first four entries are byte-for-byte these same factory
+    // calls -- but this method is still public and still tested on its own.
+    // Extracted into its own method so a test can build through it instead of
+    // hand-copying the list -- a hand-copied list in a test cannot catch a
+    // caller itself binding, say, the dns feature topic to LogType.CONN,
+    // because the test would never exercise that caller's own wiring to find
+    // out.
     //
     // KNOWN SEAM: unlike build(List<LogTypeChain<?>>) above, which is genuinely
     // N-protocol (a sixth log type is a sixth list entry), this method's own

@@ -152,8 +152,11 @@ including its aliases (first present, non-empty value wins):
 
 Integer fields are parsed exactly as upstream's `_int_or_none`: a JSON integer as is; a string as
 a Python integer literal (`int(text, 0)`: decimal, `0x`/`0o`/`0b` prefixes), falling back to
-`int(float(text))` (truncation); empty means absent; anything else is a DLQ rejection. Ports are
-integers by the same rule.
+`int(float(text))` (truncation); empty means absent; anything else is a DLQ rejection. Ports
+follow the plain `int()` upstream's `_resolve_endpoints` applies instead: a JSON integer, a JSON
+float truncated toward zero, or a base-10 integer string; `"0x66"` or `"102.0"` is an
+`INVALID_PORT` rejection. (Corrected 2026-09-24: an earlier version of this sentence said ports
+follow `_int_or_none`; the code always followed upstream's `int()`.)
 
 The underscored `id_orig_h` family is not in upstream's list; it is what this platform's sensor
 emits (proven by the conn/dns/modbus E2E tests), with the same meaning.
@@ -237,8 +240,9 @@ Each is a deliberate deviation from, or addition to, upstream.
   compensated. Checked exhaustively on 2026-09-24 over every input the two entropy features can
   reach — all 65,534 ordered count sequences for n = 2..16 — computing Java's way (plain summation,
   `Math.log(x) / Math.log(2)`) and Python's (`sum`, glibc `math.log2`): the double results differ in
-  14,436 cases, the float32 results in none, and plain summation on the Python side also differs in
-  none. The vector is float32, so neither difference can reach it, whichever Python version the model
+  23,496 cases (14,436 if Java also sums with compensation), the float32 results in none, and plain
+  summation on the Python side also differs in none. (The count was corrected 2026-09-24; an
+  earlier version gave the compensated-Java figure for the plain form.) The vector is float32, so neither difference can reach it, whichever Python version the model
   team trained on. The Java uses the plain form.
 - **R8 — float32.** Upstream's raw features are float64; the platform's vectors are float32 for
   every protocol. The oracle compares against upstream's value rounded to float32.

@@ -254,6 +254,11 @@ container test as a passing one.**
 
 Verified fresh for the S7comm unit and its final-review fixes, at `698487b`
 (the review-fix commit; the commit after it, this file, changes no code).
+The minor-fix commit after that (import order, comments, spec wording and one
+new topology test) was re-verified for every module whose sources it touches:
+`domain` 210/210, `adapter-flink` 61/61, `OnlineFeatureJobTopologyTest` 8/8 and
+`ArchiveJobTopologyTest` 10/10. Its only change to the two E2E classes moves one
+import, so they were compiled but not re-run against containers.
 Supersedes the flood-fix verification at `ca51ff6`, which this repeats in full
 and extends with the S7comm tests. Each suite was run on its own, one module at a time,
 `target/surefire-reports/` cleared first — see Commands for why no single
@@ -268,7 +273,7 @@ table:
 | `adapter-kafka` | 145/145, 0 skipped (+24: `JsonZeekS7commParserTest` ×5, `S7commFieldValuesTest` ×8 (one rejects a 100,000-digit malformed number in well under 2 s), `S7commEventMapperTest` ×11) |
 | `adapter-flink` | 61/61, 0 skipped (+16: `S7commUpstreamOracleTest` ×2 — the S7 parity proof: all 2,121 records of the upstream-generated oracle through the real parser, mapper and use case, every one of the 16 features bit-identical to upstream, zero mismatches, while a planted one-line bug gives 10,842 — `S7commParseMapValidateFunctionTest` ×5, `S7commFeatureProcessFunctionTest` ×6 including the TTL expiry and the reset after an outage longer than the TTL, `S7commConnectionStateSerializerTest` ×3. `ModbusGoldenVectorTest` gained only its required `S7commEvent` switch arm) |
 | `adapter-clickhouse`, `InvalidEventRowMapperTest` and `SourceVersionContractTest` only (filtered; the module's container tests were not run here) | 10/10, 0 skipped |
-| `bootstrap-online-job`, `OnlineFeatureJobTopologyTest` only (filtered) | 7/7, 0 skipped (the four-protocol topology: 32 distinct uids) |
+| `bootstrap-online-job`, `OnlineFeatureJobTopologyTest` only (filtered) | 8/8, 0 skipped (the four-protocol topology: 32 distinct uids; the eighth test, added by the minor-fix commit, proves the TTL `main()` passes reaches `s7comm-features` -- a planted bug that drops it for the default fails it) |
 | `bootstrap-archive-job`, `ArchiveJobTopologyTest` only (filtered) | 10/10, 0 skipped (eight chains: 24 distinct uids) |
 
 Verified fresh at the same point against real containers (Kafka

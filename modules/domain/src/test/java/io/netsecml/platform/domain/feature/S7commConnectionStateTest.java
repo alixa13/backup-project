@@ -9,7 +9,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 // Pins each of the 16 features' state rules against upstream's builders
 // (two-models-info/S7___/customer_icsnpp_enriched_builder.py and
 // customer_icsnpp_time_normalized_builder.py), one behaviour per test. The
-// Task 4 oracle proves the composition; these name the rule a regression broke.
+// upstream-generated oracle (tests/fixtures/s7comm/upstream_oracle_v1.jsonl,
+// checked by S7commUpstreamOracleTest) proves the composition; these name the
+// rule a regression broke.
 class S7commConnectionStateTest {
 
     private static final boolean REQUEST = true;

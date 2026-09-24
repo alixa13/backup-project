@@ -1,9 +1,14 @@
 package io.netsecml.platform.bootstrap.online;
 
+import io.netsecml.platform.adapter.flink.process.S7commFeatureProcessFunction;
 import io.netsecml.platform.domain.event.SensorId;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.graph.StreamNode;
+import org.apache.flink.streaming.api.operators.AbstractUdfStreamOperator;
+import org.apache.flink.streaming.api.operators.SimpleOperatorFactory;
 import org.junit.jupiter.api.Test;
+import java.lang.reflect.Field;
+import java.time.Duration;
 import java.util.HashSet;
 import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
@@ -272,8 +277,9 @@ class OnlineFeatureJobTopologyTest {
     // Thirty-two distinct uids: the twenty-four of
     // theThreeProtocolTopologyCarriesModbusUidsAndLeavesConnsUntouched, s7commChain's
     // six, and one derived "Sink Committer: <uid>" for each of its two KafkaSinks.
-    // A collision would leave the count unchanged, which is why
-    // everyOperatorUidIsUniqueAcrossTheTopology walks this topology too.
+    // An operator added under an already-used uid leaves the DISTINCT count
+    // unchanged, which is why everyOperatorUidIsUniqueAcrossTheTopology walks
+    // this topology too.
     @Test
     void theFourProtocolTopologyCarriesS7commUidsAndLeavesConnsUntouched() {
         Set<String> uids = uidsOf(buildFourProtocol());
@@ -281,5 +287,38 @@ class OnlineFeatureJobTopologyTest {
         assertTrue(uids.containsAll(Set.of("s7comm-source", "s7comm-parse", "s7comm-event-narrow",
             "s7comm-features", "s7comm-sink", "s7comm-dlq-sink")), "expected s7comm's six uids, found: " + uids);
         assertTrue(uids.containsAll(CONN_UIDS), "conn's historical uids must be byte-identical, found: " + uids);
+    }
+
+    // main() calls the build(...) overload that takes the s7comm state TTL. The
+    // default-TTL overload the tests above use delegates to it, so its wiring
+    // is already covered; what those tests cannot see is whether the Duration
+    // it is given actually reaches s7comm-features. This builds with a
+    // non-default TTL and reads it back off that operator's function -- and
+    // checks the uids are unchanged, since a TTL is a runtime setting, never
+    // checkpoint identity.
+    @Test
+    void theTtlTakingOverloadThatMainCallsPassesItsTtlToTheS7commOperator() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        OnlineFeatureJob.build(env, "localhost:9092",
+            new OnlineFeatureJob.ProtocolTopics("conn", "netsec.conn.feature-vector.v1", "netsec.conn.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("dns", "netsec.dns.feature-vector.v1", "netsec.dns.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("netsec.modbus.raw.v1", "netsec.modbus.feature-vector.v1",
+                "netsec.modbus.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("netsec.s7comm.raw.v1", "netsec.s7comm.feature-vector.v1",
+                "netsec.s7comm.dlq.v1"),
+            new SensorId("sensor-eu-1"), Duration.ofMinutes(90));
+        assertEquals(uidsOf(buildFourProtocol()), uidsOf(env));
+
+        // The s7comm-features node's operator is a KeyedProcessOperator whose
+        // user function is the S7commFeatureProcessFunction the chain built.
+        StreamNode features = env.getStreamGraph(false).getStreamNodes().stream()
+            .filter(node -> "s7comm-features".equals(node.getTransformationUID()))
+            .findFirst().orElseThrow();
+        Object function = ((AbstractUdfStreamOperator<?, ?>)
+            ((SimpleOperatorFactory<?>) features.getOperatorFactory()).getOperator()).getUserFunction();
+        Field stateTtl = S7commFeatureProcessFunction.class.getDeclaredField("stateTtl");
+        stateTtl.setAccessible(true);
+        assertEquals(Duration.ofMinutes(90), stateTtl.get(function));
     }
 }

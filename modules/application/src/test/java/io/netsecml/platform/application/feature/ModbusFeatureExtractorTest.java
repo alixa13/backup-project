@@ -70,16 +70,27 @@ class ModbusFeatureExtractorTest {
         return extractFor(event, before);
     }
 
-    private float[] extractFor(ModbusEvent event, ModbusEntityState before) {
+    // Advances `state` in place with the event and extracts from the
+    // before-event snapshot and the advanced state, the way
+    // ModbusBuildFeaturesUseCase does (minus its segment decision: a state
+    // with no prior event is the only segment start these tests build).
+    private float[] extractFor(ModbusEvent event, ModbusEntityState state) {
         // event.tsSeconds(), not a recomputation from envelope().eventTime():
         // the whole point of F1 is that the causal engine reads the wire
-        // value directly, so this helper must feed afterEvent the same ts
+        // value directly, so this helper must feed advance the same ts
         // extract() itself will read from the event.
         double ts = event.tsSeconds();
-        ModbusEntityState after = before.afterEvent(ts, event.functionCode(), event.transactionId(),
+        boolean newSegment = state.lastTs() == null;
+        ModbusEntityState.BeforeEvent before = state.advance(ts, event.functionCode(), event.transactionId(),
             event.direction(), event.address(), event.quantity());
-        boolean newSegment = before.lastTs() == null;
-        return extractor.extract(event, before, after, newSegment);
+        return extractor.extract(event, before, state, newSegment);
+    }
+
+    // A state that has already seen the given request.
+    private static ModbusEntityState stateAfter(double ts, int functionCode, String tid, Double address) {
+        ModbusEntityState state = ModbusEntityState.empty();
+        state.advance(ts, functionCode, tid, ModbusDirection.REQUEST, address, null);
+        return state;
     }
 
     private float[] extractAtSegmentStart(ModbusEvent event) {
@@ -126,8 +137,7 @@ class ModbusFeatureExtractorTest {
 
     @Test
     void aMatchedResponseCarriesItsRoundTripTime() {
-        ModbusEntityState before = ModbusEntityState.empty()
-            .afterEvent(1000.0, 3, "17", ModbusDirection.REQUEST, null, null);
+        ModbusEntityState before = stateAfter(1000.0, 3, "17", null);
         float[] v = extractFor(response(1000.25, 3, "17", before), before);
         assertEquals(0.0f, v[31], "it had a pending request");
         assertEquals(1.0f, v[33]);
@@ -136,8 +146,7 @@ class ModbusFeatureExtractorTest {
 
     @Test
     void aRequestReusingAPendingTidIsFlagged() {
-        ModbusEntityState before = ModbusEntityState.empty()
-            .afterEvent(1000.0, 3, "17", ModbusDirection.REQUEST, null, null);
+        ModbusEntityState before = stateAfter(1000.0, 3, "17", null);
         float[] v = extractFor(requestAgainst(1000.5, 3, "17", before), before);
         assertEquals(1.0f, v[32]);
     }
@@ -173,8 +182,7 @@ class ModbusFeatureExtractorTest {
     @Test
     void theReadAndWriteRatiosDivideByTheTenSecondWindowCountNotByTen() {
         // Two events in the window, one of them a read: the ratio is 1/2, not 1/10.
-        ModbusEntityState before = ModbusEntityState.empty()
-            .afterEvent(1000.0, 5, "16", ModbusDirection.REQUEST, null, null);
+        ModbusEntityState before = stateAfter(1000.0, 5, "16", null);
         float[] v = extractFor(requestAgainst(1000.5, 3, "17", before), before);
         assertEquals(0.5f, v[40], 1e-6f);
         assertEquals(0.5f, v[41], 1e-6f);
@@ -190,9 +198,8 @@ class ModbusFeatureExtractorTest {
 
     @Test
     void theAddressDeltaReachesPastAnEventThatCarriedNoAddress() {
-        ModbusEntityState before = ModbusEntityState.empty()
-            .afterEvent(1000.0, 3, "16", ModbusDirection.REQUEST, 40001.0, null)
-            .afterEvent(1000.5, 3, "17", ModbusDirection.REQUEST, null, null);
+        ModbusEntityState before = stateAfter(1000.0, 3, "16", 40001.0);
+        before.advance(1000.5, 3, "17", ModbusDirection.REQUEST, null, null);
         float[] v = extractFor(requestWithAddress(1001.0, 40005.0, before), before);
         assertEquals(1.0f, v[26]);
         assertEquals(4.0f, v[27], 1e-6f);
@@ -209,12 +216,14 @@ class ModbusFeatureExtractorTest {
     // irrelevant, throw restored: passes).
     @Test
     void newSegmentWithANonEmptyBeforeStateIsRejected() {
-        ModbusEntityState nonEmptyBefore = ModbusEntityState.empty()
-            .afterEvent(1000.0, 3, "17", ModbusDirection.REQUEST, null, null);
+        // A caller that forgot to reset() across a segment boundary: the
+        // snapshot advance returns still carries the previous event.
+        ModbusEntityState state = stateAfter(1000.0, 3, "17", null);
         ModbusEvent event = request(1000.5, 3, "18");
-        ModbusEntityState after = nonEmptyBefore.afterEvent(1000.5, 3, "18", ModbusDirection.REQUEST, null, null);
+        ModbusEntityState.BeforeEvent nonEmptyBefore =
+            state.advance(1000.5, 3, "18", ModbusDirection.REQUEST, null, null);
 
         assertThrows(IllegalArgumentException.class,
-            () -> extractor.extract(event, nonEmptyBefore, after, true));
+            () -> extractor.extract(event, nonEmptyBefore, state, true));
     }
 }

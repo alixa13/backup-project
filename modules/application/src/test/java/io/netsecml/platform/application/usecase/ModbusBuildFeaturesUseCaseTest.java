@@ -18,6 +18,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -55,6 +56,13 @@ class ModbusBuildFeaturesUseCaseTest {
             functionCode, tid, "1", null, null, false, new double[0], new double[0]);
     }
 
+    // A state that has already seen one FC-3 request at `ts`.
+    private static ModbusEntityState stateAfterOneRequestAt(double ts) {
+        ModbusEntityState state = ModbusEntityState.empty();
+        state.advance(ts, 3, "17", ModbusDirection.REQUEST, null, null);
+        return state;
+    }
+
     private ModbusBuildFeaturesUseCase useCase() {
         return new ModbusBuildFeaturesUseCase(Clock.systemUTC());
     }
@@ -80,8 +88,7 @@ class ModbusBuildFeaturesUseCaseTest {
 
     @Test
     void aSixteenSecondGapResetsTheSegmentWithoutFlagging() {
-        ModbusEntityState state = ModbusEntityState.empty()
-            .afterEvent(1000.0, 3, "17", ModbusDirection.REQUEST, null, null);
+        ModbusEntityState state = stateAfterOneRequestAt(1000.0);
         FeatureBuildResult<ModbusEntityState> result = useCase().build(request(1016.0, 3, "18"), state);
         assertEquals(0.0f, result.vector().values()[23], "prev_event_available is zeroed");
         assertEquals(QualityFlags.NONE, result.vector().qualityFlags());
@@ -91,8 +98,7 @@ class ModbusBuildFeaturesUseCaseTest {
     void anOutOfOrderRecordResetsTheSegmentAndFlagsIt() {
         // The upstream engine raises here. A streaming operator resets instead, and
         // says so in qualityFlags so the condition stays observable.
-        ModbusEntityState state = ModbusEntityState.empty()
-            .afterEvent(1000.0, 3, "17", ModbusDirection.REQUEST, null, null);
+        ModbusEntityState state = stateAfterOneRequestAt(1000.0);
         FeatureBuildResult<ModbusEntityState> result = useCase().build(request(999.5, 3, "18"), state);
         assertEquals(QualityFlags.MODBUS_OUT_OF_ORDER, result.vector().qualityFlags());
         assertEquals(0.0f, result.vector().values()[23]);
@@ -102,12 +108,25 @@ class ModbusBuildFeaturesUseCaseTest {
     void inSegmentInterArrivalIsAlwaysWithinZeroAndFifteen() {
         // The invariant the upstream engine asserts. After the segment rule it holds
         // by construction, so this test is what keeps the rule honest.
-        ModbusEntityState state = ModbusEntityState.empty()
-            .afterEvent(1000.0, 3, "17", ModbusDirection.REQUEST, null, null);
+        // A fresh state for each case: build() advances the state in place, so
+        // reusing one would chain the three events instead of testing each
+        // against the same prior event.
         for (double ts : new double[] {1000.0, 1007.5, 1015.0}) {
+            ModbusEntityState state = stateAfterOneRequestAt(1000.0);
             float ia = useCase().build(request(ts, 3, "18"), state).vector().values()[24];
             assertTrue(ia >= 0.0f && ia <= 15.0f, "inter_arrival_s out of range: " + ia);
         }
+    }
+
+    @Test
+    void buildAdvancesTheGivenStateInPlaceAndReturnsIt() {
+        // The documented contract ModbusFeatureProcessFunction relies on: the
+        // state passed in IS the new state, already advanced.
+        ModbusEntityState state = ModbusEntityState.empty();
+        FeatureBuildResult<ModbusEntityState> result = useCase().build(request(1000.0, 3, "17"), state);
+        assertSame(state, result.newState());
+        assertEquals(1000.0, state.lastTs());
+        assertEquals(1, state.outstandingRequests());
     }
 
     @Test

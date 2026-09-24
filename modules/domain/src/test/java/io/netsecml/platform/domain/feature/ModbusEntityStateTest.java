@@ -13,13 +13,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 // dataclass and process_capture's window/state handling), which is the
 // authority this class must match bit-for-bit: 19 of the 42 frozen modbus
 // features read this state, and a semantic drift here is invisible to the
-// compiler.
+// compiler. The state is mutable: advance(...) changes it in place and
+// returns the before-event snapshot.
 class ModbusEntityStateTest {
+
+    // A state that has seen exactly the one given request.
+    private static ModbusEntityState afterOneRequest(double ts, Double address, Double quantity) {
+        ModbusEntityState state = ModbusEntityState.empty();
+        state.advance(ts, 3, "17", ModbusDirection.REQUEST, address, quantity);
+        return state;
+    }
 
     @Test
     void aGapLongerThanFifteenSecondsStartsANewSegment() {
-        ModbusEntityState state = ModbusEntityState.empty()
-            .afterEvent(1000.0, 3, "17", ModbusDirection.REQUEST, 40001.0, 2.0);
+        ModbusEntityState state = afterOneRequest(1000.0, 40001.0, 2.0);
         assertTrue(state.startsNewSegment(1015.01));
         assertFalse(state.startsNewSegment(1015.0), "exactly 15s is still the same segment");
     }
@@ -30,8 +37,7 @@ class ModbusEntityStateTest {
         // strictly increasing event index. A streaming operator must not fail the job
         // on one out-of-order record, and resetting keeps in-segment inter-arrival
         // within [0, 15] by construction.
-        ModbusEntityState state = ModbusEntityState.empty()
-            .afterEvent(1000.0, 3, "17", ModbusDirection.REQUEST, 40001.0, 2.0);
+        ModbusEntityState state = afterOneRequest(1000.0, 40001.0, 2.0);
         assertTrue(state.startsNewSegment(999.9));
     }
 
@@ -44,84 +50,178 @@ class ModbusEntityStateTest {
     void aRequestDoesNotCountItselfAsOutstanding() {
         // The contract's transaction_rule: compute before-event features, mutate
         // pending state afterwards. outstanding_requests_before_event is named for it.
-        ModbusEntityState before = ModbusEntityState.empty();
+        ModbusEntityState state = ModbusEntityState.empty();
+        ModbusEntityState.BeforeEvent before = state.advance(1000.0, 3, "17", ModbusDirection.REQUEST, null, null);
         assertEquals(0, before.outstandingRequests());
-        ModbusEntityState after = before.afterEvent(1000.0, 3, "17", ModbusDirection.REQUEST, null, null);
-        assertEquals(1, after.outstandingRequests());
+        assertEquals(1, state.outstandingRequests());
+    }
+
+    @Test
+    void advanceReturnsEveryValueAsItStoodBeforeTheEvent() {
+        ModbusEntityState state = afterOneRequest(1000.0, 40001.0, 2.0);
+        ModbusEntityState.BeforeEvent before =
+            state.advance(1000.5, 6, "17", ModbusDirection.RESPONSE, 40005.0, 4.0);
+        assertEquals(new ModbusEntityState.BeforeEvent(1000.0, 3, 40001.0, 2.0, 1, 1000.0), before);
+        assertTrue(before.tidWasPending());
+
+        // ...while the state itself has moved on.
+        assertEquals(1000.5, state.lastTs());
+        assertEquals(6, state.prevFunctionCode());
+        assertEquals(40005.0, state.lastAddress());
+        assertEquals(4.0, state.lastQuantity());
+        assertEquals(0, state.outstandingRequests());
+    }
+
+    @Test
+    void aTidThatWasNotPendingSnapshotsAsAbsent() {
+        ModbusEntityState state = afterOneRequest(1000.0, null, null);
+        ModbusEntityState.BeforeEvent before = state.advance(1000.5, 3, "99", ModbusDirection.RESPONSE, null, null);
+        assertNull(before.pendingTsForTid());
+        assertFalse(before.tidWasPending());
     }
 
     @Test
     void aMatchedResponseClearsItsPendingTid() {
-        ModbusEntityState state = ModbusEntityState.empty()
-            .afterEvent(1000.0, 3, "17", ModbusDirection.REQUEST, null, null)
-            .afterEvent(1000.5, 3, "17", ModbusDirection.RESPONSE, null, null);
+        ModbusEntityState state = afterOneRequest(1000.0, null, null);
+        state.advance(1000.5, 3, "17", ModbusDirection.RESPONSE, null, null);
         assertEquals(0, state.outstandingRequests());
         assertFalse(state.hasPending("17"));
     }
 
     @Test
-    void theTenSecondWindowExcludesAnEventExactlyTenSecondsOld() {
+    void theOneSecondWindowExcludesAnEventExactlyOneSecondOld() {
         // Half-open (t-w, t]: the upstream purge is `stored <= ts - w`.
-        ModbusEntityState state = ModbusEntityState.empty()
-            .afterEvent(1000.0, 3, "17", ModbusDirection.REQUEST, null, null);
-        assertEquals(1, state.windowCount10s(1009.99));
-        assertEquals(0, state.windowCount10s(1010.0));
+        ModbusEntityState state = afterOneRequest(1000.0, null, null);
+        state.advance(1000.5, 3, "18", ModbusDirection.REQUEST, null, null);
+        assertEquals(2, state.eventCount1s());
+        state.advance(1001.0, 3, "19", ModbusDirection.REQUEST, null, null);
+        assertEquals(2, state.eventCount1s(), "the event at 1000.0 is exactly 1s old and has left");
+    }
+
+    @Test
+    void theTenSecondWindowExcludesAnEventExactlyTenSecondsOld() {
+        ModbusEntityState justInside = afterOneRequest(1000.0, null, null);
+        justInside.advance(1009.99, 3, "18", ModbusDirection.REQUEST, null, null);
+        assertEquals(2, justInside.eventCount10s());
+
+        ModbusEntityState exactlyOnTheEdge = afterOneRequest(1000.0, null, null);
+        exactlyOnTheEdge.advance(1010.0, 3, "18", ModbusDirection.REQUEST, null, null);
+        assertEquals(1, exactlyOnTheEdge.eventCount10s());
+    }
+
+    @Test
+    void theSixtySecondWindowExcludesAnEventExactlySixtySecondsOld() {
+        // Four 15 s gaps stay inside one segment (only a gap OVER 15 s starts a new
+        // one) and reach exactly 60 s back.
+        ModbusEntityState state = afterOneRequest(1000.0, null, null);
+        for (double ts : new double[] {1015.0, 1030.0, 1045.0}) {
+            state.advance(ts, 3, "18", ModbusDirection.REQUEST, null, null);
+        }
+        assertEquals(4, state.eventCount60s());
+        state.advance(1060.0, 3, "18", ModbusDirection.REQUEST, null, null);
+        assertEquals(4, state.eventCount60s(), "the event at 1000.0 is exactly 60s old and has left");
     }
 
     @Test
     void purgingTheTenSecondWindowDecrementsItsFunctionAndAddressCounters() {
-        ModbusEntityState state = ModbusEntityState.empty()
-            .afterEvent(1000.0, 3, "17", ModbusDirection.REQUEST, 40001.0, null)
-            .afterEvent(1001.0, 6, "18", ModbusDirection.REQUEST, 40002.0, null);
-        assertEquals(2, state.uniqueFunctions10s(1001.0));
-        assertEquals(2, state.uniqueAddresses10s(1001.0));
-        assertEquals(1, state.uniqueFunctions10s(1010.5), "the FC-3 event has aged out");
-        assertEquals(1, state.uniqueAddresses10s(1010.5));
+        ModbusEntityState state = afterOneRequest(1000.0, 40001.0, null);
+        state.advance(1001.0, 6, "18", ModbusDirection.REQUEST, 40002.0, null);
+        assertEquals(2, state.uniqueFunctions10s());
+        assertEquals(2, state.uniqueAddresses10s());
+        assertEquals(1, state.readCount10s());
+        assertEquals(1, state.writeCount10s());
+
+        // At 1010.5 the FC-3 read at address 40001 (ts 1000.0) leaves the window,
+        // taking its function, its address and its read with it.
+        state.advance(1010.5, 6, "19", ModbusDirection.REQUEST, 40002.0, null);
+        assertEquals(1, state.uniqueFunctions10s(), "the FC-3 event has aged out");
+        assertEquals(1, state.uniqueAddresses10s());
+        assertEquals(0, state.readCount10s());
+        assertEquals(2, state.writeCount10s());
+    }
+
+    @Test
+    void aValueSeenTwiceStaysCountedUntilItsLastOccurrenceLeaves() {
+        // fc_counter_10 counts occurrences, not presence: purging ONE of two FC-3
+        // events must not drop FC 3 from unique_function_count_10s.
+        ModbusEntityState state = afterOneRequest(1000.0, 40001.0, null);
+        state.advance(1005.0, 3, "18", ModbusDirection.REQUEST, 40001.0, null);
+        state.advance(1010.0, 6, "19", ModbusDirection.REQUEST, null, null);
+        assertEquals(2, state.uniqueFunctions10s(), "FC 3 is still in the window at 1005.0");
+        assertEquals(1, state.uniqueAddresses10s(), "40001 is still in the window at 1005.0");
     }
 
     @Test
     void functionCode23CountsInBothTheReadAndWriteTallies() {
-        ModbusEntityState state = ModbusEntityState.empty()
-            .afterEvent(1000.0, 23, "17", ModbusDirection.REQUEST, null, null);
-        assertEquals(1, state.readCount10s(1000.0));
-        assertEquals(1, state.writeCount10s(1000.0));
+        ModbusEntityState state = ModbusEntityState.empty();
+        state.advance(1000.0, 23, "17", ModbusDirection.REQUEST, null, null);
+        assertEquals(1, state.readCount10s());
+        assertEquals(1, state.writeCount10s());
+    }
+
+    @Test
+    void aFunctionCodeThatIsNeitherReadNorWriteCountsInNeitherTally() {
+        ModbusEntityState state = ModbusEntityState.empty();
+        state.advance(1000.0, 43, "17", ModbusDirection.REQUEST, null, null);
+        assertEquals(0, state.readCount10s());
+        assertEquals(0, state.writeCount10s());
+        assertEquals(1, state.uniqueFunctions10s());
     }
 
     @Test
     void anAbsentAddressIsNotCountedAsAUniqueAddress() {
-        ModbusEntityState state = ModbusEntityState.empty()
-            .afterEvent(1000.0, 3, "17", ModbusDirection.REQUEST, null, null);
-        assertEquals(0, state.uniqueAddresses10s(1000.0));
+        ModbusEntityState state = afterOneRequest(1000.0, null, null);
+        assertEquals(0, state.uniqueAddresses10s());
     }
 
     @Test
-    void resetForNewSegmentClearsEverything() {
-        ModbusEntityState state = ModbusEntityState.empty()
-            .afterEvent(1000.0, 3, "17", ModbusDirection.REQUEST, 40001.0, 2.0)
-            .resetForNewSegment();
+    void resetClearsEverythingInPlace() {
+        ModbusEntityState state = afterOneRequest(1000.0, 40001.0, 2.0);
+        state.advance(1000.5, 16, "18", ModbusDirection.REQUEST, 40002.0, 3.0);
+        state.reset();
+
         assertNull(state.lastTs());
         assertNull(state.prevFunctionCode());
         assertNull(state.lastAddress());
         assertNull(state.lastQuantity());
         assertEquals(0, state.outstandingRequests());
-        assertEquals(0, state.windowCount60s(1000.0));
+        assertEquals(0, state.eventCount1s());
+        assertEquals(0, state.eventCount10s());
+        assertEquals(0, state.eventCount60s());
+        assertEquals(0, state.uniqueFunctions10s());
+        assertEquals(0, state.uniqueAddresses10s());
+        assertEquals(0, state.readCount10s());
+        assertEquals(0, state.writeCount10s());
+
+        // The next event sees an all-empty before-state, and only itself in the windows.
+        ModbusEntityState.BeforeEvent before = state.advance(1000.6, 3, "18", ModbusDirection.REQUEST, 7.0, null);
+        assertEquals(new ModbusEntityState.BeforeEvent(null, null, null, null, 0, null), before);
+        assertEquals(1, state.eventCount60s());
+        assertEquals(1, state.uniqueAddresses10s());
     }
 
     @Test
     void theLastAddressSurvivesAnEventWithNoAddress() {
         // "previous APPLICABLE address" -- the delta reaches back past events that
         // carried none, which is why lastAddress is only updated when one is present.
-        ModbusEntityState state = ModbusEntityState.empty()
-            .afterEvent(1000.0, 3, "17", ModbusDirection.REQUEST, 40001.0, null)
-            .afterEvent(1001.0, 3, "18", ModbusDirection.REQUEST, null, null);
+        ModbusEntityState state = afterOneRequest(1000.0, 40001.0, null);
+        state.advance(1001.0, 3, "18", ModbusDirection.REQUEST, null, null);
         assertEquals(40001.0, state.lastAddress());
+    }
+
+    @Test
+    void theLastQuantitySurvivesAnEventWithNoQuantity() {
+        // Same rule as the address: 07b sets last_quantity only `if quantity_present`.
+        ModbusEntityState state = afterOneRequest(1000.0, null, 2.0);
+        state.advance(1001.0, 3, "18", ModbusDirection.REQUEST, null, null);
+        assertEquals(2.0, state.lastQuantity());
     }
 
     @Test
     void thePendingMapIsCappedSoARequestFloodCannotGrowItWithoutLimit() {
         ModbusEntityState state = ModbusEntityState.empty();
         for (int i = 0; i < 5000; i++) {
-            state = state.afterEvent(1000.0 + i * 0.001, 3, "tid-" + i, ModbusDirection.REQUEST, null, null);
+            state.advance(1000.0 + i * 0.001, 3, "tid-" + i, ModbusDirection.REQUEST, null, null);
         }
         assertEquals(4096, state.outstandingRequests());
     }
@@ -137,9 +237,9 @@ class ModbusEntityStateTest {
         // must survive regardless of how old its own timestamp is.
         ModbusEntityState state = ModbusEntityState.empty();
         for (int i = 0; i < 4096; i++) {
-            state = state.afterEvent(2000.0 + i, 3, "tid-" + i, ModbusDirection.REQUEST, null, null);
+            state.advance(2000.0 + i, 3, "tid-" + i, ModbusDirection.REQUEST, null, null);
         }
-        state = state.afterEvent(1.0, 3, "tid-ancient", ModbusDirection.REQUEST, null, null);
+        state.advance(1.0, 3, "tid-ancient", ModbusDirection.REQUEST, null, null);
         assertEquals(4096, state.outstandingRequests());
         assertTrue(state.hasPending("tid-ancient"),
             "the entry just added must not be the one evicted, regardless of its own timestamp");
@@ -157,12 +257,12 @@ class ModbusEntityStateTest {
         // first.
         ModbusEntityState state = ModbusEntityState.empty();
         for (int i = 0; i < 4096; i++) {
-            state = state.afterEvent(2000.0 + i, 3, "tid-" + i, ModbusDirection.REQUEST, null, null);
+            state.advance(2000.0 + i, 3, "tid-" + i, ModbusDirection.REQUEST, null, null);
         }
-        state = state.afterEvent(2000.0 + 4096, 3, "tid-0", ModbusDirection.REQUEST, null, null);
+        state.advance(2000.0 + 4096, 3, "tid-0", ModbusDirection.REQUEST, null, null);
         assertTrue(state.hasPending("tid-0"), "tid-0 was just re-requested and must still be outstanding");
 
-        state = state.afterEvent(2000.0 + 4097, 3, "tid-new", ModbusDirection.REQUEST, null, null);
+        state.advance(2000.0 + 4097, 3, "tid-new", ModbusDirection.REQUEST, null, null);
         assertEquals(4096, state.outstandingRequests());
         assertTrue(state.hasPending("tid-0"), "the just-renewed tid-0 must not be the one evicted");
         assertFalse(state.hasPending("tid-1"), "tid-1 is now the genuinely oldest outstanding request");

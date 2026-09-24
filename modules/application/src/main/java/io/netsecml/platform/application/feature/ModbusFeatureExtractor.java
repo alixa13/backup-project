@@ -17,26 +17,29 @@ import java.util.Map;
 // class's own comments. Where the two ever disagree, the Python wins.
 //
 // extract is a pure function of (event, before, after, newSegment) -> vector:
-// it never mutates ModbusEntityState itself. Groups A (current-event Modbus
-// semantics), B (numeric value summaries) and C (causal deltas / pending-TID
-// bookkeeping) all read `before` -- the entity state as it stood when this
-// event arrived, matching process_capture's own ordering, which extracts
-// every current-event feature BEFORE mutating `state.pending` /
-// `state.prev_fc` / `state.last_ts` / `state.last_address` /
-// `state.last_quantity` for this event. Group D (the trailing-window rates
-// and ratios) reads `after`, because process_capture purges and appends the
-// current event to its window deques/counters (w1_ts, w10_events, w60_ts,
-// fc_counter_10, addr_counter_10, read_count_10, write_count_10) BEFORE
-// reading their sizes for event_rate_1s/10s/60s, unique_function_count_10s,
+// it never mutates ModbusEntityState itself. Group C (causal deltas /
+// pending-TID bookkeeping) reads `before` -- the BeforeEvent snapshot
+// ModbusEntityState.advance(...) captured as the state stood when this event
+// arrived, matching process_capture's own ordering, which extracts every
+// current-event feature BEFORE mutating `state.pending` / `state.prev_fc` /
+// `state.last_ts` / `state.last_address` / `state.last_quantity` for this
+// event. Groups A (current-event Modbus semantics) and B (numeric value
+// summaries) read only the event. Group D (the trailing-window rates and
+// ratios) reads `after` -- the state advance(...) left behind -- because
+// process_capture purges and appends the current event to its window
+// deques/counters (w1_ts, w10_events, w60_ts, fc_counter_10,
+// addr_counter_10, read_count_10, write_count_10) BEFORE reading their sizes
+// for event_rate_1s/10s/60s, unique_function_count_10s,
 // unique_address_count_10s and read/write_ratio_10s -- so the current event
 // is always counted in its own windows. The caller (ModbusBuildFeaturesUseCase)
-// is responsible for producing `after` via `before.afterEvent(...)` with this
-// same event's own fields, and for resetting to ModbusEntityState.empty()
-// across a segment boundary before calling afterEvent at all.
+// is responsible for calling advance(...) with this same event's own fields
+// -- so `before.pendingTsForTid()` is this event's tid's -- and for
+// resetting the state across a segment boundary before calling advance at
+// all.
 //
 // newSegment carries no branch of its own: when true, the caller has already
-// reset `before` to ModbusEntityState.empty()
-// (ModbusEntityState.resetForNewSegment), so prev_event_available,
+// reset the state (ModbusEntityState.reset) before advancing, so `before` is
+// all-empty and prev_event_available,
 // inter_arrival_s, function_changed, address_delta_valid,
 // quantity_delta_valid, outstanding_requests_before_event, rtt_valid and
 // rtt_s all fall out at zero by ordinary computation -- exactly
@@ -113,10 +116,10 @@ public final class ModbusFeatureExtractor {
         return index;
     }
 
-    public float[] extract(ModbusEvent event, ModbusEntityState before, ModbusEntityState after,
+    public float[] extract(ModbusEvent event, ModbusEntityState.BeforeEvent before, ModbusEntityState after,
                             boolean newSegment) {
-        // newSegment implies the caller already reset `before` to
-        // ModbusEntityState.empty() ahead of this call -- see this class's
+        // newSegment implies the caller already reset the state before
+        // advancing it, so `before` is all-empty -- see this class's
         // javadoc. If that ever stops holding, indices 23-34 would silently
         // compute non-zero, wrong values with no signal anywhere: a Java
         // `assert` would not do it, since neither bootstrap module runs its
@@ -128,9 +131,9 @@ public final class ModbusFeatureExtractor {
         if (newSegment && !(before.lastTs() == null && before.lastAddress() == null
             && before.lastQuantity() == null && before.outstandingRequests() == 0)) {
             throw new IllegalArgumentException(
-                "newSegment=true requires the caller to have already reset `before` to "
-                + "ModbusEntityState.empty(); a non-empty before-state here would silently "
-                + "break the zeroed-at-segment-start guarantee for indices 23-34.");
+                "newSegment=true requires the caller to have reset the state before advancing it; "
+                + "a non-empty before-event snapshot here would silently break the "
+                + "zeroed-at-segment-start guarantee for indices 23-34.");
         }
 
         float[] vector = new float[ModbusFeatureSchemaV1.SCHEMA.featureCount()];
@@ -146,7 +149,6 @@ public final class ModbusFeatureExtractor {
         double ts = event.tsSeconds();
         boolean isResponse = event.direction() == ModbusDirection.RESPONSE;
         int functionCode = event.functionCode();
-        String tid = event.transactionId();
 
         // Group A: current-event Modbus semantics (process_capture lines
         // 344-379). Exactly one of fc_1..fc_6/fc_other is ever 1, whatever
@@ -227,7 +229,7 @@ public final class ModbusFeatureExtractor {
         vector[PREV_EVENT_AVAILABLE] = prevAvailable ? 1f : 0f;
         if (prevAvailable) {
             vector[INTER_ARRIVAL_S] = (float) (ts - beforeLastTs);
-            // prevFunctionCode is always non-null here: ModbusEntityState.afterEvent
+            // prevFunctionCode is always non-null here: ModbusEntityState.advance
             // sets prevFunctionCode and lastTs together, unconditionally, on every
             // call, so lastTs != null implies prevFunctionCode != null too.
             int prevFunctionCode = before.prevFunctionCode();
@@ -248,12 +250,15 @@ public final class ModbusFeatureExtractor {
 
         vector[OUTSTANDING_REQUESTS_BEFORE_EVENT] = before.outstandingRequests();
 
-        boolean hasPending = before.hasPending(tid);
+        // pendingTsForTid is this event's own tid's pending request timestamp
+        // (advance was given event.transactionId()), or null if none was
+        // pending.
+        boolean hasPending = before.tidWasPending();
         if (isResponse) {
             vector[RESPONSE_WITHOUT_REQUEST] = hasPending ? 0f : 1f;
             if (hasPending) {
                 vector[RTT_VALID] = 1f;
-                vector[RTT_S] = (float) (ts - before.pendingTs(tid));
+                vector[RTT_S] = (float) (ts - before.pendingTsForTid());
             }
         } else {
             vector[REQUEST_OVERWRITE_SAME_TID] = hasPending ? 1f : 0f;
@@ -261,13 +266,14 @@ public final class ModbusFeatureExtractor {
 
         // Group D: trailing-window rates/ratios read from `after`
         // (process_capture lines 457-523) -- the current event is already
-        // purged-and-appended into every window by the time `after` was
-        // built, so it is always counted in its own windows.
-        vector[EVENT_RATE_1S] = after.windowCount1s(ts);
-        vector[EVENT_RATE_10S] = (float) (after.windowCount10s(ts) / 10.0);
-        vector[EVENT_RATE_60S] = (float) (after.windowCount60s(ts) / 60.0);
-        vector[UNIQUE_FUNCTION_COUNT_10S] = after.uniqueFunctions10s(ts);
-        vector[UNIQUE_ADDRESS_COUNT_10S] = after.uniqueAddresses10s(ts);
+        // purged-and-appended into every window, and counted in the running
+        // 10 s counts, by the time advance returned, so it is always counted
+        // in its own windows. Each read is a stored size or count, O(1).
+        vector[EVENT_RATE_1S] = after.eventCount1s();
+        vector[EVENT_RATE_10S] = (float) (after.eventCount10s() / 10.0);
+        vector[EVENT_RATE_60S] = (float) (after.eventCount60s() / 60.0);
+        vector[UNIQUE_FUNCTION_COUNT_10S] = after.uniqueFunctions10s();
+        vector[UNIQUE_ADDRESS_COUNT_10S] = after.uniqueAddresses10s();
 
         // window10Count can never be 0 here: `after` always has this event's
         // own entry inside its 10-second window (an entry timestamped `ts`
@@ -275,9 +281,9 @@ public final class ModbusFeatureExtractor {
         // process_capture's own unguarded `float(state.read_count_10) /
         // window10_count` division exactly -- no defensive zero-check either
         // side of this port.
-        int window10Count = after.windowCount10s(ts);
-        vector[READ_RATIO_10S] = (float) (after.readCount10s(ts) / (double) window10Count);
-        vector[WRITE_RATIO_10S] = (float) (after.writeCount10s(ts) / (double) window10Count);
+        int window10Count = after.eventCount10s();
+        vector[READ_RATIO_10S] = (float) (after.readCount10s() / (double) window10Count);
+        vector[WRITE_RATIO_10S] = (float) (after.writeCount10s() / (double) window10Count);
 
         return vector;
     }

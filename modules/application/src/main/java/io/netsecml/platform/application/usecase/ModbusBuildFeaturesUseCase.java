@@ -16,9 +16,10 @@ import java.time.temporal.ChronoUnit;
 import java.util.Objects;
 
 // Owns Ruling 5 end to end: decide whether this event starts a new causal
-// segment, reset state if so, extract every one of modbus-feature-v1's 42
-// values from the state as it stood BEFORE this event, and only then advance
-// the state. Mirrors ConnBuildFeaturesUseCase / DnsBuildFeaturesUseCase's
+// segment, reset state if so, advance the state in place -- capturing the
+// values it held BEFORE this event first -- and extract modbus-feature-v1's
+// 42 values, the causal ones from that before-event snapshot and the window
+// rates from the advanced state. Mirrors ConnBuildFeaturesUseCase / DnsBuildFeaturesUseCase's
 // shape throughout -- same Clock injection, same constructor overloads, same
 // resolved-once-in-the-constructor schema -- because all three classes are
 // the same pattern applied to a different log type, not three independently
@@ -82,6 +83,11 @@ public final class ModbusBuildFeaturesUseCase implements BuildFeaturesUseCase<Mo
         }
     }
 
+    // Advances `currentState` IN PLACE and returns that same instance as the
+    // result's newState (see ModbusEntityState's own comment for why it is
+    // mutable and why that is safe in Flink's heap state backend). A caller
+    // must therefore not reuse a state object it has passed here as if it
+    // still held the state from before this event.
     @Override
     public FeatureBuildResult<ModbusEntityState> build(ModbusEvent event, ModbusEntityState currentState) {
         // event.tsSeconds() is the ONE value both this class and
@@ -90,7 +96,7 @@ public final class ModbusBuildFeaturesUseCase implements BuildFeaturesUseCase<Mo
         // the same record component here, rather than each independently
         // deriving a fractional-second double from envelope().eventTime()
         // (which is millisecond-rounded and NOT the causal clock), is what
-        // keeps `after` built against the exact ts the extractor itself uses
+        // keeps the state advanced at the exact ts the extractor itself uses
         // for inter_arrival_s, rtt_s and every window boundary.
         double ts = event.tsSeconds();
 
@@ -107,25 +113,27 @@ public final class ModbusBuildFeaturesUseCase implements BuildFeaturesUseCase<Mo
         Double lastTs = currentState.lastTs();
         boolean outOfOrder = lastTs != null && ts - lastTs < 0.0;
 
-        // Step 2: reset to empty across a segment boundary BEFORE extracting.
-        // ModbusFeatureExtractor.extract asserts that `before` is
-        // ModbusEntityState.empty() whenever newSegment is true, so `before`
-        // must already be the reset state here, never currentState itself.
-        ModbusEntityState before = newSegment ? currentState.resetForNewSegment() : currentState;
+        // Step 2: reset across a segment boundary BEFORE advancing, so the
+        // before-event snapshot is all-empty -- ModbusFeatureExtractor.extract
+        // rejects a non-empty one whenever newSegment is true.
+        if (newSegment) {
+            currentState.reset();
+        }
 
-        // Step 3: advance state from `before` using this event's own fields,
-        // at the same ts the extractor computes below.
-        ModbusEntityState after = before.afterEvent(ts, event.functionCode(), event.transactionId(),
-            event.direction(), event.address(), event.quantity());
+        // Step 3: advance the state in place with this event's own fields, at
+        // the same ts the extractor computes below. advance captures the
+        // before-event values first and returns them.
+        ModbusEntityState.BeforeEvent before = currentState.advance(ts, event.functionCode(),
+            event.transactionId(), event.direction(), event.address(), event.quantity());
 
-        // Step 4: every current-event feature (groups A-C) reads `before` --
-        // the state as it stood when this event arrived, so a request does
-        // not count itself in outstanding_requests_before_event (index 30).
-        // The trailing-window rates/ratios (group D) read `after`, so the
-        // current event is counted in its own windows. See
-        // ModbusFeatureExtractor's own javadoc for the group-by-group
+        // Step 4: the causal features (group C) read the before-event
+        // snapshot -- the state as it stood when this event arrived, so a
+        // request does not count itself in outstanding_requests_before_event
+        // (index 30). The trailing-window rates/ratios (group D) read the
+        // advanced state, so the current event is counted in its own windows.
+        // See ModbusFeatureExtractor's own javadoc for the group-by-group
         // rationale.
-        float[] values = modbusFeatureExtractor.extract(event, before, after, newSegment);
+        float[] values = modbusFeatureExtractor.extract(event, before, currentState, newSegment);
 
         // Step 5: width, id and hash all come from the schema resolved in the
         // constructor -- FeatureSchemaRegistry.byLogType(LogType.MODBUS) in
@@ -153,6 +161,6 @@ public final class ModbusBuildFeaturesUseCase implements BuildFeaturesUseCase<Mo
             qualityFlags,
             clock.instant().truncatedTo(ChronoUnit.MILLIS));
 
-        return new FeatureBuildResult<>(vector, after);
+        return new FeatureBuildResult<>(vector, currentState);
     }
 }

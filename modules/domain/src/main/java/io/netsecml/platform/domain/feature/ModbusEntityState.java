@@ -1,14 +1,13 @@
 package io.netsecml.platform.domain.feature;
 
 import io.netsecml.platform.domain.event.ModbusEvent.ModbusDirection;
+import io.netsecml.platform.domain.event.ModbusFunctionCode;
 
 import java.util.ArrayDeque;
-import java.util.Deque;
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Set;
 
 // The modbus causal state machine: the bounded per-(client_ip, server_ip,
 // unit) state 19 of the 42 frozen modbus features read
@@ -17,45 +16,45 @@ import java.util.Set;
 // state handling inside process_capture
 // (two-models-info/modbus_/07b_materialize_feature_engine_v1.py) -- that file
 // is the authority for every constant and every purge/update rule here, not
-// this class's own javadoc. Where the two ever disagree, the Python wins.
+// this class's own comments. Where the two ever disagree, the Python wins.
 //
-// Immutable-returning, following RollingCounters' established pattern for
-// keyed state in this codebase: afterEvent(...) never mutates this instance,
-// it copies the deques and the pending-TID map structurally (new
-// ArrayDeque<>(old), new LinkedHashMap<>(old) -- see the `pending` field's own
-// comment for why LinkedHashMap specifically, not HashMap) and returns a new
-// ModbusEntityState built from the copies. That is a real cost, not a free
-// choice: RollingCounters copies four
-// fixed five-element arrays (trivial), while this class copies whatever its
-// trailing windows currently hold -- at a 10 Hz poll rate the 60-second
-// deque holds roughly 600 entries. Still cheap at realistic Modbus TCP
-// rates, and matching the codebase's one existing pattern beats optimising
-// an allocation nobody has profiled. If a future profiler disagrees, the fix
-// is a mutable-buffer variant behind the same immutable-returning API, not a
-// wholesale redesign of the extractor that depends on this class staying a
-// pure function of (state, event) -> state.
+// MUTABLE, updated in place, like the upstream EntityState itself. advance()
+// changes this instance and returns an immutable BeforeEvent snapshot of the
+// values the extractor must read from before the event. The trailing windows
+// have to be bounded by TIME, not by a count -- exact counts over (t-w, t]
+// are the frozen contract -- so under a flood of r events/s on one key the
+// 60 s window holds about 60r entries. An earlier, immutable version copied
+// all three windows and the pending-TID map on every event and rescanned the
+// 10 s window six times, about 192r element operations per event: measured
+// single-threaded on one key, it managed ~820 events/s against a 1,000
+// events/s answered flood and ~510-560 events/s against 10,000 events/s,
+// falling behind real time either way. In place, with 07b's own running 10 s
+// counts (fc_counter_10, addr_counter_10, read_count_10, write_count_10)
+// maintained on append and on purge, every event costs amortized O(1): each
+// entry is appended once and purged once.
 //
-// MEASURED, not assumed: this class is held directly in Flink
-// ValueState<ModbusEntityState> (the same shape DnsFeatureProcessFunction
-// uses for DnsWindowState), and
-// TypeInformation.of(ModbusEntityState.class) resolves to
-// org.apache.flink.api.java.typeutils.GenericTypeInfo -- i.e. Kryo, not the
-// POJO/record serializer, exactly like RollingCounters and RecordTimingState
-// (DnsWindowState's own two components) already do. The reason is the same
-// one that sends those two to Kryo: Flink's POJO analysis requires (1) a
-// public no-arg constructor, which this class does not have (its constructor
-// is private, taking every field); and (2) bean-style get/is-prefixed,
-// no-argument accessors for every field, which this class also does not
-// have -- lastTs()/prevFunctionCode()/lastAddress()/lastQuantity() are
-// argument-less but not get/is-prefixed, and windowCount1s(ts) and its
-// siblings are neither prefixed nor argument-less, since they answer for a
-// caller-supplied instant rather than exposing a stored field directly (see
-// windowCount1s's own comment for why). Practical consequence: state
-// evolution here is Kryo's problem, not the POJO serializer's -- adding,
-// removing or reordering a field changes what a running job has serialized
-// under this operator's uid, and Kryo's own compatibility rules (not
-// Flink's POJO schema migration) govern whether an old savepoint can still
-// restore into a new field layout.
+// Why in-place mutation is safe in Flink: this object lives in
+// ValueState<ModbusEntityState> on the default heap state backend
+// (HashMapStateBackend; the job configures none in code), whose
+// CopyOnWriteStateMap.get(key, namespace) -- which ValueState.value() calls --
+// hands out a serializer COPY of the state object, stored back in place of
+// the original, whenever a running checkpoint snapshot still holds the
+// original. A checkpoint therefore never sees a half-mutated object, provided
+// the operator reads this state through value() on every call and never
+// caches the reference in a field across calls (ModbusFeatureProcessFunction
+// does exactly that). That copy costs O(state size), once per key per
+// checkpoint, not per event. On RocksDB/ForSt the picture differs: every
+// value()/update() (de)serializes the whole object, so per-event cost returns
+// to O(window size) there -- this class is fast on the heap backend only.
+//
+// Still Kryo, not the POJO serializer: TypeInformation.of(ModbusEntityState
+// .class) resolves to GenericTypeInfo (Kryo), because Flink's POJO analysis
+// requires a public no-arg constructor and get/is-prefixed accessors for every
+// field, and this class has neither. Kryo's own compatibility rules govern
+// whether an old savepoint restores into a new field layout -- and this
+// version's layout differs from the immutable one's (running counts added).
+// That change was free only because the job had never been deployed, so no
+// savepoint of the old layout exists; any later layout change is not free.
 public final class ModbusEntityState {
 
     // A gap strictly greater than this starts a new causal segment. Matches
@@ -65,14 +64,6 @@ public final class ModbusEntityState {
     private static final double WINDOW_1S = 1.0;
     private static final double WINDOW_10S = 10.0;
     private static final double WINDOW_60S = 60.0;
-
-    // Function codes the upstream engine's READ_FUNCTIONS / WRITE_FUNCTIONS
-    // sets fold into the 10-second read/write tallies. 23 (Read/Write
-    // Multiple Registers) appears in both: one PDU performs both operations,
-    // so it counts in both tallies, never neither -- pinned by
-    // functionCode23CountsInBothTheReadAndWriteTallies.
-    private static final Set<Integer> READ_FUNCTIONS = Set.of(1, 2, 3, 4, 20, 24, 23);
-    private static final Set<Integer> WRITE_FUNCTIONS = Set.of(5, 6, 15, 16, 21, 22, 23);
 
     // Pending-TID cap: absent from the upstream offline engine, whose
     // `pending` dict is unbounded because it processes one finite capture
@@ -89,57 +80,63 @@ public final class ModbusEntityState {
     // "Modbus limits and decisions".
     private static final int MAX_PENDING = 4096;
 
-    private final Double lastTs;
-    private final Integer prevFunctionCode;
-    private final Double lastAddress;
-    private final Double lastQuantity;
+    private Double lastTs;
+    private Integer prevFunctionCode;
+    private Double lastAddress;
+    private Double lastQuantity;
 
     // transaction_id -> the REQUEST's own timestamp. Mirrors the upstream
     // engine's `pending: dict[Any, float]`, but held as a LinkedHashMap
     // (insertion-order iteration, NOT access-order -- access-order would
-    // reorder on a plain get() inside pendingTs(), mutating this supposedly
-    // read-only accessor's target map) rather than a HashMap, specifically
-    // so evictOldestIfOverCap can find the entry to drop in O(1) instead of
+    // reorder on a plain get(), so reading a pending timestamp would mutate
+    // the eviction order) rather than a HashMap, specifically so
+    // evictOldestIfOverCap can find the entry to drop in O(1) instead of
     // scanning every entry for the minimum timestamp.
     //
     // That only gives the right answer if insertion order tracks timestamp
     // order, which requires two things this class enforces itself:
     //   - a REQUEST that reuses a still-pending tid is removed and
-    //     re-inserted (see afterEvent's pending mutation), so it moves to
-    //     the tail instead of keeping the stale position from its first,
+    //     re-inserted (see advance's pending mutation), so it moves to the
+    //     tail instead of keeping the stale position from its first,
     //     now-superseded, timestamp;
     //   - see evictOldestIfOverCap's own comment for the deployment
     //     assumption that makes "insertion order" and "timestamp order"
     //     the same order for a well-behaved caller.
-    private final Map<String, Double> pending;
+    private final LinkedHashMap<String, Double> pending = new LinkedHashMap<>();
 
-    // Trailing-window deques. w1/w60 need only the timestamp (upstream's
-    // w1_ts / w60_ts are used purely as counts: event_rate_1s = len(w1_ts),
-    // event_rate_60s = len(w60_ts) / 60.0 -- both ModbusFeatureExtractor's
-    // concern, read via this class's own windowCount1s/windowCount60s below,
-    // not this state's). w10 needs the fuller upstream w10_events tuple
-    // (ts, function_code, address_present, address, is_read, is_write)
-    // because the 10-second accessors below (uniqueFunctions10s,
-    // uniqueAddresses10s, readCount10s, writeCount10s) must be able to
-    // recompute their answer for it.
-    private final Deque<Double> window1s;
-    private final Deque<Double> window60s;
-    private final Deque<Window10Entry> window10s;
+    // Trailing-window deques, upstream's w1_ts, w60_ts and w10_events. w1/w60
+    // are used purely as counts (event_rate_1s = len(w1_ts), event_rate_60s =
+    // len(w60_ts) / 60.0), so they hold only timestamps; w10 holds the fuller
+    // upstream tuple because a purge must know which running counts the
+    // leaving entry had incremented.
+    private final ArrayDeque<Double> window1s = new ArrayDeque<>();
+    private final ArrayDeque<Double> window60s = new ArrayDeque<>();
+    private final ArrayDeque<Window10Entry> window10s = new ArrayDeque<>();
 
-    private ModbusEntityState(Double lastTs, Integer prevFunctionCode, Double lastAddress, Double lastQuantity,
-                               Map<String, Double> pending, Deque<Double> window1s, Deque<Double> window60s,
-                               Deque<Window10Entry> window10s) {
-        this.lastTs = lastTs;
-        this.prevFunctionCode = prevFunctionCode;
-        this.lastAddress = lastAddress;
-        this.lastQuantity = lastQuantity;
-        this.pending = pending;
-        this.window1s = window1s;
-        this.window60s = window60s;
-        this.window10s = window10s;
+    // The running 10 s counts, exactly upstream's fc_counter_10 (function
+    // code -> events in the window), addr_counter_10 (address -> events in
+    // the window, for events that carried one), read_count_10 and
+    // write_count_10. Incremented on append, decremented on purge, and a map
+    // key is removed when its count reaches zero (07b: `if <= 0: del`), so
+    // each map's size is the number of DISTINCT values in the window.
+    //
+    // Address keys compare with Double.equals, as the HashSet<Double> the
+    // immutable version rescanned into did: -0.0 and 0.0 are two keys, and
+    // NaN equals NaN. Python's float keys differ on both (-0.0 == 0.0; NaN
+    // != NaN). Zeek's modbus `address` is an unsigned register number, so
+    // neither value is expected, but ModbusEventMapper does not reject them:
+    // a record carrying one would count differently here than upstream.
+    // Kept as it was, deliberately -- this class changed how it counts, not
+    // what it counts.
+    private final HashMap<Integer, Integer> functionCounts10s = new HashMap<>();
+    private final HashMap<Double, Integer> addressCounts10s = new HashMap<>();
+    private int readCount10s;
+    private int writeCount10s;
+
+    private ModbusEntityState() {
     }
 
-    // One entry per event still (as of the last afterEvent purge) inside the
+    // One entry per event still (as of the last advance's purge) inside the
     // trailing 10-second window -- exactly the upstream engine's own
     // w10_events tuple. A private record: this never crosses this class's
     // boundary, so it does not need the read accessors a public domain
@@ -148,10 +145,25 @@ public final class ModbusEntityState {
                                   boolean isRead, boolean isWrite) {
     }
 
+    // The values of this state that the extractor reads as they stood
+    // BEFORE an event -- process_capture's group C, which reads state.last_ts,
+    // state.prev_fc, state.last_address, state.last_quantity,
+    // len(state.pending) and state.pending[current_tid] before mutating any
+    // of them. Captured by advance() before it changes anything.
+    // pendingTsForTid is the pending REQUEST timestamp for the tid advance()
+    // was given, or null if that tid was not pending (a pending timestamp is
+    // never null, so null means absent).
+    public record BeforeEvent(Double lastTs, Integer prevFunctionCode, Double lastAddress, Double lastQuantity,
+                              int outstandingRequests, Double pendingTsForTid) {
+
+        public boolean tidWasPending() {
+            return pendingTsForTid != null;
+        }
+    }
+
     // The zero state a fresh (client_ip, server_ip, unit) key starts from.
     public static ModbusEntityState empty() {
-        return new ModbusEntityState(null, null, null, null,
-            new LinkedHashMap<>(), new ArrayDeque<>(), new ArrayDeque<>(), new ArrayDeque<>());
+        return new ModbusEntityState();
     }
 
     // True when the given timestamp is far enough past this state's last
@@ -165,7 +177,9 @@ public final class ModbusEntityState {
     // whole job over one out-of-order record; treating a negative gap as
     // "start a new segment" keeps every in-segment inter-arrival within
     // [0, 15] by construction, which is the invariant ModbusFeatureExtractor's
-    // inter_arrival_s computation depends on.
+    // inter_arrival_s computation depends on -- and keeps each window deque
+    // sorted by timestamp, which is what lets a purge stop at the first entry
+    // still inside the window.
     public boolean startsNewSegment(double ts) {
         if (lastTs == null) {
             return true;
@@ -175,13 +189,24 @@ public final class ModbusEntityState {
     }
 
     // Mirrors the upstream engine's reset_for_new_segment(): every field this
-    // class carries goes back to its zero value. (The upstream method also
-    // resets segment_local_id / position_in_segment, but those are the
-    // upstream engine's own audit columns, outside modbus-feature-v1's 42
-    // frozen features -- not part of this class's interface, and not planned
-    // to become part of it.)
-    public ModbusEntityState resetForNewSegment() {
-        return empty();
+    // class carries goes back to its zero value, in place. (The upstream
+    // method also resets segment_local_id / position_in_segment, but those
+    // are the upstream engine's own audit columns, outside
+    // modbus-feature-v1's 42 frozen features -- not part of this class's
+    // interface, and not planned to become part of it.)
+    public void reset() {
+        lastTs = null;
+        prevFunctionCode = null;
+        lastAddress = null;
+        lastQuantity = null;
+        pending.clear();
+        window1s.clear();
+        window60s.clear();
+        window10s.clear();
+        functionCounts10s.clear();
+        addressCounts10s.clear();
+        readCount10s = 0;
+        writeCount10s = 0;
     }
 
     public Double lastTs() {
@@ -212,106 +237,50 @@ public final class ModbusEntityState {
         return pending.get(tid);
     }
 
-    // Half-open window: an entry stored at exactly `ts - window` seconds old
-    // is EXCLUDED (upstream purges with `stored <= ts - window`), so this
-    // filter must be strictly greater-than for the same entries to be
-    // included here.
-    //
-    // Deliberately filters the deque fresh on every call rather than reading
-    // a maintained running count: afterEvent purges (and so the deque's
-    // *contents*) only ever advance to the timestamp of the event that was
-    // just folded in, but an accessor can be asked about ANY later instant
-    // (that is exactly what this class's own boundary tests do -- see
-    // ModbusEntityStateTest.purgingTheTenSecondWindowDecrementsItsFunctionAndAddressCounters,
-    // which queries a state whose last afterEvent call was at ts=1001.0
-    // for both ts=1001.0 and ts=1010.5). A running counter frozen at the
-    // last afterEvent's purge point would answer the second query wrong. In
-    // production the extractor always queries with the same ts afterEvent
-    // just purged at, so this and a maintained counter would agree there --
-    // the two diverge only when a caller asks about a later instant, which
-    // is exactly the case these accessors are built to answer correctly.
-    public int windowCount1s(double ts) {
-        return countAfter(window1s, ts, WINDOW_1S);
+    // The window reads. Each answers as of the last advance() -- whose purge
+    // ran at that event's own timestamp, so every entry still held lies in
+    // (lastTs - w, lastTs] -- which is the only instant the extractor asks
+    // about. None takes a timestamp: a later instant's answer would need a
+    // purge, and a purge is a mutation that belongs to advance().
+    public int eventCount1s() {
+        return window1s.size();
     }
 
-    public int windowCount60s(double ts) {
-        return countAfter(window60s, ts, WINDOW_60S);
+    public int eventCount10s() {
+        return window10s.size();
     }
 
-    public int windowCount10s(double ts) {
-        double cutoff = ts - WINDOW_10S;
-        int count = 0;
-        for (Window10Entry entry : window10s) {
-            if (entry.ts() > cutoff) {
-                count++;
-            }
-        }
-        return count;
+    public int eventCount60s() {
+        return window60s.size();
     }
 
-    public int uniqueFunctions10s(double ts) {
-        double cutoff = ts - WINDOW_10S;
-        Set<Integer> functions = new HashSet<>();
-        for (Window10Entry entry : window10s) {
-            if (entry.ts() > cutoff) {
-                functions.add(entry.functionCode());
-            }
-        }
-        return functions.size();
+    public int uniqueFunctions10s() {
+        return functionCounts10s.size();
     }
 
-    public int uniqueAddresses10s(double ts) {
-        double cutoff = ts - WINDOW_10S;
-        Set<Double> addresses = new HashSet<>();
-        for (Window10Entry entry : window10s) {
-            if (entry.ts() > cutoff && entry.addressPresent()) {
-                addresses.add(entry.address());
-            }
-        }
-        return addresses.size();
+    public int uniqueAddresses10s() {
+        return addressCounts10s.size();
     }
 
-    public int readCount10s(double ts) {
-        double cutoff = ts - WINDOW_10S;
-        int count = 0;
-        for (Window10Entry entry : window10s) {
-            if (entry.ts() > cutoff && entry.isRead()) {
-                count++;
-            }
-        }
-        return count;
+    public int readCount10s() {
+        return readCount10s;
     }
 
-    public int writeCount10s(double ts) {
-        double cutoff = ts - WINDOW_10S;
-        int count = 0;
-        for (Window10Entry entry : window10s) {
-            if (entry.ts() > cutoff && entry.isWrite()) {
-                count++;
-            }
-        }
-        return count;
+    public int writeCount10s() {
+        return writeCount10s;
     }
 
-    private static int countAfter(Deque<Double> deque, double ts, double window) {
-        double cutoff = ts - window;
-        int count = 0;
-        for (double stored : deque) {
-            if (stored > cutoff) {
-                count++;
-            }
-        }
-        return count;
-    }
-
-    // The state transition. Mirrors process_capture's per-event handling
-    // exactly, section by section:
+    // The state transition, in place. Captures the before-event snapshot
+    // first, then mirrors process_capture's per-event handling exactly,
+    // section by section:
     //
     //   1. Purge every trailing window using the INCOMING event's own
-    //      timestamp (purge_time_deque + the w10 cutoff loop), THEN append
-    //      the current event to each. Purging first is what keeps this
-    //      state bounded -- every event calls afterEvent, so stale entries
-    //      are always dropped before new ones arrive.
+    //      timestamp (purge_time_deque + the w10 cutoff loop, which also
+    //      decrements the running 10 s counts for each entry it drops), THEN
+    //      append the current event to each window and increment the counts.
+    //      Purging first is what keeps this state bounded -- every event
+    //      calls advance, so stale entries are always dropped before new ones
+    //      arrive.
     //   2. Mutate the pending-TID map: a request records itself as pending
     //      (overwriting any existing entry for the same tid, matching the
     //      upstream engine's unconditional `pending[tid] = ts`); a response
@@ -323,35 +292,32 @@ public final class ModbusEntityState {
     //      one -- "previous APPLICABLE address", per the upstream engine's
     //      own `if address_present: state.last_address = ...` guard.
     //
-    // The caller is expected to have already read whatever BEFORE-mutation
-    // features it needs (outstanding_requests_before_event, hasPending,
-    // lastAddress, etc.) from the state this is called on, since this
-    // returns a DIFFERENT (new) state reflecting the event having happened.
-    public ModbusEntityState afterEvent(double ts, int functionCode, String tid, ModbusDirection direction,
-                                         Double address, Double quantity) {
-        Deque<Double> newWindow1s = new ArrayDeque<>(window1s);
-        Deque<Double> newWindow60s = new ArrayDeque<>(window60s);
-        Deque<Window10Entry> newWindow10s = new ArrayDeque<>(window10s);
-        // LinkedHashMap's copy constructor iterates its source in that
-        // source's own order, so copying a LinkedHashMap here preserves
-        // insertion order rather than falling back to hash-bucket order.
-        Map<String, Double> newPending = new LinkedHashMap<>(pending);
+    // The caller decides segment boundaries BEFORE calling this (reset() on a
+    // new segment), and reads group C from the returned snapshot and group D
+    // from this state afterwards.
+    public BeforeEvent advance(double ts, int functionCode, String tid, ModbusDirection direction,
+                               Double address, Double quantity) {
+        // 0. The before-event snapshot, before anything below changes.
+        BeforeEvent before = new BeforeEvent(lastTs, prevFunctionCode, lastAddress, lastQuantity,
+            pending.size(), pending.get(tid));
 
         // 1a. Purge (strict upstream semantics: stored <= cutoff is dropped).
-        purgeTimeDeque(newWindow1s, ts - WINDOW_1S);
-        purgeTimeDeque(newWindow60s, ts - WINDOW_60S);
+        purgeTimeDeque(window1s, ts - WINDOW_1S);
+        purgeTimeDeque(window60s, ts - WINDOW_60S);
         double cutoff10 = ts - WINDOW_10S;
-        while (!newWindow10s.isEmpty() && newWindow10s.peekFirst().ts() <= cutoff10) {
-            newWindow10s.pollFirst();
+        while (!window10s.isEmpty() && window10s.peekFirst().ts() <= cutoff10) {
+            forgetInTenSecondCounts(window10s.pollFirst());
         }
 
-        // 1b. Append the current event.
-        newWindow1s.addLast(ts);
-        newWindow60s.addLast(ts);
+        // 1b. Append the current event, and count it.
+        window1s.addLast(ts);
+        window60s.addLast(ts);
         boolean addressPresent = address != null;
-        boolean isRead = READ_FUNCTIONS.contains(functionCode);
-        boolean isWrite = WRITE_FUNCTIONS.contains(functionCode);
-        newWindow10s.addLast(new Window10Entry(ts, functionCode, addressPresent, address, isRead, isWrite));
+        Window10Entry entry = new Window10Entry(ts, functionCode, addressPresent, address,
+            ModbusFunctionCode.READ_FUNCTIONS.contains(functionCode),
+            ModbusFunctionCode.WRITE_FUNCTIONS.contains(functionCode));
+        window10s.addLast(entry);
+        countInTenSecondCounts(entry);
 
         // 2. Pending-TID mutation. A request that reuses a still-pending
         // tid (request_overwrite_same_tid, feature index 32) is removed
@@ -366,25 +332,59 @@ public final class ModbusEntityState {
         // the `pending` field's own comment; pinned by
         // ModbusEntityStateTest.reInsertingAStillPendingTidMovesItToTheEndOfEvictionOrder).
         if (direction == ModbusDirection.REQUEST) {
-            newPending.remove(tid);
-            newPending.put(tid, ts);
-            evictOldestIfOverCap(newPending);
+            pending.remove(tid);
+            pending.put(tid, ts);
+            evictOldestIfOverCap(pending);
         } else {
-            newPending.remove(tid);
+            pending.remove(tid);
         }
 
         // 3. Previous-event state.
-        Integer newPrevFunctionCode = functionCode;
-        Double newLastTs = ts;
-        Double newLastAddress = addressPresent ? address : lastAddress;
-        Double newLastQuantity = quantity != null ? quantity : lastQuantity;
+        prevFunctionCode = functionCode;
+        lastTs = ts;
+        if (addressPresent) {
+            lastAddress = address;
+        }
+        if (quantity != null) {
+            lastQuantity = quantity;
+        }
 
-        return new ModbusEntityState(newLastTs, newPrevFunctionCode, newLastAddress, newLastQuantity,
-            newPending, newWindow1s, newWindow60s, newWindow10s);
+        return before;
+    }
+
+    // An entry joining the 10 s window: `fc_counter_10[fc] += 1`,
+    // `addr_counter_10[addr] += 1` when an address is present, and the
+    // read/write tallies. Function code 23 is in both READ_FUNCTIONS and
+    // WRITE_FUNCTIONS, so it counts in both tallies, never neither.
+    private void countInTenSecondCounts(Window10Entry entry) {
+        functionCounts10s.merge(entry.functionCode(), 1, Integer::sum);
+        if (entry.addressPresent()) {
+            addressCounts10s.merge(entry.address(), 1, Integer::sum);
+        }
+        readCount10s += entry.isRead() ? 1 : 0;
+        writeCount10s += entry.isWrite() ? 1 : 0;
+    }
+
+    // An entry leaving the 10 s window: the exact reverse, and a key whose
+    // count reaches zero is removed, so each map's size stays the number of
+    // distinct values still in the window. (sumOrRemove returns null at zero,
+    // which Map.merge treats as "remove the key".)
+    private void forgetInTenSecondCounts(Window10Entry entry) {
+        functionCounts10s.merge(entry.functionCode(), -1, ModbusEntityState::sumOrRemove);
+        if (entry.addressPresent()) {
+            addressCounts10s.merge(entry.address(), -1, ModbusEntityState::sumOrRemove);
+        }
+        readCount10s -= entry.isRead() ? 1 : 0;
+        writeCount10s -= entry.isWrite() ? 1 : 0;
+    }
+
+    private static Integer sumOrRemove(Integer count, Integer delta) {
+        int sum = count + delta;
+        return sum <= 0 ? null : sum;
     }
 
     // `while q and q[0] <= cutoff: popleft()`, verbatim.
-    private static void purgeTimeDeque(Deque<Double> deque, double cutoff) {
+    private static void purgeTimeDeque(ArrayDeque<Double> deque, double cutoff) {
         while (!deque.isEmpty() && deque.peekFirst() <= cutoff) {
             deque.pollFirst();
         }
@@ -393,12 +393,12 @@ public final class ModbusEntityState {
     // Cap enforcement: evicts the single eldest-BY-INSERTION entry if the
     // map is now over MAX_PENDING -- O(1) via LinkedHashMap's own iteration
     // order (removing its first key), not an O(map size) scan for the
-    // minimum timestamp. A single afterEvent call adds, or moves, at most
-    // one entry to the tail (see the pending mutation above), so that
-    // entry is always the newest in iteration order and can never be the
-    // one this method evicts -- an event whose own timestamp is older than
-    // everything already pending still cannot evict itself, because
-    // eviction only ever looks at the head.
+    // minimum timestamp. A single advance call adds, or moves, at most one
+    // entry to the tail (see the pending mutation above), so that entry is
+    // always the newest in iteration order and can never be the one this
+    // method evicts -- an event whose own timestamp is older than everything
+    // already pending still cannot evict itself, because eviction only ever
+    // looks at the head.
     //
     // "Eldest by insertion" only equals "eldest by timestamp" under this
     // deployment's required per-key arrival ordering -- the same

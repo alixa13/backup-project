@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Instant;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 // Windows modbus events into modbus-feature-v1 vectors, mirroring
@@ -59,6 +60,13 @@ class ModbusFeatureProcessFunctionTest {
         // Instant -- see ModbusBuildFeaturesUseCaseTest's own request() helper.
         return new ModbusEvent(envelope(ts, tid), ts, ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.9",
             functionCode, tid, "1", null, null, false, new double[0], new double[0]);
+    }
+
+    // A request carrying an address, for the tests that need the 10 s
+    // window's address and function counts to be non-trivial.
+    private ModbusEvent requestAt(double ts, int functionCode, String tid, double address) {
+        return new ModbusEvent(envelope(ts, tid), ts, ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.9",
+            functionCode, tid, "1", address, null, false, new double[0], new double[0]);
     }
 
     // Same fixed client/server pair and function code (3), varying only ts and
@@ -118,5 +126,56 @@ class ModbusFeatureProcessFunctionTest {
         assertEquals(1.0f, second.extractOutputValues().get(0).values()[23],
             "prev_event_available proves the restored state was seen");
         second.close();
+    }
+
+    @Test
+    void restoredRunningCountsGiveTheSameVectorsAsAnUninterruptedRun() throws Exception {
+        // The entity state carries running 10 s counts (per function code, per
+        // address, reads, writes) that are never recomputed from the window:
+        // whatever a restore brings back is what every later vector reads. So
+        // a run checkpointed and restored midway must emit, after the restore,
+        // exactly what one uninterrupted run emits -- including once the
+        // pre-checkpoint entries purge out and decrement those counts.
+        ModbusEvent[] events = {
+            requestAt(1000.0, 3, "1", 40001.0),
+            requestAt(1002.0, 6, "2", 40002.0),
+            requestAt(1004.0, 23, "3", 40001.0),
+            requestAt(1006.0, 16, "4", 40003.0),
+            requestAt(1011.0, 3, "5", 40001.0),
+            requestAt(1013.5, 6, "6", 40004.0),
+            requestAt(1016.0, 3, "7", 40002.0),
+        };
+        int checkpointAfter = 4;
+
+        OneInputStreamOperatorTestHarness<ModbusEvent, FeatureVector> uninterrupted = harness();
+        uninterrupted.open();
+        for (ModbusEvent event : events) {
+            uninterrupted.processElement(new StreamRecord<>(event));
+        }
+        List<FeatureVector> expected = uninterrupted.extractOutputValues();
+        uninterrupted.close();
+
+        OneInputStreamOperatorTestHarness<ModbusEvent, FeatureVector> first = harness();
+        first.open();
+        for (int i = 0; i < checkpointAfter; i++) {
+            first.processElement(new StreamRecord<>(events[i]));
+        }
+        OperatorSubtaskState snapshot = first.snapshot(1L, 1L);
+        first.close();
+
+        OneInputStreamOperatorTestHarness<ModbusEvent, FeatureVector> second = harness();
+        second.initializeState(snapshot);
+        second.open();
+        for (int i = checkpointAfter; i < events.length; i++) {
+            second.processElement(new StreamRecord<>(events[i]));
+        }
+        List<FeatureVector> actual = second.extractOutputValues();
+        second.close();
+
+        assertEquals(events.length - checkpointAfter, actual.size());
+        for (int i = 0; i < actual.size(); i++) {
+            assertArrayEquals(expected.get(checkpointAfter + i).values(), actual.get(i).values(),
+                "vector for event " + (checkpointAfter + i) + " after the restore");
+        }
     }
 }

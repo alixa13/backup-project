@@ -56,6 +56,18 @@ public final class ModbusFeatureProcessFunction
         // with timestamps itself, matching Conn/DnsFeatureProcessFunction's
         // own division of labour between operator and use case.
         FeatureBuildResult<ModbusEntityState> result = useCase.build(event, currentState);
+
+        // build() mutates currentState in place and returns it as newState,
+        // and this update() is still required: it is what stores a fresh key's
+        // new state at all, and what keeps this operator correct on a state
+        // backend that hands out a deserialized copy from value() (RocksDB/
+        // ForSt), where the mutation alone would be lost. On the default heap
+        // backend, mutating the object value() returned is safe while a
+        // checkpoint runs: CopyOnWriteStateMap.get hands out a serializer copy
+        // whenever a running snapshot still holds the stored object, so the
+        // snapshot never sees a half-mutated state. That guarantee holds only
+        // because the state is read through value() on every call, here --
+        // never cache it in a field across calls.
         entityState.update(result.newState());
         out.collect(result.vector());
     }

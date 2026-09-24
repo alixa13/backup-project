@@ -47,12 +47,27 @@ import java.util.Map;
 // value()/update() (de)serializes the whole object, so per-event cost returns
 // to O(window size) there -- this class is fast on the heap backend only.
 //
+// Capped, and flagged when the cap bites. Bounded by time alone, a window's
+// memory still grows with the flood rate, so each of the three windows also
+// holds at most MAX_WINDOW_ENTRIES entries: over the cap, the oldest entry is
+// evicted (after the purge, so it is always an entry 07b would still hold,
+// and never the entry just appended). A capped window then under-counts
+// relative to 07b for as long as an evicted entry would still be inside it,
+// and exactly then windowSaturated() is true and ModbusBuildFeaturesUseCase
+// sets QualityFlags.MODBUS_WINDOW_SATURATED on the vector. Every vector
+// without that bit carries exactly the window values an uncapped engine
+// would; the causal features (group C) never read a window and are exact
+// either way. At 100,000 entries the 60 s
+// window saturates above ~1,667 events/s on one key, the 10 s window above
+// 10,000/s and the 1 s window above 100,000/s.
+//
 // Still Kryo, not the POJO serializer: TypeInformation.of(ModbusEntityState
 // .class) resolves to GenericTypeInfo (Kryo), because Flink's POJO analysis
 // requires a public no-arg constructor and get/is-prefixed accessors for every
 // field, and this class has neither. Kryo's own compatibility rules govern
 // whether an old savepoint restores into a new field layout -- and this
-// version's layout differs from the immutable one's (running counts added).
+// version's layout differs from the immutable one's (running counts, cap and
+// cap-eviction timestamps added).
 // That change was free only because the job had never been deployed, so no
 // savepoint of the old layout exists; any later layout change is not free.
 public final class ModbusEntityState {
@@ -79,6 +94,10 @@ public final class ModbusEntityState {
     // recently-issued one is. Recorded as a known limit in CLAUDE.md's
     // "Modbus limits and decisions".
     private static final int MAX_PENDING = 4096;
+
+    // Per-window entry cap -- see the class comment. Absent from 07b for the
+    // same reason the pending cap is: 07b processes one finite capture.
+    public static final int MAX_WINDOW_ENTRIES = 100_000;
 
     private Double lastTs;
     private Integer prevFunctionCode;
@@ -133,7 +152,22 @@ public final class ModbusEntityState {
     private int readCount10s;
     private int writeCount10s;
 
-    private ModbusEntityState() {
+    // This instance's per-window cap: MAX_WINDOW_ENTRIES for empty(), smaller
+    // only through emptyWithWindowCap. Kept on the instance, so reset() keeps
+    // it and a restored state brings it back.
+    private final int windowCap;
+
+    // The timestamp of the most recent entry each window's cap evicted, or
+    // -infinity if none has been since the last reset. The windows are
+    // sorted by timestamp, so this is also the NEWEST entry the cap has
+    // taken from that window -- the one that stays inside 07b's window
+    // longest.
+    private double lastCapEvicted1s = Double.NEGATIVE_INFINITY;
+    private double lastCapEvicted10s = Double.NEGATIVE_INFINITY;
+    private double lastCapEvicted60s = Double.NEGATIVE_INFINITY;
+
+    private ModbusEntityState(int windowCap) {
+        this.windowCap = windowCap;
     }
 
     // One entry per event still (as of the last advance's purge) inside the
@@ -163,7 +197,17 @@ public final class ModbusEntityState {
 
     // The zero state a fresh (client_ip, server_ip, unit) key starts from.
     public static ModbusEntityState empty() {
-        return new ModbusEntityState();
+        return new ModbusEntityState(MAX_WINDOW_ENTRIES);
+    }
+
+    // The zero state with a different per-window cap. For tests (a small cap
+    // makes saturation cheap to reach) and tuning; production uses empty().
+    // A cap below 1 would let the just-appended entry be evicted.
+    public static ModbusEntityState emptyWithWindowCap(int windowCap) {
+        if (windowCap < 1) {
+            throw new IllegalArgumentException("windowCap must be at least 1, was " + windowCap);
+        }
+        return new ModbusEntityState(windowCap);
     }
 
     // True when the given timestamp is far enough past this state's last
@@ -207,6 +251,9 @@ public final class ModbusEntityState {
         addressCounts10s.clear();
         readCount10s = 0;
         writeCount10s = 0;
+        lastCapEvicted1s = Double.NEGATIVE_INFINITY;
+        lastCapEvicted10s = Double.NEGATIVE_INFINITY;
+        lastCapEvicted60s = Double.NEGATIVE_INFINITY;
     }
 
     public Double lastTs() {
@@ -270,9 +317,23 @@ public final class ModbusEntityState {
         return writeCount10s;
     }
 
+    // True iff some window's values, as of the last advance, differ from what
+    // 07b's uncapped window would hold: an entry the cap evicted from window w
+    // is still inside (lastTs - w, lastTs]. The comparison is the exact
+    // negation of the purge rule (`stored <= ts - w` leaves), so it turns
+    // false at the same event 07b would have purged that entry itself.
+    public boolean windowSaturated() {
+        if (lastTs == null) {
+            return false;
+        }
+        return lastCapEvicted1s > lastTs - WINDOW_1S
+            || lastCapEvicted10s > lastTs - WINDOW_10S
+            || lastCapEvicted60s > lastTs - WINDOW_60S;
+    }
+
     // The state transition, in place. Captures the before-event snapshot
     // first, then mirrors process_capture's per-event handling exactly,
-    // section by section:
+    // section by section (1c, the cap, is this class's own addition):
     //
     //   1. Purge every trailing window using the INCOMING event's own
     //      timestamp (purge_time_deque + the w10 cutoff loop, which also
@@ -318,6 +379,24 @@ public final class ModbusEntityState {
             ModbusFunctionCode.WRITE_FUNCTIONS.contains(functionCode));
         window10s.addLast(entry);
         countInTenSecondCounts(entry);
+
+        // 1c. Enforce the per-window cap: evict from the head (the oldest),
+        // recording what left. A window is at most windowCap entries before
+        // this event and one more after its append, and windowCap >= 1, so
+        // the entry just appended at the tail is never the one evicted. An
+        // entry leaving the 10 s window is uncounted exactly as a purge
+        // uncounts it.
+        while (window1s.size() > windowCap) {
+            lastCapEvicted1s = window1s.pollFirst();
+        }
+        while (window60s.size() > windowCap) {
+            lastCapEvicted60s = window60s.pollFirst();
+        }
+        while (window10s.size() > windowCap) {
+            Window10Entry evicted = window10s.pollFirst();
+            forgetInTenSecondCounts(evicted);
+            lastCapEvicted10s = evicted.ts();
+        }
 
         // 2. Pending-TID mutation. A request that reuses a still-pending
         // tid (request_overwrite_same_tid, feature index 32) is removed

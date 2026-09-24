@@ -23,8 +23,8 @@ public final class QualityFlags {
     // GLOBAL MEANING, not a per-protocol one: every protocol-specific flag
     // takes the next unused bit and keeps that meaning permanently, because
     // archived rows outlive the code that wrote them. DNS claims bit 1
-    // (DNS_RESPONSE_ABSENT); modbus takes the next free bit, 2
-    // (MODBUS_OUT_OF_ORDER); a consumer that forgets to check a row's own
+    // (DNS_RESPONSE_ABSENT); modbus takes the next free bits, 2
+    // (MODBUS_OUT_OF_ORDER) and 3 (MODBUS_WINDOW_SATURATED); a consumer that forgets to check a row's own
     // `log_type` still reads the word correctly, and no two constants in this
     // class ever share a value.
     public static final int CONN_ENRICHMENT_ABSENT = 1;
@@ -52,6 +52,17 @@ public final class QualityFlags {
     // modbus-feature-v1 carries no common tier (ModbusFeatureSchemaV1's own
     // javadoc), so a modbus vector never sets bit 0.
     public static final int MODBUS_OUT_OF_ORDER = 4;
+
+    // Set when at least one of the modbus entity state's trailing windows (1 s,
+    // 10 s, 60 s) has lost an entry to its per-window cap that the upstream
+    // engine's uncapped window would still hold -- so that window's rate,
+    // unique-count or ratio features (indices 35-41) under-count relative to
+    // upstream for this vector. Only a flood above ~1,667 events/s on one
+    // (client_ip, server_ip, unit) key reaches it (see ModbusEntityState's
+    // own comment). Every modbus vector WITHOUT this bit carries exactly the
+    // window values the uncapped engine would; indices 0-34 are exact either
+    // way. Bit 3, the next free bit, one global meaning like its siblings.
+    public static final int MODBUS_WINDOW_SATURATED = 8;
 
     // Non-instantiable: every member is a constant.
     private QualityFlags() {

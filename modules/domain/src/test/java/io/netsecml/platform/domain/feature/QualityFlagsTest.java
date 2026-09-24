@@ -21,33 +21,37 @@ class QualityFlagsTest {
     // is the exact invariant an earlier draft of this task's own instructions
     // violated -- MODBUS_OUT_OF_ORDER was first specified as 2, which collides
     // with DNS_RESPONSE_ABSENT -- so this test pins the value, not just "some
-    // distinct value", for all three constants.
+    // distinct value", for every constant.
     @Test
-    void allThreeBitsArePinnedDistinctAndIndependentlyCombinable() {
+    void everyBitIsPinnedDistinctAndIndependentlyCombinable() {
         assertEquals(1, QualityFlags.CONN_ENRICHMENT_ABSENT);
         assertEquals(2, QualityFlags.DNS_RESPONSE_ABSENT);
         assertEquals(4, QualityFlags.MODBUS_OUT_OF_ORDER);
+        assertEquals(8, QualityFlags.MODBUS_WINDOW_SATURATED);
+
+        int[] bits = {QualityFlags.CONN_ENRICHMENT_ABSENT, QualityFlags.DNS_RESPONSE_ABSENT,
+            QualityFlags.MODBUS_OUT_OF_ORDER, QualityFlags.MODBUS_WINDOW_SATURATED};
 
         // Pairwise distinctness: no two constants may ever share a bit position.
-        assertNotEquals(QualityFlags.CONN_ENRICHMENT_ABSENT, QualityFlags.DNS_RESPONSE_ABSENT);
-        assertNotEquals(QualityFlags.CONN_ENRICHMENT_ABSENT, QualityFlags.MODBUS_OUT_OF_ORDER);
-        assertNotEquals(QualityFlags.DNS_RESPONSE_ABSENT, QualityFlags.MODBUS_OUT_OF_ORDER);
-
-        int all = QualityFlags.CONN_ENRICHMENT_ABSENT | QualityFlags.DNS_RESPONSE_ABSENT
-            | QualityFlags.MODBUS_OUT_OF_ORDER;
-        assertEquals(7, all, "all three bits must be distinct and non-overlapping");
+        int all = 0;
+        for (int bit : bits) {
+            assertEquals(1, Integer.bitCount(bit), "each flag must be a single bit");
+            assertEquals(0, all & bit, "flag " + bit + " overlaps an earlier one");
+            all |= bit;
+        }
+        assertEquals(15, all, "all four bits must be distinct and non-overlapping");
 
         // Each bit must be independently recoverable from the combined value --
         // this is what lets a ClickHouse query filter on one protocol's own
-        // condition without the other protocols' bits interfering.
-        assertEquals(QualityFlags.CONN_ENRICHMENT_ABSENT, all & QualityFlags.CONN_ENRICHMENT_ABSENT);
-        assertEquals(QualityFlags.DNS_RESPONSE_ABSENT, all & QualityFlags.DNS_RESPONSE_ABSENT);
-        assertEquals(QualityFlags.MODBUS_OUT_OF_ORDER, all & QualityFlags.MODBUS_OUT_OF_ORDER);
-
-        // Setting modbus's bit alone must not read back as also carrying either
-        // of the other two protocols' bits.
-        int modbusOnly = QualityFlags.MODBUS_OUT_OF_ORDER;
-        assertEquals(0, modbusOnly & QualityFlags.CONN_ENRICHMENT_ABSENT);
-        assertEquals(0, modbusOnly & QualityFlags.DNS_RESPONSE_ABSENT);
+        // condition without the other protocols' bits interfering -- and a
+        // value carrying one bit alone must not read back as carrying any other.
+        for (int bit : bits) {
+            assertEquals(bit, all & bit);
+            for (int other : bits) {
+                if (other != bit) {
+                    assertEquals(0, bit & other, "flag " + bit + " reads back as carrying " + other);
+                }
+            }
+        }
     }
 }

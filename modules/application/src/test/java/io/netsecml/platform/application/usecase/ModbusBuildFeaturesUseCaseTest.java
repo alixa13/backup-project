@@ -130,6 +130,24 @@ class ModbusBuildFeaturesUseCaseTest {
     }
 
     @Test
+    void aSaturatedWindowSetsItsQualityBitAlongsideOutOfOrder() {
+        // Cap 1: the second event evicts the first from every window while it is
+        // still inside them, so that vector's window features under-count.
+        ModbusEntityState state = ModbusEntityState.emptyWithWindowCap(1);
+        assertEquals(QualityFlags.NONE, useCase().build(request(1000.0, 3, "17"), state).vector().qualityFlags());
+        assertEquals(QualityFlags.MODBUS_WINDOW_SATURATED,
+            useCase().build(request(1000.5, 3, "18"), state).vector().qualityFlags());
+
+        // Time going backwards resets the segment (clearing saturation) and flags
+        // out-of-order; the next in-segment event saturates again, and the two
+        // bits are independent.
+        assertEquals(QualityFlags.MODBUS_OUT_OF_ORDER,
+            useCase().build(request(999.0, 3, "19"), state).vector().qualityFlags());
+        assertEquals(QualityFlags.MODBUS_WINDOW_SATURATED,
+            useCase().build(request(999.5, 3, "20"), state).vector().qualityFlags());
+    }
+
+    @Test
     void constructorRejectsASchemaThatDisagreesWithTheExtractorsOwnStatic() {
         // DnsFeatureSchemaV1.SCHEMA is a convenient wrong-but-real schema: not
         // ModbusFeatureSchemaV1.SCHEMA, so it must be rejected regardless of

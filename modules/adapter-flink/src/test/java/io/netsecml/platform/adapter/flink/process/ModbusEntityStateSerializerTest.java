@@ -20,9 +20,11 @@ import java.io.IOException;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 // ModbusEntityState is mutable and updated in place, which is safe in the
 // heap state backend only because Flink hands out a serializer COPY of a
@@ -75,19 +77,26 @@ class ModbusEntityStateSerializerTest {
     };
 
     private ModbusEntityState stateAfterHistory() {
-        ModbusEntityState state = ModbusEntityState.empty();
+        return stateAfterHistory(ModbusEntityState.empty());
+    }
+
+    private ModbusEntityState stateAfterHistory(ModbusEntityState state) {
         for (ModbusEvent event : HISTORY) {
             state = useCase.build(event, state).newState();
         }
         return state;
     }
 
-    // Every value the continuation produces from `state`, in order.
+    // Every value and quality flag the continuation produces from `state`, in
+    // order, one row per event: its 42 values, then its flags as a 43rd float
+    // (small integers are exact in a float).
     private float[][] continuationVectors(ModbusEntityState state) {
         float[][] vectors = new float[CONTINUATION.length][];
         for (int i = 0; i < CONTINUATION.length; i++) {
             var result = useCase.build(CONTINUATION[i], state);
-            vectors[i] = result.vector().values();
+            float[] values = result.vector().values();
+            vectors[i] = Arrays.copyOf(values, values.length + 1);
+            vectors[i][values.length] = result.vector().qualityFlags();
             state = result.newState();
         }
         return vectors;
@@ -117,6 +126,21 @@ class ModbusEntityStateSerializerTest {
     void aSerializedRoundTripPreservesEverythingTheNextEventsRead() throws IOException {
         ModbusEntityState restored = roundTrip(stateAfterHistory());
         assertArrayEquals(continuationVectors(stateAfterHistory()), continuationVectors(restored));
+    }
+
+    @Test
+    void aCappedSaturatedStateKeepsItsCapAndSaturationThroughARoundTrip() throws IOException {
+        // Cap 3 against HISTORY's five events inside 10 s: the windows have
+        // evicted entries still inside them, so the state is saturated. A
+        // restore that lost the cap or the eviction timestamps would change the
+        // continuation's window values or its MODBUS_WINDOW_SATURATED bits.
+        ModbusEntityState original = stateAfterHistory(ModbusEntityState.emptyWithWindowCap(3));
+        assertTrue(original.windowSaturated());
+
+        ModbusEntityState restored = roundTrip(original);
+        assertTrue(restored.windowSaturated());
+        assertArrayEquals(continuationVectors(stateAfterHistory(ModbusEntityState.emptyWithWindowCap(3))),
+            continuationVectors(restored));
     }
 
     private ModbusEntityState roundTrip(ModbusEntityState state) throws IOException {

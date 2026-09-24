@@ -141,9 +141,15 @@ public final class ModbusBuildFeaturesUseCase implements BuildFeaturesUseCase<Mo
         //
         // Step 6: MODBUS_OUT_OF_ORDER is set only for the negative-gap case
         // decided above, never for an ordinary >15s gap or a key's first
-        // event; modbus-feature-v1 carries no common tier, so this vector
-        // never sets CONN_ENRICHMENT_ABSENT (bit 0).
+        // event. MODBUS_WINDOW_SATURATED is set exactly when, after this
+        // event, a window has lost an entry to its cap that the uncapped
+        // window would still hold (ModbusEntityState.windowSaturated), so its
+        // window features differ from upstream's. modbus-feature-v1 carries no
+        // common tier, so this vector never sets CONN_ENRICHMENT_ABSENT (bit 0).
         int qualityFlags = outOfOrder ? QualityFlags.MODBUS_OUT_OF_ORDER : QualityFlags.NONE;
+        if (currentState.windowSaturated()) {
+            qualityFlags |= QualityFlags.MODBUS_WINDOW_SATURATED;
+        }
 
         // logType and connectionUid pass straight through from the event,
         // unchanged. producedAt is truncated to milliseconds because it lands

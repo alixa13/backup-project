@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 // Pins the modbus causal state machine against the upstream offline engine
@@ -266,5 +267,113 @@ class ModbusEntityStateTest {
         assertEquals(4096, state.outstandingRequests());
         assertTrue(state.hasPending("tid-0"), "the just-renewed tid-0 must not be the one evicted");
         assertFalse(state.hasPending("tid-1"), "tid-1 is now the genuinely oldest outstanding request");
+    }
+
+    @Test
+    void theProductionWindowCapIsOneHundredThousandEntries() {
+        assertEquals(100_000, ModbusEntityState.MAX_WINDOW_ENTRIES);
+    }
+
+    @Test
+    void aWindowCapBelowOneIsRejected() {
+        // A cap of 0 would evict the entry advance just appended.
+        assertThrows(IllegalArgumentException.class, () -> ModbusEntityState.emptyWithWindowCap(0));
+    }
+
+    @Test
+    void eachWindowHoldsAtMostItsCap() {
+        ModbusEntityState state = ModbusEntityState.emptyWithWindowCap(3);
+        for (int i = 0; i < 5; i++) {
+            state.advance(1000.0 + i * 0.1, 3, "t" + i, ModbusDirection.REQUEST, null, null);
+        }
+        assertEquals(3, state.eventCount1s());
+        assertEquals(3, state.eventCount10s());
+        assertEquals(3, state.eventCount60s());
+    }
+
+    @Test
+    void theCapEvictsTheOldestEntryNeverTheOneJustAppended() {
+        // Cap 1: each window keeps only the newest entry, so the FC-6 write just
+        // appended survives and the earlier FC-3 read is the one uncounted.
+        ModbusEntityState state = ModbusEntityState.emptyWithWindowCap(1);
+        state.advance(1000.0, 3, "1", ModbusDirection.REQUEST, 40001.0, null);
+        state.advance(1000.1, 6, "2", ModbusDirection.REQUEST, 40002.0, null);
+        assertEquals(1, state.eventCount10s());
+        assertEquals(1, state.uniqueFunctions10s());
+        assertEquals(0, state.readCount10s(), "the FC-3 read was evicted");
+        assertEquals(1, state.writeCount10s(), "the FC-6 write just appended stays");
+    }
+
+    @Test
+    void aCapEvictionFromTheTenSecondWindowUncountsItsEntryLikeAPurge() {
+        ModbusEntityState state = ModbusEntityState.emptyWithWindowCap(2);
+        state.advance(1000.0, 3, "1", ModbusDirection.REQUEST, 40001.0, null);
+        state.advance(1000.1, 6, "2", ModbusDirection.REQUEST, 40002.0, null);
+        state.advance(1000.2, 16, "3", ModbusDirection.REQUEST, 40003.0, null);
+        assertEquals(2, state.uniqueFunctions10s());
+        assertEquals(2, state.uniqueAddresses10s());
+        assertEquals(0, state.readCount10s());
+        assertEquals(2, state.writeCount10s());
+    }
+
+    @Test
+    void theSaturationFlagTurnsOnAtTheFirstCapEviction() {
+        // An evicted entry is always one the purge left, i.e. still inside the
+        // window, so the very first eviction already makes the window differ
+        // from the uncapped one.
+        ModbusEntityState state = ModbusEntityState.emptyWithWindowCap(10);
+        for (int i = 0; i < 10; i++) {
+            state.advance(1000.0 + i * 0.01, 3, "t" + i, ModbusDirection.REQUEST, null, null);
+            assertFalse(state.windowSaturated(), "no eviction yet after event " + i);
+        }
+        state.advance(1000.10, 3, "t10", ModbusDirection.REQUEST, null, null);
+        assertTrue(state.windowSaturated());
+    }
+
+    @Test
+    void theSaturationFlagClearsOnceEveryEvictedEntryWouldHaveAgedOutOfItsWindow() {
+        // A burst of 11 events at cap 10 evicts the first from every window.
+        ModbusEntityState state = ModbusEntityState.emptyWithWindowCap(10);
+        for (int i = 0; i <= 10; i++) {
+            state.advance(1000.0 + i * 0.01, 3, "t" + i, ModbusDirection.REQUEST, null, null);
+        }
+        assertTrue(state.windowSaturated());
+
+        // Events 14 s apart then keep the 60 s window full of burst entries,
+        // so each one evicts the next burst entry (1000.01, .02, .03, .04):
+        // still saturated, although the 1 s and 10 s windows long recovered.
+        for (double ts : new double[] {1014.1, 1028.1, 1042.1, 1056.1}) {
+            state.advance(ts, 3, "s" + ts, ModbusDirection.REQUEST, null, null);
+            assertTrue(state.windowSaturated(), "the 60 s window still lacks an entry 07b holds at " + ts);
+        }
+
+        // At 1060.5 an uncapped 60 s window would have purged everything up to
+        // 1000.5, the last evicted entry (1000.04) included: every window value
+        // is exact again.
+        state.advance(1060.5, 3, "last", ModbusDirection.REQUEST, null, null);
+        assertFalse(state.windowSaturated());
+        assertEquals(5, state.eventCount60s());
+    }
+
+    @Test
+    void resetClearsSaturationButKeepsTheCap() {
+        ModbusEntityState state = ModbusEntityState.emptyWithWindowCap(2);
+        for (int i = 0; i < 3; i++) {
+            state.advance(1000.0 + i * 0.1, 3, "t" + i, ModbusDirection.REQUEST, null, null);
+        }
+        assertTrue(state.windowSaturated());
+
+        state.reset();
+        assertFalse(state.windowSaturated());
+        for (int i = 0; i < 3; i++) {
+            state.advance(2000.0 + i * 0.1, 3, "u" + i, ModbusDirection.REQUEST, null, null);
+        }
+        assertEquals(2, state.eventCount1s(), "the cap of 2 survived the reset");
+        assertTrue(state.windowSaturated());
+    }
+
+    @Test
+    void anEmptyStateIsNeverSaturated() {
+        assertFalse(ModbusEntityState.empty().windowSaturated());
     }
 }

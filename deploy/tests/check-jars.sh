@@ -52,6 +52,7 @@ for job in online archive; do
     online)
       assert_eq io.netsecml.platform.bootstrap.online.OnlineFeatureJob "$main" "online Main-Class"
       assert_eq yes "$(has "$entries" io/netsecml/platform/adapter/kafka/parser/JsonZeekModbusParser.class)" "online JAR contains the Modbus parser"
+      assert_eq yes "$(has "$entries" io/netsecml/platform/bootstrap/online/ZeekRecordCheck.class)" "online JAR contains ZeekRecordCheck"
       ;;
     archive)
       assert_eq io.netsecml.platform.bootstrap.archive.ArchiveJob "$main" "archive Main-Class"

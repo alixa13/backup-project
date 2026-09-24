@@ -6,6 +6,7 @@ import io.netsecml.platform.domain.event.SensorId;
 import io.netsecml.platform.domain.feature.DnsFeatureSchemaV1;
 import io.netsecml.platform.domain.feature.FeatureVector;
 import io.netsecml.platform.domain.feature.ModbusFeatureSchemaV1;
+import io.netsecml.platform.domain.feature.S7commFeatureSchemaV1;
 import io.netsecml.platform.domain.feature.QualityFlags;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -428,7 +429,7 @@ class OnlineFeatureJobE2ETest {
                         || !modbusVectorsByEventId.containsKey(responseEventId)
                         || dlqPayloadsByTopic.getOrDefault(modbusDlqTopic, List.of()).isEmpty())
                     && System.currentTimeMillis() < deadline) {
-                collectModbusRecords(consumer.poll(Duration.ofSeconds(2)), modbusFeatureTopic,
+                collectFeatureAndDlqRecords(consumer.poll(Duration.ofSeconds(2)), modbusFeatureTopic,
                     featureVectorDeserializer, modbusVectorsByEventId, dlqPayloadsByTopic);
             }
 
@@ -440,7 +441,7 @@ class OnlineFeatureJobE2ETest {
             // time; it cannot prove nothing arrives later.
             long graceDeadline = System.currentTimeMillis() + 5_000;
             while (System.currentTimeMillis() < graceDeadline) {
-                collectModbusRecords(consumer.poll(Duration.ofSeconds(1)), modbusFeatureTopic,
+                collectFeatureAndDlqRecords(consumer.poll(Duration.ofSeconds(1)), modbusFeatureTopic,
                     featureVectorDeserializer, modbusVectorsByEventId, dlqPayloadsByTopic);
             }
 
@@ -514,6 +515,166 @@ class OnlineFeatureJobE2ETest {
         }
     }
 
+    // The four-protocol job: an S7 request and its response, shaped as ICSNPP
+    // s7comm.log emits them, carry the SAME connection-level id_orig_*/id_resp_*
+    // and differ only in is_orig. S7commEventMapper must orient the pair by
+    // is_orig; if it did not, both records would look like requests to port
+    // 102, keyed fine by uid but never matched. The response must come out
+    // with s7_outstanding_requests 0 and s7_response_match_rate_16 1.
+    @Test
+    void fourProtocolJobMatchesAnS7ResponseToItsRequestAndRoutesMalformedS7ToItsOwnDlq() throws Exception {
+        kafka.start();
+        String bootstrapServers = kafka.getBootstrapServers();
+
+        String connInputTopic = "netsec.conn.raw.v1";
+        String connFeatureTopic = "netsec.conn.feature-vector.v1";
+        String connDlqTopic = "netsec.conn.dlq.v1";
+        String dnsInputTopic = "netsec.dns.raw.v1";
+        String dnsFeatureTopic = "netsec.dns.feature-vector.v1";
+        String dnsDlqTopic = "netsec.dns.dlq.v1";
+        String modbusInputTopic = "netsec.modbus.raw.v1";
+        String modbusFeatureTopic = "netsec.modbus.feature-vector.v1";
+        String modbusDlqTopic = "netsec.modbus.dlq.v1";
+        String s7commInputTopic = "netsec.s7comm.raw.v1";
+        String s7commFeatureTopic = "netsec.s7comm.feature-vector.v1";
+        String s7commDlqTopic = "netsec.s7comm.dlq.v1";
+
+        // Every input topic must exist before submission (a KafkaSource on a
+        // missing topic fails its enumerator); the other protocols' inputs stay
+        // empty so their DLQs can be checked for absence. s7comm's input has one
+        // partition, so the request is read before its response -- the per-uid
+        // order a production producer provides by partitioning on uid.
+        try (Admin admin = Admin.create(Map.<String, Object>of(
+                AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers))) {
+            admin.createTopics(List.of(
+                new NewTopic(connInputTopic, 1, (short) 1),
+                new NewTopic(dnsInputTopic, 1, (short) 1),
+                new NewTopic(modbusInputTopic, 1, (short) 1),
+                new NewTopic(s7commInputTopic, 1, (short) 1),
+                new NewTopic(connDlqTopic, 1, (short) 1),
+                new NewTopic(dnsDlqTopic, 1, (short) 1),
+                new NewTopic(modbusDlqTopic, 1, (short) 1))).all().get(60, TimeUnit.SECONDS);
+        }
+
+        // One S7 exchange: READ_VAR (function "0x04", ROSCTR JOB) and its
+        // ACK_DATA reply, same uid and PDU reference, one shared string of
+        // connection endpoints, 0.25 s apart.
+        String connectionEndpoints =
+            "\"id_orig_h\":\"10.0.0.5\",\"id_orig_p\":50001,\"id_resp_h\":\"10.0.0.9\",\"id_resp_p\":102,";
+        String requestJson = "{\"ts\":1790000000.5,\"uid\":\"CS7E2E0001\"," + connectionEndpoints
+            + "\"is_orig\":true,\"rosctr_code\":1,\"pdu_reference\":7,\"function_code\":\"0x04\"}";
+        String responseJson = "{\"ts\":1790000000.75,\"uid\":\"CS7E2E0001\"," + connectionEndpoints
+            + "\"is_orig\":false,\"rosctr_code\":3,\"pdu_reference\":7,\"function_code\":\"0x04\"}";
+
+        // Cut off mid-object: a parse-stage MALFORMED_JSON, told apart by its hash.
+        byte[] malformedS7 = "{ \"uid\": \"CS7Broken\", \"ts\": 1790000001.0, \"id_orig_h\": \"10.0.0.5\""
+            .getBytes(StandardCharsets.UTF_8);
+        String malformedS7Hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(malformedS7));
+
+        Properties producerProps = new Properties();
+        producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        producerProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
+        producerProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
+        try (KafkaProducer<byte[], byte[]> producer = new KafkaProducer<>(producerProps)) {
+            producer.send(new ProducerRecord<>(s7commInputTopic, requestJson.getBytes(StandardCharsets.UTF_8))).get();
+            producer.send(new ProducerRecord<>(s7commInputTopic, responseJson.getBytes(StandardCharsets.UTF_8))).get();
+            producer.send(new ProducerRecord<>(s7commInputTopic, malformedS7)).get();
+        }
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        OnlineFeatureJob.build(env, bootstrapServers,
+            new OnlineFeatureJob.ProtocolTopics(connInputTopic, connFeatureTopic, connDlqTopic),
+            new OnlineFeatureJob.ProtocolTopics(dnsInputTopic, dnsFeatureTopic, dnsDlqTopic),
+            new OnlineFeatureJob.ProtocolTopics(modbusInputTopic, modbusFeatureTopic, modbusDlqTopic),
+            new OnlineFeatureJob.ProtocolTopics(s7commInputTopic, s7commFeatureTopic, s7commDlqTopic),
+            new SensorId("sensor-eu-1"));
+        JobClient job = env.executeAsync("four-protocol-online-job-e2e-test");
+
+        Properties consumerProps = new Properties();
+        consumerProps.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        consumerProps.put(ConsumerConfig.GROUP_ID_CONFIG, "four-protocol-e2e-test-reader");
+        consumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        consumerProps.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
+        consumerProps.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
+
+        FeatureVectorDeserializer featureVectorDeserializer = new FeatureVectorDeserializer();
+        Map<String, FeatureVector> vectorsByEventId = new HashMap<>();
+        Map<String, List<String>> dlqPayloadsByTopic = new HashMap<>();
+
+        // s7comm identity: sensor:uid:pdu_reference:direction:ts_millis.
+        String requestEventId = "sensor-eu-1:CS7E2E0001:7:REQUEST:1790000000500";
+        String responseEventId = "sensor-eu-1:CS7E2E0001:7:RESPONSE:1790000000750";
+
+        try (AutoCloseable cancelJob = () -> job.cancel().get(60, TimeUnit.SECONDS);
+             Consumer<byte[], byte[]> consumer = new KafkaConsumer<>(consumerProps)) {
+            consumer.subscribe(List.of(s7commFeatureTopic, s7commDlqTopic, connDlqTopic, dnsDlqTopic, modbusDlqTopic));
+
+            // The largest topology this class submits; 90 s includes start-up.
+            long deadline = System.currentTimeMillis() + 90_000;
+            while ((!vectorsByEventId.containsKey(requestEventId) || !vectorsByEventId.containsKey(responseEventId)
+                        || dlqPayloadsByTopic.getOrDefault(s7commDlqTopic, List.of()).isEmpty())
+                    && System.currentTimeMillis() < deadline) {
+                collectFeatureAndDlqRecords(consumer.poll(Duration.ofSeconds(2)), s7commFeatureTopic,
+                    featureVectorDeserializer, vectorsByEventId, dlqPayloadsByTopic);
+            }
+            // A grace period for the absence checks below.
+            long graceDeadline = System.currentTimeMillis() + 5_000;
+            while (System.currentTimeMillis() < graceDeadline) {
+                collectFeatureAndDlqRecords(consumer.poll(Duration.ofSeconds(1)), s7commFeatureTopic,
+                    featureVectorDeserializer, vectorsByEventId, dlqPayloadsByTopic);
+            }
+
+            assertEquals(Set.of(requestEventId, responseEventId), vectorsByEventId.keySet(),
+                "expected exactly the request's and the response's s7comm vectors within 90s");
+
+            // The request: the frozen contract read back from the wire. 16 is a
+            // literal on purpose, not read from the schema under test.
+            FeatureVector request = vectorsByEventId.get(requestEventId);
+            assertEquals("s7comm-feature-v1", request.schemaId());
+            assertEquals(S7commFeatureSchemaV1.CONTENT_HASH, request.schemaHash());
+            assertEquals(LogType.S7COMM, request.logType());
+            assertEquals(16, request.values().length, "s7comm-feature-v1 is frozen at 16 values");
+            assertEquals("CS7E2E0001", request.connectionUid());
+            assertEquals(QualityFlags.NONE, request.qualityFlags());
+            assertEquals(1f, s7commFeature(request, 0, "s7_outstanding_requests"), "the request counts itself");
+            assertEquals(1f, s7commFeature(request, 12, "is_request_direction"), "is_orig=true: sent to port 102");
+            assertEquals(1f, s7commFeature(request, 14, "s7_rosctr"));
+            assertEquals(4f, s7commFeature(request, 15, "s7_operation"), "\"0x04\" is READ_VAR");
+
+            // The response found its request in the SAME connection state.
+            FeatureVector response = vectorsByEventId.get(responseEventId);
+            assertEquals(16, response.values().length);
+            assertEquals(QualityFlags.NONE, response.qualityFlags(), "it arrived after its request");
+            assertEquals(0f, s7commFeature(response, 12, "is_request_direction"),
+                "is_orig=false: the PLC's reply, not a request");
+            assertEquals(0f, s7commFeature(response, 0, "s7_outstanding_requests"),
+                "the response must clear its request's PDU reference in the same state");
+            assertEquals(1f, s7commFeature(response, 2, "s7_response_match_rate_16"),
+                "the response must match its request");
+            assertEquals(3f, s7commFeature(response, 14, "s7_rosctr"));
+
+            // s7comm's DLQ: exactly the malformed record.
+            List<String> s7commDlq = dlqPayloadsByTopic.getOrDefault(s7commDlqTopic, List.of());
+            assertEquals(1, s7commDlq.size(), "exactly one s7comm dlq record expected, got: " + s7commDlq);
+            assertTrue(s7commDlq.get(0).contains("\"reasonCode\":\"MALFORMED_JSON\""), s7commDlq.get(0));
+            assertTrue(s7commDlq.get(0).contains("\"rawPayloadHash\":\"" + malformedS7Hash + "\""), s7commDlq.get(0));
+
+            // No other protocol's DLQ may receive an s7comm rejection.
+            assertEquals(List.of(), dlqPayloadsByTopic.getOrDefault(connDlqTopic, List.of()));
+            assertEquals(List.of(), dlqPayloadsByTopic.getOrDefault(dnsDlqTopic, List.of()));
+            assertEquals(List.of(), dlqPayloadsByTopic.getOrDefault(modbusDlqTopic, List.of()));
+        }
+    }
+
+    // One s7comm-feature-v1 value by a literal index, checked against the
+    // frozen name at that index (the modbusFeature helper's reasoning).
+    private static float s7commFeature(FeatureVector vector, int index, String name) {
+        assertEquals(name, S7commFeatureSchemaV1.SCHEMA.definitions().get(index).name(),
+            "s7comm-feature-v1 index " + index + " must be " + name);
+        return vector.values()[index];
+    }
+
     // Reads one modbus-feature-v1 value by a literal index, and checks that
     // literal against the name the frozen contract gives it. The index stays a
     // literal on purpose: the upstream contract fixes each position (its
@@ -553,7 +714,7 @@ class OnlineFeatureJobE2ETest {
         });
     }
 
-    // The three-protocol method's own classifier. collectRecords above does
+    // The three- and four-protocol methods' classifier. collectRecords above does
     // not fit it: that helper treats every topic except its one dlq topic as a
     // feature-vector topic, while the three-protocol method subscribes to
     // THREE dlq topics (modbus's, plus conn's and dns's to check they stay
@@ -561,7 +722,7 @@ class OnlineFeatureJobE2ETest {
     // vectorsByEventId, keyed by eventId. Every other subscribed topic is a
     // dlq topic, so its payloads are decoded to text and kept under that
     // topic's own name.
-    private static void collectModbusRecords(ConsumerRecords<byte[], byte[]> records, String modbusFeatureTopic,
+    private static void collectFeatureAndDlqRecords(ConsumerRecords<byte[], byte[]> records, String modbusFeatureTopic,
             FeatureVectorDeserializer featureVectorDeserializer, Map<String, FeatureVector> vectorsByEventId,
             Map<String, List<String>> dlqPayloadsByTopic) {
         records.forEach(record -> {

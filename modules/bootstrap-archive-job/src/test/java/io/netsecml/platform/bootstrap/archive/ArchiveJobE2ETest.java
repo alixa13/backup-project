@@ -13,6 +13,7 @@ import io.netsecml.platform.domain.feature.ConnFeatureSchemaV1;
 import io.netsecml.platform.domain.feature.DnsFeatureSchemaV1;
 import io.netsecml.platform.domain.feature.FeatureVector;
 import io.netsecml.platform.domain.feature.ModbusFeatureSchemaV1;
+import io.netsecml.platform.domain.feature.S7commFeatureSchemaV1;
 import io.netsecml.platform.domain.feature.QualityFlags;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -60,6 +61,17 @@ class ArchiveJobE2ETest {
     private static final String SIX_CHAIN_MODBUS_FEATURE_TOPIC = "six-chain.netsec.modbus.feature-vector.v1";
     private static final String SIX_CHAIN_MODBUS_DLQ_TOPIC = "six-chain.netsec.modbus.dlq.v1";
     private static final String SIX_CHAIN_DATABASE = "archive_e2e_six_chain";
+
+    // The eight-chain method's own topics and database, isolated like the others.
+    private static final String EIGHT_CHAIN_CONN_FEATURE_TOPIC = "eight-chain.netsec.conn.feature-vector.v1";
+    private static final String EIGHT_CHAIN_CONN_DLQ_TOPIC = "eight-chain.netsec.conn.dlq.v1";
+    private static final String EIGHT_CHAIN_DNS_FEATURE_TOPIC = "eight-chain.netsec.dns.feature-vector.v1";
+    private static final String EIGHT_CHAIN_DNS_DLQ_TOPIC = "eight-chain.netsec.dns.dlq.v1";
+    private static final String EIGHT_CHAIN_MODBUS_FEATURE_TOPIC = "eight-chain.netsec.modbus.feature-vector.v1";
+    private static final String EIGHT_CHAIN_MODBUS_DLQ_TOPIC = "eight-chain.netsec.modbus.dlq.v1";
+    private static final String EIGHT_CHAIN_S7COMM_FEATURE_TOPIC = "eight-chain.netsec.s7comm.feature-vector.v1";
+    private static final String EIGHT_CHAIN_S7COMM_DLQ_TOPIC = "eight-chain.netsec.s7comm.dlq.v1";
+    private static final String EIGHT_CHAIN_DATABASE = "archive_e2e_eight_chain";
 
     @Container
     private static final ConfluentKafkaContainer KAFKA =
@@ -115,6 +127,19 @@ class ArchiveJobE2ETest {
             Instant.parse("2026-09-21T08:00:00.750Z"), new SensorId("sensor-eu-1"), LogType.MODBUS, "CmbE2E0001",
             ModbusFeatureSchemaV1.SCHEMA.id(), ModbusFeatureSchemaV1.CONTENT_HASH,
             values, QualityFlags.MODBUS_OUT_OF_ORDER, Instant.parse("2026-09-21T08:00:00.900Z"));
+    }
+
+    // 16 values -- s7comm-feature-v1's frozen width -- with distinctive first
+    // and last values, S7COMM_OUT_OF_ORDER (16, the highest bit so far) and the
+    // s7comm event id shape.
+    private FeatureVector s7commVector() {
+        float[] values = new float[16];
+        values[0] = 1f;
+        values[15] = 41f;
+        return new FeatureVector("sensor-eu-1:CS7E2E0001:7:REQUEST:1790000000500",
+            Instant.parse("2026-09-24T08:00:00.500Z"), new SensorId("sensor-eu-1"), LogType.S7COMM, "CS7E2E0001",
+            S7commFeatureSchemaV1.SCHEMA.id(), S7commFeatureSchemaV1.CONTENT_HASH,
+            values, QualityFlags.S7COMM_OUT_OF_ORDER, Instant.parse("2026-09-24T08:00:00.650Z"));
     }
 
     // Publishes one already-serialized message to the given topic and blocks
@@ -478,6 +503,96 @@ class ArchiveJobE2ETest {
                 assertEquals(1, dnsInvalid.size(), "exactly one dns rejection must reach invalid_events");
                 assertEquals("dns: unexpected end of input", dnsInvalid.get(0).getString("detail"),
                     "detail must name the dns topic's own broken payload, not modbus's");
+            } finally {
+                job.cancel().get();
+            }
+        }
+    }
+
+    // The eight-chain list main() now wires, built through
+    // connDnsModbusAndS7commChains() so a topic bound to the wrong log type in
+    // main()'s own list fails here. Isolated by its own database and topics.
+    @Test
+    void eightChainsFromMainWriteAnS7commFeatureVectorAndRejectionUnderTheS7commLogType() throws Exception {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+
+        // s7comm's two records: a map-stage rejection carries the
+        // sensor:uid:pdu_reference correlation id.
+        produce(EIGHT_CHAIN_S7COMM_FEATURE_TOPIC,
+            new FeatureVectorSerializer().serialize(EIGHT_CHAIN_S7COMM_FEATURE_TOPIC, s7commVector()));
+        produce(EIGHT_CHAIN_S7COMM_DLQ_TOPIC, new RejectedRecordSerializer().serialize(EIGHT_CHAIN_S7COMM_DLQ_TOPIC,
+            new RejectedRecordPayload("{\"uid\":\"CS7E2E0001\",\"pdu_reference\":8}".getBytes(StandardCharsets.UTF_8),
+                "sensor-eu-1:CS7E2E0001:8", "MAP", "MISSING_REQUIRED_FIELD",
+                "s7comm: endpoints are required: neither source/destination nor id orig/resp is complete", now)));
+
+        // One record on each of the other six topics: every source's topic must
+        // exist when the job starts, and each protocol must still get exactly
+        // its own row with s7comm's chains in the same job.
+        produce(EIGHT_CHAIN_CONN_FEATURE_TOPIC,
+            new FeatureVectorSerializer().serialize(EIGHT_CHAIN_CONN_FEATURE_TOPIC, vector()));
+        produce(EIGHT_CHAIN_DNS_FEATURE_TOPIC,
+            new FeatureVectorSerializer().serialize(EIGHT_CHAIN_DNS_FEATURE_TOPIC, dnsVector()));
+        produce(EIGHT_CHAIN_MODBUS_FEATURE_TOPIC,
+            new FeatureVectorSerializer().serialize(EIGHT_CHAIN_MODBUS_FEATURE_TOPIC, modbusVector()));
+        produce(EIGHT_CHAIN_CONN_DLQ_TOPIC, new RejectedRecordSerializer().serialize(EIGHT_CHAIN_CONN_DLQ_TOPIC,
+            new RejectedRecordPayload("{ conn broken".getBytes(StandardCharsets.UTF_8), "",
+                "PARSE", "MALFORMED_JSON", "conn: unexpected end of input", now)));
+        produce(EIGHT_CHAIN_DNS_DLQ_TOPIC, new RejectedRecordSerializer().serialize(EIGHT_CHAIN_DNS_DLQ_TOPIC,
+            new RejectedRecordPayload("{ dns broken".getBytes(StandardCharsets.UTF_8), "",
+                "PARSE", "MALFORMED_JSON", "dns: unexpected end of input", now)));
+        produce(EIGHT_CHAIN_MODBUS_DLQ_TOPIC, new RejectedRecordSerializer().serialize(EIGHT_CHAIN_MODBUS_DLQ_TOPIC,
+            new RejectedRecordPayload("{ modbus broken".getBytes(StandardCharsets.UTF_8), "",
+                "PARSE", "MALFORMED_JSON", "modbus: unexpected end of input", now)));
+
+        try (Client query = ClickHouseTestSupport.freshDatabase(CLICKHOUSE, EIGHT_CHAIN_DATABASE)) {
+            ClickHouseConfig config = ClickHouseConfig.of(CLICKHOUSE.getHost(),
+                CLICKHOUSE.getMappedPort(ClickHouseTestSupport.HTTP_PORT), EIGHT_CHAIN_DATABASE, "default",
+                ClickHouseTestSupport.PASSWORD);
+
+            StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+            env.setParallelism(1);
+            env.enableCheckpointing(1_000L);
+            ArchiveJob.build(env, KAFKA.getBootstrapServers(),
+                ArchiveJob.connDnsModbusAndS7commChains(EIGHT_CHAIN_CONN_FEATURE_TOPIC, EIGHT_CHAIN_CONN_DLQ_TOPIC,
+                    EIGHT_CHAIN_DNS_FEATURE_TOPIC, EIGHT_CHAIN_DNS_DLQ_TOPIC,
+                    EIGHT_CHAIN_MODBUS_FEATURE_TOPIC, EIGHT_CHAIN_MODBUS_DLQ_TOPIC,
+                    EIGHT_CHAIN_S7COMM_FEATURE_TOPIC, EIGHT_CHAIN_S7COMM_DLQ_TOPIC),
+                config);
+
+            JobClient job = env.executeAsync("archive-job-e2e-eight-chain-test");
+            try {
+                List<GenericRecord> s7commFeatures = awaitRows(query,
+                    "SELECT event_id, connection_uid, schema_id, schema_hash, length(`values`) AS n, "
+                        + "`values`[1] AS first, `values`[16] AS last, quality_flags FROM feature_vectors "
+                        + "WHERE log_type = 's7comm'");
+                assertEquals(1, s7commFeatures.size(), "exactly one s7comm feature vector must reach feature_vectors");
+                assertEquals("sensor-eu-1:CS7E2E0001:7:REQUEST:1790000000500",
+                    s7commFeatures.get(0).getString("event_id"));
+                assertEquals("CS7E2E0001", s7commFeatures.get(0).getString("connection_uid"));
+                assertEquals(S7commFeatureSchemaV1.SCHEMA.id(), s7commFeatures.get(0).getString("schema_id"));
+                assertEquals(S7commFeatureSchemaV1.CONTENT_HASH, s7commFeatures.get(0).getString("schema_hash"));
+                assertEquals(16, s7commFeatures.get(0).getInteger("n"), "all 16 values must survive");
+                assertEquals(1f, s7commFeatures.get(0).getFloat("first"), 0.0001f);
+                assertEquals(41f, s7commFeatures.get(0).getFloat("last"), 0.0001f,
+                    "the 16th value, not only the first: a vector cut to another schema's width would pass that");
+                assertEquals(QualityFlags.S7COMM_OUT_OF_ORDER, s7commFeatures.get(0).getInteger("quality_flags"));
+
+                List<GenericRecord> s7commInvalid = awaitRows(query,
+                    "SELECT event_id, source_version, stage, reason_code FROM invalid_events "
+                        + "WHERE log_type = 's7comm'");
+                assertEquals(1, s7commInvalid.size(), "exactly one s7comm rejection must reach invalid_events");
+                assertEquals("sensor-eu-1:CS7E2E0001:8", s7commInvalid.get(0).getString("event_id"));
+                assertEquals("zeek-s7comm-source-v1", s7commInvalid.get(0).getString("source_version"));
+                assertEquals("MAP", s7commInvalid.get(0).getString("stage"));
+                assertEquals("MISSING_REQUIRED_FIELD", s7commInvalid.get(0).getString("reason_code"));
+
+                // Each other protocol still lands exactly one row per table.
+                for (String logType : List.of("conn", "dns", "modbus")) {
+                    assertEquals(1, awaitRows(query,
+                        "SELECT event_id FROM feature_vectors WHERE log_type = '" + logType + "'").size(), logType);
+                    assertEquals(1, awaitRows(query,
+                        "SELECT detail FROM invalid_events WHERE log_type = '" + logType + "'").size(), logType);
+                }
             } finally {
                 job.cancel().get();
             }

@@ -12,6 +12,7 @@ import io.netsecml.platform.domain.event.SensorId;
 import io.netsecml.platform.domain.feature.ConnFeatureSchemaV1;
 import io.netsecml.platform.domain.feature.DnsFeatureSchemaV1;
 import io.netsecml.platform.domain.feature.FeatureVector;
+import io.netsecml.platform.domain.feature.ModbusFeatureSchemaV1;
 import io.netsecml.platform.domain.feature.QualityFlags;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -50,6 +51,16 @@ class ArchiveJobE2ETest {
     private static final String FOUR_CHAIN_DNS_DLQ_TOPIC = "four-chain.netsec.dns.dlq.v1";
     private static final String FOUR_CHAIN_DATABASE = "archive_e2e_four_chain";
 
+    // A third isolated set of topics and database, for the six-chain method
+    // below, for the same reason as the four-chain set above.
+    private static final String SIX_CHAIN_CONN_FEATURE_TOPIC = "six-chain.netsec.conn.feature-vector.v1";
+    private static final String SIX_CHAIN_CONN_DLQ_TOPIC = "six-chain.netsec.conn.dlq.v1";
+    private static final String SIX_CHAIN_DNS_FEATURE_TOPIC = "six-chain.netsec.dns.feature-vector.v1";
+    private static final String SIX_CHAIN_DNS_DLQ_TOPIC = "six-chain.netsec.dns.dlq.v1";
+    private static final String SIX_CHAIN_MODBUS_FEATURE_TOPIC = "six-chain.netsec.modbus.feature-vector.v1";
+    private static final String SIX_CHAIN_MODBUS_DLQ_TOPIC = "six-chain.netsec.modbus.dlq.v1";
+    private static final String SIX_CHAIN_DATABASE = "archive_e2e_six_chain";
+
     @Container
     private static final ConfluentKafkaContainer KAFKA =
         new ConfluentKafkaContainer("confluentinc/cp-kafka:7.6.1")
@@ -87,6 +98,23 @@ class ArchiveJobE2ETest {
             new SensorId("sensor-eu-1"), LogType.DNS, "Cdns005ZEK",
             DnsFeatureSchemaV1.SCHEMA.id(), DnsFeatureSchemaV1.CONTENT_HASH,
             values, QualityFlags.CONN_ENRICHMENT_ABSENT, Instant.parse("2026-08-27T10:05:00.650Z"));
+    }
+
+    // 42 values -- modbus-feature-v1's frozen width, which carries no common
+    // tier -- so the row matches what a real modbus vector carries. The first
+    // and last values are both distinctive, so the assertions prove the whole
+    // array survived. quality_flags is MODBUS_OUT_OF_ORDER, modbus's own bit
+    // (value 4, above both earlier bits), so a round trip that dropped or
+    // masked it would fail. The event id has modbus's
+    // sensor:uid:tid:direction:ts_millis shape.
+    private FeatureVector modbusVector() {
+        float[] values = new float[42];
+        values[0] = 1f;
+        values[41] = 0.75f;
+        return new FeatureVector("sensor-eu-1:CmbE2E0001:17:RESPONSE:1789977600750",
+            Instant.parse("2026-09-21T08:00:00.750Z"), new SensorId("sensor-eu-1"), LogType.MODBUS, "CmbE2E0001",
+            ModbusFeatureSchemaV1.SCHEMA.id(), ModbusFeatureSchemaV1.CONTENT_HASH,
+            values, QualityFlags.MODBUS_OUT_OF_ORDER, Instant.parse("2026-09-21T08:00:00.900Z"));
     }
 
     // Publishes one already-serialized message to the given topic and blocks
@@ -188,14 +216,17 @@ class ArchiveJobE2ETest {
         }
     }
 
-    // Roadmap Day 6, test 2: main()'s own four-chain list -- conn's feature
+    // Roadmap Day 6, test 2: the two-protocol four-chain list -- conn's feature
     // vector and DLQ chains plus dns's -- built through connAndDnsChains()
-    // rather than hand-copied, so this test fails if main() ever binds one of
-    // these four topics to the wrong log type. Isolated from the method above
-    // by its own database and topic names, since KAFKA and CLICKHOUSE are
-    // static @Container fields shared by every method in this class.
+    // rather than hand-copied, so this test fails if that method ever binds
+    // one of these four topics to the wrong log type. main() called
+    // connAndDnsChains() until modbus was wired; it now calls
+    // connDnsAndModbusChains(), which the six-chain method below builds
+    // through. Isolated from the method above by its own database and topic
+    // names, since KAFKA and CLICKHOUSE are static @Container fields shared by
+    // every method in this class.
     @Test
-    void fourChainsFromMainWriteConnAndDnsFeatureVectorsAndRejectionsUnderTheirOwnLogType() throws Exception {
+    void connAndDnsChainsWriteFeatureVectorsAndRejectionsUnderTheirOwnLogType() throws Exception {
         // One timestamp for both rejections below. invalid_events has a 30-day
         // TTL on received_at, so "now" keeps this test from expiring the way a
         // fixed past date eventually would.
@@ -224,9 +255,9 @@ class ArchiveJobE2ETest {
             // A short checkpoint interval keeps the test's flush latency low;
             // production uses 30 s.
             env.enableCheckpointing(1_000L);
-            // Built through connAndDnsChains() -- the exact method main() calls --
-            // rather than a hand-assembled list, so a chain bound to the wrong
-            // log type inside main() itself would fail this test too.
+            // Built through connAndDnsChains() rather than a hand-assembled
+            // list, so a chain that method binds to the wrong log type would
+            // fail this test too.
             ArchiveJob.build(env, KAFKA.getBootstrapServers(),
                 ArchiveJob.connAndDnsChains(FOUR_CHAIN_CONN_FEATURE_TOPIC, FOUR_CHAIN_CONN_DLQ_TOPIC,
                     FOUR_CHAIN_DNS_FEATURE_TOPIC, FOUR_CHAIN_DNS_DLQ_TOPIC),
@@ -300,6 +331,153 @@ class ArchiveJobE2ETest {
                     "detail must name the conn topic's own broken payload, not dns's");
                 assertEquals("zeek-conn-source-v1", connInvalid.get(0).getString("source_version"),
                     "source_version must name the conn source contract, not dns's");
+            } finally {
+                job.cancel().get();
+            }
+        }
+    }
+
+    // Roadmap Day 6, test 3: the six-chain list main() wires now -- conn's,
+    // dns's and modbus's feature-vector and DLQ chains -- built through
+    // connDnsAndModbusChains(), the method ArchiveJob.main() calls, so this
+    // test fails if main()'s own list binds a modbus topic to the wrong log
+    // type. A new method rather than a change to the four-chain one above,
+    // which keeps proving connAndDnsChains() unchanged. Isolated from both
+    // methods above by its own database and topic names.
+    @Test
+    void sixChainsFromMainWriteAModbusFeatureVectorAndRejectionUnderTheModbusLogType() throws Exception {
+        // One timestamp for all three rejections below. invalid_events has a
+        // 30-day TTL on received_at, so "now" keeps this test from expiring
+        // the way a fixed past date eventually would.
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+
+        // modbus's two records, which is what this method is about. The
+        // rejection is a MAP-stage one, as the online job's modbus parse stage
+        // writes it: its event_id is sensor:uid:tid only, a correlation key
+        // rather than the sensor:uid:tid:direction:ts_millis id a successfully
+        // mapped modbus record gets -- a map-stage rejection may be about
+        // exactly the direction or the timestamp.
+        produce(SIX_CHAIN_MODBUS_FEATURE_TOPIC,
+            new FeatureVectorSerializer().serialize(SIX_CHAIN_MODBUS_FEATURE_TOPIC, modbusVector()));
+        produce(SIX_CHAIN_MODBUS_DLQ_TOPIC, new RejectedRecordSerializer().serialize(SIX_CHAIN_MODBUS_DLQ_TOPIC,
+            new RejectedRecordPayload("{\"uid\":\"CmbE2E0001\",\"tid\":18}".getBytes(StandardCharsets.UTF_8),
+                "sensor-eu-1:CmbE2E0001:18", "MAP", "MISSING_REQUIRED_FIELD",
+                "modbus: direction is required: neither request_response nor is_orig resolved", now)));
+
+        // conn's and dns's four records. All six sources need their topic to
+        // exist when the job starts -- a KafkaSource subscribed to a missing
+        // topic fails its enumerator -- and publishing to a topic is how the
+        // four-chain method above makes its topics exist too. Publishing
+        // them also lets this method check that conn and dns each still get
+        // exactly their own rows with modbus's chains in the same job.
+        produce(SIX_CHAIN_CONN_FEATURE_TOPIC,
+            new FeatureVectorSerializer().serialize(SIX_CHAIN_CONN_FEATURE_TOPIC, vector()));
+        produce(SIX_CHAIN_DNS_FEATURE_TOPIC,
+            new FeatureVectorSerializer().serialize(SIX_CHAIN_DNS_FEATURE_TOPIC, dnsVector()));
+        produce(SIX_CHAIN_CONN_DLQ_TOPIC, new RejectedRecordSerializer().serialize(SIX_CHAIN_CONN_DLQ_TOPIC,
+            new RejectedRecordPayload("{ conn broken".getBytes(StandardCharsets.UTF_8), "",
+                "PARSE", "MALFORMED_JSON", "conn: unexpected end of input", now)));
+        produce(SIX_CHAIN_DNS_DLQ_TOPIC, new RejectedRecordSerializer().serialize(SIX_CHAIN_DNS_DLQ_TOPIC,
+            new RejectedRecordPayload("{ dns broken".getBytes(StandardCharsets.UTF_8), "",
+                "PARSE", "MALFORMED_JSON", "dns: unexpected end of input", now)));
+
+        try (Client query = ClickHouseTestSupport.freshDatabase(CLICKHOUSE, SIX_CHAIN_DATABASE)) {
+            ClickHouseConfig config = ClickHouseConfig.of(CLICKHOUSE.getHost(),
+                CLICKHOUSE.getMappedPort(ClickHouseTestSupport.HTTP_PORT), SIX_CHAIN_DATABASE, "default",
+                ClickHouseTestSupport.PASSWORD);
+
+            StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+            env.setParallelism(1);
+            // A short checkpoint interval keeps the test's flush latency low;
+            // production uses 30 s.
+            env.enableCheckpointing(1_000L);
+            // Built through connDnsAndModbusChains() -- the exact method main()
+            // calls -- rather than a hand-assembled list, so a chain bound to
+            // the wrong log type inside main() itself would fail this test too.
+            ArchiveJob.build(env, KAFKA.getBootstrapServers(),
+                ArchiveJob.connDnsAndModbusChains(SIX_CHAIN_CONN_FEATURE_TOPIC, SIX_CHAIN_CONN_DLQ_TOPIC,
+                    SIX_CHAIN_DNS_FEATURE_TOPIC, SIX_CHAIN_DNS_DLQ_TOPIC,
+                    SIX_CHAIN_MODBUS_FEATURE_TOPIC, SIX_CHAIN_MODBUS_DLQ_TOPIC),
+                config);
+
+            // executeAsync returns a JobClient immediately — no helper thread needed.
+            JobClient job = env.executeAsync("archive-job-e2e-six-chain-test");
+            try {
+                // Every query below filters on log_type, for the same reason as
+                // in the four-chain method above: awaitRows returns on the
+                // first non-empty result.
+                List<GenericRecord> modbusFeatures = awaitRows(query,
+                    "SELECT event_id, connection_uid, schema_id, schema_hash, length(`values`) AS n, "
+                        + "`values`[1] AS first, `values`[42] AS last, quality_flags FROM feature_vectors "
+                        + "WHERE log_type = 'modbus'");
+
+                assertEquals(1, modbusFeatures.size(), "exactly one modbus feature vector must reach feature_vectors");
+                assertEquals("sensor-eu-1:CmbE2E0001:17:RESPONSE:1789977600750",
+                    modbusFeatures.get(0).getString("event_id"),
+                    "the modbus vector's event_id must survive the round trip");
+                assertEquals("CmbE2E0001", modbusFeatures.get(0).getString("connection_uid"),
+                    "connection_uid must carry the modbus record's own Zeek uid");
+                assertEquals(ModbusFeatureSchemaV1.SCHEMA.id(), modbusFeatures.get(0).getString("schema_id"),
+                    "schema_id must identify the modbus schema");
+                assertEquals(ModbusFeatureSchemaV1.CONTENT_HASH, modbusFeatures.get(0).getString("schema_hash"),
+                    "schema_hash must match the frozen modbus-feature-v1 hash");
+                assertEquals(42, modbusFeatures.get(0).getInteger("n"), "all 42 modbus values must survive the round trip");
+                assertEquals(1f, modbusFeatures.get(0).getFloat("first"), 0.0001f,
+                    "the first of the 42 values must survive the round trip");
+                // The 42nd value, not just the 1st: a vector cut down to dns's
+                // 24 or conn's 20 values would still pass the "first" check.
+                assertEquals(0.75f, modbusFeatures.get(0).getFloat("last"), 0.0001f,
+                    "the last of the 42 values must survive, not just the first");
+                assertEquals(QualityFlags.MODBUS_OUT_OF_ORDER, modbusFeatures.get(0).getInteger("quality_flags"),
+                    "modbus's own quality flag bit must survive the round trip");
+
+                List<GenericRecord> modbusInvalid = awaitRows(query,
+                    "SELECT event_id, detail, source_version, stage, reason_code FROM invalid_events "
+                        + "WHERE log_type = 'modbus'");
+
+                // invalid_events.log_type comes from the topic binding, not from
+                // the record (dlq-v1 carries no protocol field), so this row
+                // exists under 'modbus' only if main()'s list binds the modbus
+                // DLQ topic to LogType.MODBUS.
+                assertEquals(1, modbusInvalid.size(), "exactly one modbus rejection must reach invalid_events");
+                assertEquals("sensor-eu-1:CmbE2E0001:18", modbusInvalid.get(0).getString("event_id"),
+                    "a modbus map-stage rejection's sensor:uid:tid event_id must survive the round trip");
+                assertEquals("modbus: direction is required: neither request_response nor is_orig resolved",
+                    modbusInvalid.get(0).getString("detail"),
+                    "detail must name the modbus topic's own rejection");
+                assertEquals("zeek-modbus-source-v1", modbusInvalid.get(0).getString("source_version"),
+                    "source_version must name the modbus source contract");
+                assertEquals("MAP", modbusInvalid.get(0).getString("stage"),
+                    "stage must be derived from MISSING_REQUIRED_FIELD as MAP");
+                assertEquals("MISSING_REQUIRED_FIELD", modbusInvalid.get(0).getString("reason_code"),
+                    "reason_code must survive the round trip");
+
+                // conn and dns still land exactly one row each, per table, under
+                // their own log type -- so neither of modbus's chains wrote
+                // into theirs.
+                List<GenericRecord> connFeatures = awaitRows(query,
+                    "SELECT event_id FROM feature_vectors WHERE log_type = 'conn'");
+                assertEquals(1, connFeatures.size(), "exactly one conn feature vector must reach feature_vectors");
+                assertEquals("sensor-eu-1:Cabc123XYZ", connFeatures.get(0).getString("event_id"),
+                    "conn's event_id must be unaffected by the modbus chains sharing this job");
+
+                List<GenericRecord> dnsFeatures = awaitRows(query,
+                    "SELECT event_id FROM feature_vectors WHERE log_type = 'dns'");
+                assertEquals(1, dnsFeatures.size(), "exactly one dns feature vector must reach feature_vectors");
+                assertEquals("sensor-eu-1:Cdns005ZEK:4242", dnsFeatures.get(0).getString("event_id"),
+                    "dns's event_id must be unaffected by the modbus chains sharing this job");
+
+                List<GenericRecord> connInvalid = awaitRows(query,
+                    "SELECT detail FROM invalid_events WHERE log_type = 'conn'");
+                assertEquals(1, connInvalid.size(), "exactly one conn rejection must reach invalid_events");
+                assertEquals("conn: unexpected end of input", connInvalid.get(0).getString("detail"),
+                    "detail must name the conn topic's own broken payload, not modbus's");
+
+                List<GenericRecord> dnsInvalid = awaitRows(query,
+                    "SELECT detail FROM invalid_events WHERE log_type = 'dns'");
+                assertEquals(1, dnsInvalid.size(), "exactly one dns rejection must reach invalid_events");
+                assertEquals("dns: unexpected end of input", dnsInvalid.get(0).getString("detail"),
+                    "detail must name the dns topic's own broken payload, not modbus's");
             } finally {
                 job.cancel().get();
             }

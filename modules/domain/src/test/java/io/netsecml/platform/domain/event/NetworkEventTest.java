@@ -112,9 +112,11 @@ class NetworkEventTest {
     // exhaustive with a single case. DnsEvent joining permits broke this exact
     // switch at compile time -- one of the four sites the sealed hierarchy's
     // exhaustiveness alarm flagged (see NetworkEvent's javadoc) -- and it is
-    // fixed here with an explicit case DnsEvent arm, never a default. The test
-    // now exercises both branches so it proves the switch handles either shape,
-    // not merely that it compiles.
+    // fixed here with an explicit case DnsEvent arm, never a default. ModbusEvent
+    // joining permits later broke it again -- one of the nine sites that round's
+    // javadoc update names -- fixed the same way with an explicit case
+    // ModbusEvent arm. The test now exercises all three branches so it proves
+    // the switch handles each shape, not merely that it compiles.
     @Test
     void aSwitchOverTheHierarchyIsExhaustiveWithoutADefaultBranch() {
         NetworkEvent connEvent = new ConnEvent(
@@ -127,16 +129,32 @@ class NetworkEventTest {
                 Instant.parse("2026-09-11T10:00:00Z"), new SensorId("s"), LogType.DNS, "D"),
             new DnsQuery("example.com", DnsQType.A, 1, DnsQType.A.code()), null, "10.0.0.5", true, null);
 
+        Instant modbusEventTime = Instant.parse("2026-09-11T10:00:00Z");
+        NetworkEvent modbusEvent = new ModbusEvent(
+            new EventEnvelope(EventId.derive(new SensorId("s"), "M"),
+                modbusEventTime, new SensorId("s"), LogType.MODBUS, "M"),
+            modbusEventTime.getEpochSecond() + modbusEventTime.getNano() / 1_000_000_000.0,
+            ModbusEvent.ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.6", 3, "1", "1",
+            null, null, false, new double[0], new double[0]);
+
         String describedConn = switch (connEvent) {
             case ConnEvent conn -> "conn:" + conn.connection().sourceIp();
             case DnsEvent dns -> "dns:" + dns.sourceIp();
+            case ModbusEvent modbus -> "modbus:" + modbus.sourceIp();
         };
         String describedDns = switch (dnsEvent) {
             case ConnEvent conn -> "conn:" + conn.connection().sourceIp();
             case DnsEvent dns -> "dns:" + dns.sourceIp();
+            case ModbusEvent modbus -> "modbus:" + modbus.sourceIp();
+        };
+        String describedModbus = switch (modbusEvent) {
+            case ConnEvent conn -> "conn:" + conn.connection().sourceIp();
+            case DnsEvent dns -> "dns:" + dns.sourceIp();
+            case ModbusEvent modbus -> "modbus:" + modbus.sourceIp();
         };
 
         assertTrue(describedConn.startsWith("conn:"));
         assertTrue(describedDns.startsWith("dns:"));
+        assertTrue(describedModbus.startsWith("modbus:"));
     }
 }

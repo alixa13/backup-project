@@ -3,6 +3,7 @@ package io.netsecml.platform.adapter.flink.process;
 import io.netsecml.platform.application.feature.ConnSnapshots;
 import io.netsecml.platform.domain.event.ConnEvent;
 import io.netsecml.platform.domain.event.DnsEvent;
+import io.netsecml.platform.domain.event.ModbusEvent;
 import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.feature.ConnSnapshot;
 import org.apache.flink.api.common.functions.FlatMapFunction;
@@ -49,6 +50,14 @@ public final class ConnSnapshotExtractFunction implements FlatMapFunction<Networ
                 "ConnSnapshotExtractFunction received a DnsEvent; this operator sits only on the conn.log "
                 + "chain (docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md section "
                 + "6.2) and this is a wiring error, not a runtime condition");
+            // Same rule, for modbus: it has its own Flink operator, keyed
+            // state, topics and DLQ (docs/superpowers/specs/2026-09-21-modbus-
+            // stage1-design.md section 10), never routed through this
+            // conn.log-only extractor, so reaching here is a wiring error too.
+            case ModbusEvent ignored -> throw new IllegalStateException(
+                "ConnSnapshotExtractFunction received a ModbusEvent; the modbus chain is separate by design "
+                + "(docs/superpowers/specs/2026-09-21-modbus-stage1-design.md section 10) "
+                + "and this is a wiring error, not a runtime condition");
         }
     }
 }

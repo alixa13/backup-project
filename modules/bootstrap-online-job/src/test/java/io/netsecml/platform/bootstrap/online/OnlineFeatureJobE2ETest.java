@@ -5,9 +5,13 @@ import io.netsecml.platform.domain.event.LogType;
 import io.netsecml.platform.domain.event.SensorId;
 import io.netsecml.platform.domain.feature.DnsFeatureSchemaV1;
 import io.netsecml.platform.domain.feature.FeatureVector;
+import io.netsecml.platform.domain.feature.ModbusFeatureSchemaV1;
 import io.netsecml.platform.domain.feature.QualityFlags;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.AdminClientConfig;
+import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
@@ -26,12 +30,15 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -279,7 +286,247 @@ class OnlineFeatureJobE2ETest {
         }
     }
 
-    // Reads one committed fixture's raw bytes for the two-protocol method below to
+    // Drives OnlineFeatureJob's three-protocol build() overload -- the one
+    // main() calls -- against a real broker. Neither method above submits it:
+    // one builds the conn-only overload, the other the two-protocol one. So
+    // nothing before this test had run modbus's chain, its keyed entity state,
+    // or its dlq sink against Kafka.
+    //
+    // This is also the end-to-end proof that a modbus response finds its own
+    // request. Zeek's id_orig_h/id_resp_h describe the CONNECTION, not the
+    // packet, so the request and the response below carry the SAME pair, as
+    // the sensor emits them. Only request_response tells the two apart.
+    // ModbusEventMapper has to orient that pair by direction before
+    // ModbusEntityKey keys it (see the mapper's resolvePerPacketEndpoints). If
+    // it did not, the response would be keyed as client 10.0.0.9, server
+    // 10.0.0.5 -- a different state bucket from its request's -- and it would
+    // arrive with rtt_valid 0 and response_without_request 1. A fixture that
+    // swapped the IPs on the response would hide exactly that failure, which
+    // is why neither record here swaps them.
+    @Test
+    void threeProtocolJobMatchesAModbusResponseToItsRequestAndRoutesMalformedModbusToItsOwnDlq() throws Exception {
+        kafka.start();
+        String bootstrapServers = kafka.getBootstrapServers();
+
+        String connInputTopic = "netsec.conn.raw.v1";
+        String connFeatureTopic = "netsec.conn.feature-vector.v1";
+        String connDlqTopic = "netsec.conn.dlq.v1";
+        String dnsInputTopic = "netsec.dns.raw.v1";
+        String dnsFeatureTopic = "netsec.dns.feature-vector.v1";
+        String dnsDlqTopic = "netsec.dns.dlq.v1";
+        String modbusInputTopic = "netsec.modbus.raw.v1";
+        String modbusFeatureTopic = "netsec.modbus.feature-vector.v1";
+        String modbusDlqTopic = "netsec.modbus.dlq.v1";
+
+        // Every input topic must exist before the job is submitted. A
+        // KafkaSource subscribed to a topic that does not exist yet fails its
+        // enumerator (see the two-protocol method above), and all three
+        // protocols share this one environment. Nothing is published to conn's
+        // or dns's input, so their topics are created here directly rather
+        // than by publishing a record to them. Keeping those two inputs empty
+        // is what lets the dlq check below expect conn's and dns's dlq to stay
+        // EMPTY, not merely free of one particular record. Those two dlq
+        // topics are created now as well, so the consumer below is assigned
+        // them from its first poll. modbus's input gets exactly one partition,
+        // so the request is delivered before its response. That is the per-key
+        // order a production sensor has to provide by partitioning on
+        // (client, server).
+        try (Admin admin = Admin.create(Map.<String, Object>of(
+                AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers))) {
+            admin.createTopics(List.of(
+                new NewTopic(connInputTopic, 1, (short) 1),
+                new NewTopic(dnsInputTopic, 1, (short) 1),
+                new NewTopic(modbusInputTopic, 1, (short) 1),
+                new NewTopic(connDlqTopic, 1, (short) 1),
+                new NewTopic(dnsDlqTopic, 1, (short) 1))).all().get(60, TimeUnit.SECONDS);
+        }
+
+        // One Modbus/TCP transaction, shaped as ICSNPP's modbus_detailed.log
+        // emits it. Both records carry the same uid, tid and unit, and the SAME
+        // connection-level endpoints, with the client (10.0.0.5) as id_orig_h
+        // on both. The endpoints are one shared string, so the two records
+        // cannot drift apart on them. Direction comes only from
+        // request_response: neither record carries is_orig. The response is
+        // 0.25 s after the request. Both timestamps and their difference are
+        // exact in binary floating point, so rtt_s can be checked exactly.
+        String connectionEndpoints =
+            "\"id_orig_h\":\"10.0.0.5\",\"id_orig_p\":50001,\"id_resp_h\":\"10.0.0.9\",\"id_resp_p\":502,";
+        String requestJson = "{\"ts\":1789977600.5,\"uid\":\"CmbE2E0001\"," + connectionEndpoints
+            + "\"request_response\":\"REQUEST\",\"tid\":17,\"unit\":1,\"func\":\"READ_HOLDING_REGISTERS\","
+            + "\"address\":40001,\"quantity\":2,\"request_values\":[],\"response_values\":[]}";
+        String responseJson = "{\"ts\":1789977600.75,\"uid\":\"CmbE2E0001\"," + connectionEndpoints
+            + "\"request_response\":\"RESPONSE\",\"tid\":17,\"unit\":1,\"func\":\"READ_HOLDING_REGISTERS\","
+            + "\"address\":40001,\"quantity\":2,\"matched\":true,\"request_values\":[],\"response_values\":[7,9]}";
+        float publishedGapSeconds = 0.25f;
+
+        // Cut off mid-object, so it fails at the parse stage as MALFORMED_JSON.
+        // The dlq carries only a SHA-256 of the raw bytes (never the bytes),
+        // so the hash is how the check below tells this record apart.
+        byte[] malformedModbus = "{ \"uid\": \"CmbBroken\", \"ts\": 1789977601.0, \"id_orig_h\": \"10.0.0.5\""
+            .getBytes(StandardCharsets.UTF_8);
+        String malformedModbusHash =
+            HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(malformedModbus));
+
+        // Published in this order before the job starts, so the source reads
+        // all three from the beginning of the log: the request, then its
+        // response, then the malformed record.
+        Properties producerProps = new Properties();
+        producerProps.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        producerProps.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
+        producerProps.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
+        try (KafkaProducer<byte[], byte[]> producer = new KafkaProducer<>(producerProps)) {
+            producer.send(new ProducerRecord<>(modbusInputTopic, requestJson.getBytes(StandardCharsets.UTF_8))).get();
+            producer.send(new ProducerRecord<>(modbusInputTopic, responseJson.getBytes(StandardCharsets.UTF_8))).get();
+            producer.send(new ProducerRecord<>(modbusInputTopic, malformedModbus)).get();
+        }
+
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        OnlineFeatureJob.build(env, bootstrapServers,
+            new OnlineFeatureJob.ProtocolTopics(connInputTopic, connFeatureTopic, connDlqTopic),
+            new OnlineFeatureJob.ProtocolTopics(dnsInputTopic, dnsFeatureTopic, dnsDlqTopic),
+            new OnlineFeatureJob.ProtocolTopics(modbusInputTopic, modbusFeatureTopic, modbusDlqTopic),
+            new SensorId("sensor-eu-1"));
+
+        // Submitted on the test thread itself -- see the comment on the same call
+        // in connFixtureFlowsToFeatureVectorTopic above.
+        JobClient job = env.executeAsync("three-protocol-online-job-e2e-test");
+
+        Properties consumerProps = new Properties();
+        consumerProps.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
+        consumerProps.put(ConsumerConfig.GROUP_ID_CONFIG, "three-protocol-e2e-test-reader");
+        consumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        // byte[] values, for the same reason as the two-protocol method above:
+        // FeatureVectorDeserializer takes the raw bytes.
+        consumerProps.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
+        consumerProps.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
+
+        FeatureVectorDeserializer featureVectorDeserializer = new FeatureVectorDeserializer();
+        Map<String, FeatureVector> modbusVectorsByEventId = new HashMap<>();
+        Map<String, List<String>> dlqPayloadsByTopic = new HashMap<>();
+
+        // modbus event identity is sensor:uid:tid:direction:ts_millis (see
+        // ModbusEventMapper), so the request and its response get distinct ids
+        // even though they share uid and tid.
+        String requestEventId = "sensor-eu-1:CmbE2E0001:17:REQUEST:1789977600500";
+        String responseEventId = "sensor-eu-1:CmbE2E0001:17:RESPONSE:1789977600750";
+
+        // cancelJob is declared before consumer so try-with-resources closes it LAST (resources close in
+        // the reverse of their declaration order): the consumer stops reading before the job it reads
+        // from is cancelled. An AutoCloseable rather than a plain try/finally so a cancellation failure
+        // is recorded as a suppressed exception instead of masking an assertion failure from the body.
+        try (AutoCloseable cancelJob = () -> job.cancel().get(60, TimeUnit.SECONDS);
+             Consumer<byte[], byte[]> consumer = new KafkaConsumer<>(consumerProps)) {
+            consumer.subscribe(List.of(modbusFeatureTopic, modbusDlqTopic, connDlqTopic, dnsDlqTopic));
+
+            // Wait for both modbus vectors and the modbus dlq record. 90 s
+            // rather than the 60 s the methods above allow: this is the largest
+            // topology this class submits (three sources, three chains), and
+            // the wait includes the job's own start-up.
+            long deadline = System.currentTimeMillis() + 90_000;
+            while ((!modbusVectorsByEventId.containsKey(requestEventId)
+                        || !modbusVectorsByEventId.containsKey(responseEventId)
+                        || dlqPayloadsByTopic.getOrDefault(modbusDlqTopic, List.of()).isEmpty())
+                    && System.currentTimeMillis() < deadline) {
+                collectModbusRecords(consumer.poll(Duration.ofSeconds(2)), modbusFeatureTopic,
+                    featureVectorDeserializer, modbusVectorsByEventId, dlqPayloadsByTopic);
+            }
+
+            // Keep reading for a short grace period after that. The checks for
+            // conn's and dns's dlq below are checks for ABSENCE, and a
+            // misrouted copy of the modbus rejection would be written by a
+            // different sink running alongside modbus's own, so it could land a
+            // moment after modbus's copy. This bounds the absence check in
+            // time; it cannot prove nothing arrives later.
+            long graceDeadline = System.currentTimeMillis() + 5_000;
+            while (System.currentTimeMillis() < graceDeadline) {
+                collectModbusRecords(consumer.poll(Duration.ofSeconds(1)), modbusFeatureTopic,
+                    featureVectorDeserializer, modbusVectorsByEventId, dlqPayloadsByTopic);
+            }
+
+            // Exactly the two published records produced vectors. The
+            // malformed record produced none.
+            assertEquals(Set.of(requestEventId, responseEventId), modbusVectorsByEventId.keySet(),
+                "expected exactly the request's and the response's modbus feature vectors within 90s");
+
+            // Request vector: the frozen modbus-feature-v1 contract, read back
+            // from the wire. 42 is a literal on purpose, not read back from the
+            // schema under test. qualityFlags NONE: the key's first event is
+            // never flagged out of order.
+            FeatureVector request = modbusVectorsByEventId.get(requestEventId);
+            assertEquals("modbus-feature-v1", request.schemaId(), "request vector schemaId must be modbus-feature-v1");
+            assertEquals(ModbusFeatureSchemaV1.CONTENT_HASH, request.schemaHash(),
+                "request vector schemaHash must match the frozen modbus-feature-v1 content hash");
+            assertEquals(LogType.MODBUS, request.logType(), "request vector logType must be MODBUS");
+            assertEquals(42, request.values().length, "modbus-feature-v1 is frozen at 42 values");
+            assertEquals("CmbE2E0001", request.connectionUid(),
+                "request vector must carry the Zeek uid as its correlation key");
+            assertEquals(QualityFlags.NONE, request.qualityFlags(), "request vector qualityFlags must be exactly NONE");
+            assertEquals(0f, modbusFeature(request, 0, "is_response"), "the request must be scored as a request");
+
+            // Response vector: same schema and width. qualityFlags NONE
+            // because it arrived after its request, in timestamp order.
+            FeatureVector response = modbusVectorsByEventId.get(responseEventId);
+            assertEquals("modbus-feature-v1", response.schemaId(), "response vector schemaId must be modbus-feature-v1");
+            assertEquals(ModbusFeatureSchemaV1.CONTENT_HASH, response.schemaHash(),
+                "response vector schemaHash must match the frozen modbus-feature-v1 content hash");
+            assertEquals(LogType.MODBUS, response.logType(), "response vector logType must be MODBUS");
+            assertEquals(42, response.values().length, "modbus-feature-v1 is frozen at 42 values");
+            assertEquals("CmbE2E0001", response.connectionUid(),
+                "response vector must carry the Zeek uid as its correlation key");
+            assertEquals(QualityFlags.NONE, response.qualityFlags(),
+                "the response arrived after its request: qualityFlags must be exactly NONE");
+            assertEquals(1f, modbusFeature(response, 0, "is_response"),
+                "direction must come from request_response alone");
+
+            // The response found its request's state. Each of these fails if
+            // the response was keyed into a different bucket from its request:
+            // that bucket would be empty, so it would show no outstanding
+            // request, count the response as unmatched, and have no RTT.
+            assertEquals(1f, modbusFeature(response, 30, "outstanding_requests_before_event"),
+                "the request must still be pending, in the SAME entity state, when its response arrives");
+            assertEquals(0f, modbusFeature(response, 31, "response_without_request"),
+                "the response must find its pending request: response_without_request must be 0");
+            assertEquals(1f, modbusFeature(response, 33, "rtt_valid"),
+                "the response must match its request causally: rtt_valid must be 1");
+            assertEquals(publishedGapSeconds, modbusFeature(response, 34, "rtt_s"),
+                "rtt_s must equal the published gap between the request's and the response's ts");
+
+            // modbus dlq: exactly one record, and it is the malformed one. The
+            // hash ties it to those exact bytes.
+            List<String> modbusDlq = dlqPayloadsByTopic.getOrDefault(modbusDlqTopic, List.of());
+            assertEquals(1, modbusDlq.size(),
+                "exactly one modbus dlq record expected (the request and response are valid), got: " + modbusDlq);
+            assertTrue(modbusDlq.get(0).contains("\"reasonCode\":\"MALFORMED_JSON\""),
+                "expected the modbus dlq record to carry reasonCode MALFORMED_JSON, got: " + modbusDlq.get(0));
+            assertTrue(modbusDlq.get(0).contains("\"rawPayloadHash\":\"" + malformedModbusHash + "\""),
+                "expected the modbus dlq record to carry the malformed record's own payload hash, got: "
+                    + modbusDlq.get(0));
+
+            // conn's and dns's dlq: nothing was published to either protocol's
+            // input, so anything on their dlq topics could only be a modbus
+            // rejection sent to the wrong topic. The topology test cannot see
+            // that, because it checks operator uids, never topic names.
+            assertEquals(List.of(), dlqPayloadsByTopic.getOrDefault(connDlqTopic, List.of()),
+                "a modbus rejection must never reach conn's dlq");
+            assertEquals(List.of(), dlqPayloadsByTopic.getOrDefault(dnsDlqTopic, List.of()),
+                "a modbus rejection must never reach dns's dlq");
+        }
+    }
+
+    // Reads one modbus-feature-v1 value by a literal index, and checks that
+    // literal against the name the frozen contract gives it. The index stays a
+    // literal on purpose: the upstream contract fixes each position (its
+    // 1-based index minus one). Looking the index up by name would follow a
+    // reordered schema instead of failing on it, and the name check turns a
+    // typo in the literal into a failure instead of a read of the wrong value.
+    private static float modbusFeature(FeatureVector vector, int index, String name) {
+        assertEquals(name, ModbusFeatureSchemaV1.SCHEMA.definitions().get(index).name(),
+            "modbus-feature-v1 index " + index + " must be " + name);
+        return vector.values()[index];
+    }
+
+    // Reads one committed fixture's raw bytes for the two-protocol method above to
     // publish -- it needs four, where connFixtureFlowsToFeatureVectorTopic above
     // needs only its own one inline.
     private static byte[] fixture(String protocol, String name) throws IOException {
@@ -302,6 +549,28 @@ class OnlineFeatureJobE2ETest {
             } else {
                 FeatureVector vector = featureVectorDeserializer.deserialize(record.topic(), record.value());
                 vectorsByEventId.put(vector.eventId(), vector);
+            }
+        });
+    }
+
+    // The three-protocol method's own classifier. collectRecords above does
+    // not fit it: that helper treats every topic except its one dlq topic as a
+    // feature-vector topic, while the three-protocol method subscribes to
+    // THREE dlq topics (modbus's, plus conn's and dns's to check they stay
+    // empty). Here, records from modbusFeatureTopic are deserialized into
+    // vectorsByEventId, keyed by eventId. Every other subscribed topic is a
+    // dlq topic, so its payloads are decoded to text and kept under that
+    // topic's own name.
+    private static void collectModbusRecords(ConsumerRecords<byte[], byte[]> records, String modbusFeatureTopic,
+            FeatureVectorDeserializer featureVectorDeserializer, Map<String, FeatureVector> vectorsByEventId,
+            Map<String, List<String>> dlqPayloadsByTopic) {
+        records.forEach(record -> {
+            if (record.topic().equals(modbusFeatureTopic)) {
+                FeatureVector vector = featureVectorDeserializer.deserialize(record.topic(), record.value());
+                vectorsByEventId.put(vector.eventId(), vector);
+            } else {
+                dlqPayloadsByTopic.computeIfAbsent(record.topic(), topic -> new ArrayList<>())
+                    .add(new String(record.value(), StandardCharsets.UTF_8));
             }
         });
     }

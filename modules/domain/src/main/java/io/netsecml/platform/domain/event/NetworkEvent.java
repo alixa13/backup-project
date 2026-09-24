@@ -23,7 +23,24 @@ import java.time.Instant;
 // DnsEvent arm, never a default. NetworkEventSurfaceTest's permittedSubclasses
 // assertion also had to change, though it is a reflective assertion rather than
 // a switch, so it did not fail until run rather than at compile time.
-public sealed interface NetworkEvent permits ConnEvent, DnsEvent {
+//
+// ModbusEvent joining permits repeated the same mechanism at a larger scale:
+// nine files failed to compile -- five pattern-switch sites in adapter-flink's
+// process package (ConnFeatureProcessFunction, ConnSnapshotExtractFunction,
+// ConnSnapshotJoinFunction, DnsFeatureProcessFunction, SourceKeySelector) plus
+// four test files whose own switches exist to narrow or prove exhaustiveness
+// (ConnSnapshotJoinFunctionTest, DnsEventMapperTest, EventMapperTest,
+// NetworkEventTest) -- every one resolved with an explicit case ModbusEvent
+// arm, never a default, and NetworkEventSurfaceTest's permittedSubclasses
+// assertion needed the same reflective-not-compile-time update DnsEvent's
+// arrival required.
+//
+// ModbusEvent's admission here is fully discharged: it has a parser
+// (JsonZeekModbusParser), a mapper (ModbusEventMapper) and a feature schema
+// (ModbusFeatureSchemaV1) -- the admission rule stated above this paragraph --
+// so, unlike DnsEvent's own arrival, nothing about its permits membership was
+// ever ahead of what it depends on.
+public sealed interface NetworkEvent permits ConnEvent, DnsEvent, ModbusEvent {
 
     // Every log type carries the same identity block; only the payload differs.
     EventEnvelope envelope();

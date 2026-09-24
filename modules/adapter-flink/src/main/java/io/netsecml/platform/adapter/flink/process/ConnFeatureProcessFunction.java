@@ -3,6 +3,7 @@ package io.netsecml.platform.adapter.flink.process;
 import io.netsecml.platform.application.usecase.ConnBuildFeaturesUseCase;
 import io.netsecml.platform.domain.event.ConnEvent;
 import io.netsecml.platform.domain.event.DnsEvent;
+import io.netsecml.platform.domain.event.ModbusEvent;
 import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.feature.FeatureBuildResult;
 import io.netsecml.platform.domain.feature.FeatureVector;
@@ -87,6 +88,14 @@ public final class ConnFeatureProcessFunction extends KeyedProcessFunction<Sourc
             case DnsEvent ignored -> throw new IllegalStateException(
                 "ConnFeatureProcessFunction received a DnsEvent; the DNS chain is separate by design "
                 + "(docs/superpowers/specs/2026-09-10-per-protocol-feature-schemas-design.md section 6.3) "
+                + "and this is a wiring error, not a runtime condition");
+            // Same rule, for modbus: it has its own Flink operator, keyed
+            // state, topics and DLQ (docs/superpowers/specs/2026-09-21-modbus-
+            // stage1-design.md section 10), never routed through this
+            // conn-only operator, so reaching here is a wiring error too.
+            case ModbusEvent ignored -> throw new IllegalStateException(
+                "ConnFeatureProcessFunction received a ModbusEvent; the modbus chain is separate by design "
+                + "(docs/superpowers/specs/2026-09-21-modbus-stage1-design.md section 10) "
                 + "and this is a wiring error, not a runtime condition");
         };
 

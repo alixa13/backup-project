@@ -187,11 +187,13 @@ class ArchiveJobTopologyTest {
     // The branch dlqChainReproducesTheHistoricalConnUids's own comment recorded
     // as untestable while LogType had only one constant: two log types (conn,
     // dns) times two chain kinds (feature vector, DLQ), built through
-    // connAndDnsChains() -- the same method ArchiveJob.main() calls -- so this
-    // test pins the exact list main() wires rather than a hand-copied duplicate
-    // that could silently drift from it. This is what proves the per-protocol
-    // prefix pattern actually produces twelve non-colliding uids rather than
-    // only being exercised for DLQ alone.
+    // connAndDnsChains() -- the two-protocol chain list, whose first four
+    // entries connDnsAndModbusChains (below, and the method ArchiveJob.main()
+    // actually calls today) reuses byte-for-byte -- so this test pins the
+    // exact list that method's own first four entries wire rather than a
+    // hand-copied duplicate that could silently drift from it. This is what
+    // proves the per-protocol prefix pattern actually produces twelve
+    // non-colliding uids rather than only being exercised for DLQ alone.
     @Test
     void fourChainsAcrossTwoLogTypesProduceTwelveDistinctUidsAndConnStaysUnchanged() {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -229,5 +231,45 @@ class ArchiveJobTopologyTest {
             "dns-feature-vector-source", "dns-feature-vector-row", "dns-feature-vectors-clickhouse-sink",
             "dns-dlq-source", "dns-invalid-event-row", "dns-invalid-events-clickhouse-sink")),
             "dns's six uids must follow the shared prefix pattern, found: " + uids);
+    }
+
+    // A third protocol's six-chain list (connDnsAndModbusChains, alongside
+    // connAndDnsChains rather than widening it -- see that method's own
+    // signature comment) must produce eighteen non-colliding uids: conn's
+    // six historical ones, dns's six under the shared prefix pattern, and
+    // modbus's own six under the identical pattern. Using the SET's size, not
+    // only containsAll, is what actually proves the eighteen are pairwise
+    // distinct -- in Flink 2.2.1 a uid collision does NOT silently merge two
+    // chains' checkpoint state: StreamGraphHasherV2 throws "Hash collision on
+    // user-specified ID" while building the JobGraph, before a job ever
+    // submits (both this test and its two-protocol sibling above would catch
+    // it here, without needing a real cluster). The real risk a uid collision
+    // does not protect against is RENAMING a uid between versions: the
+    // renamed operator's savepoint state no longer maps to it, so a restore
+    // fails, or, under allowNonRestoredState, that operator quietly starts
+    // empty (see CLAUDE.md's own note on this).
+    @Test
+    void sixChainsProduceEighteenDistinctUids() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        ArchiveJob.build(env, "localhost:9092", ArchiveJob.connDnsAndModbusChains(
+            "netsec.conn.feature-vector.v1", "netsec.conn.dlq.v1",
+            "netsec.dns.feature-vector.v1", "netsec.dns.dlq.v1",
+            "netsec.modbus.feature-vector.v1", "netsec.modbus.dlq.v1"),
+            ClickHouseConfig.of("localhost", 8123, "netsec_ml", "default", "test-password"));
+
+        Set<String> uids = new HashSet<>();
+        env.getStreamGraph(false).getStreamNodes().forEach(node -> {
+            if (node.getTransformationUID() != null) {
+                uids.add(node.getTransformationUID());
+            }
+        });
+
+        assertEquals(18, uids.size(), "eighteen non-colliding uids expected, found: " + uids);
+
+        assertTrue(uids.containsAll(Set.of(
+            "modbus-feature-vector-source", "modbus-feature-vector-row", "modbus-feature-vectors-clickhouse-sink",
+            "modbus-dlq-source", "modbus-invalid-event-row", "modbus-invalid-events-clickhouse-sink")),
+            "modbus's six uids must follow the shared prefix pattern, found: " + uids);
     }
 }

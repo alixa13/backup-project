@@ -1,0 +1,264 @@
+package io.netsecml.platform.adapter.kafka.parser;
+
+import io.netsecml.platform.adapter.kafka.dto.ZeekModbusRecord;
+import io.netsecml.platform.domain.event.MappingResult;
+import io.netsecml.platform.domain.event.ReasonCode;
+import org.junit.jupiter.api.Test;
+
+import java.nio.charset.StandardCharsets;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class JsonZeekModbusParserTest {
+    private final JsonZeekModbusParser parser = new JsonZeekModbusParser();
+
+    @Test
+    void aWellFormedModbusDetailedLineParses() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","id.orig_h":"10.0.0.5","id.orig_p":50001,
+             "id.resp_h":"10.0.0.9","id.resp_p":502,"is_orig":true,"tid":17,"unit":1,
+             "func":"READ_HOLDING_REGISTERS","address":40001,"quantity":2,
+             "matched":true,"request_values":[7,9],"response_values":[]}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertTrue(result.isValid(), () -> "unexpected rejection: " + describe(result));
+        assertEquals(17, result.value().tid());
+        assertEquals(2, result.value().requestValues().size());
+    }
+
+    // required=true only enforces that the KEY is present. func binds as a
+    // String (ZeekModbusRecord's own comment explains why), so Jackson's
+    // FAIL_ON_NULL_FOR_PRIMITIVES -- which covers only primitive fields --
+    // does not by itself stop an explicit "func": null from binding as a
+    // null String. JsonZeekModbusParser rejects that null by hand for
+    // exactly the reason FAIL_ON_NULL_FOR_PRIMITIVES exists for ts/tid
+    // below: a defaulted/absent function code must be a parse failure, not
+    // a record silently forwarded for scoring with func == null.
+    @Test
+    void anExplicitNullFunctionCodeIsRejectedRatherThanBecomingZero() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","tid":17,"func":null}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertFalse(result.isValid());
+        assertEquals(ReasonCode.MALFORMED_JSON, result.reason());
+    }
+
+    // The offline engine falls back to ast.literal_eval for research files
+    // shaped like this. On the wire that tolerance would accept a malformed
+    // payload instead of rejecting it, so this parser requires strict JSON
+    // arrays and must not reproduce that fallback.
+    @Test
+    void aPythonReprValueVectorIsRejectedNotSalvaged() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","tid":17,"func":3,"request_values":"[7, 9]"}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertFalse(result.isValid());
+        assertEquals(ReasonCode.MALFORMED_JSON, result.reason());
+    }
+
+    // source_h/destination_h are PER-PACKET (they flip between a request and
+    // its response), so they bind to their own sourceHost/destinationHost
+    // fields and must NOT land in the connection-level origHost/respHost --
+    // they used to be aliases of id_orig_h/id_resp_h, which made the two
+    // kinds indistinguishable after binding.
+    @Test
+    void perPacketEndpointSpellingBindsToThePerPacketFieldsOnly() {
+        String alternate = """
+            {"ts":1758000000.5,"uid":"CXY1","source_h":"10.0.0.5","destination_h":"10.0.0.9",
+             "is_orig":true,"tid":17,"uint":3,"func":3}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(alternate.getBytes(StandardCharsets.UTF_8));
+        assertTrue(result.isValid(), () -> "unexpected rejection: " + describe(result));
+        assertEquals("10.0.0.5", result.value().sourceHost());
+        assertEquals("10.0.0.9", result.value().destinationHost());
+        assertNull(result.value().origHost());
+        assertNull(result.value().respHost());
+        assertEquals("3", result.value().unitId());
+    }
+
+    // Zeek's native dotted id.orig_h/id.resp_h is an alias of the same
+    // CONNECTION-level fields the underscored spelling binds -- not of the
+    // per-packet ones.
+    @Test
+    void dottedEndpointSpellingBindsToTheConnectionLevelFields() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","id.orig_h":"10.0.0.5","id.resp_h":"10.0.0.9",
+             "is_orig":true,"tid":17,"unit":1,"func":3}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertTrue(result.isValid(), () -> "unexpected rejection: " + describe(result));
+        assertEquals("10.0.0.5", result.value().origHost());
+        assertEquals("10.0.0.9", result.value().respHost());
+        assertNull(result.value().sourceHost());
+        assertNull(result.value().destinationHost());
+    }
+
+    // A record carrying BOTH kinds -- the connection-level pair and a
+    // per-packet pair that, on this response, runs the other way -- binds
+    // each into its own fields, so the mapper still sees both and can apply
+    // its precedence. Under the old aliasing these four keys competed for two
+    // fields.
+    @Test
+    void bothEndpointKindsInOneRecordBindToFourSeparateFields() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","id_orig_h":"10.0.0.5","id_resp_h":"10.0.0.9",
+             "source_h":"10.0.0.9","destination_h":"10.0.0.5",
+             "is_orig":false,"tid":17,"unit":1,"func":3}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertTrue(result.isValid(), () -> "unexpected rejection: " + describe(result));
+        assertEquals("10.0.0.5", result.value().origHost());
+        assertEquals("10.0.0.9", result.value().respHost());
+        assertEquals("10.0.0.9", result.value().sourceHost());
+        assertEquals("10.0.0.5", result.value().destinationHost());
+    }
+
+    // -- Fix round 1 (F1, F2): request_response/network_direction and the
+    // underscored endpoint spelling this platform's wire actually uses --
+
+    // THE regression guard for F2: the original fixture above
+    // (aWellFormedModbusDetailedLineParses) used the DOTTED id.orig_h/id.resp_h
+    // spelling, which was PRIMARY before this fix and is now only an alias --
+    // so that test alone would keep passing even if underscored binding were
+    // silently broken. This test uses ONLY the underscored id_orig_h/id_resp_h
+    // spelling (no dotted, no source_h/destination_h) -- exactly what
+    // ZeekConnEvent and ZeekDnsEvent bind, and what this deployment's sensor
+    // actually emits per the working conn/dns Testcontainers E2E tests. If
+    // id_orig_h/id_resp_h were not bound as primary (or not bound at all),
+    // origHost()/respHost() would come back null here even though the JSON
+    // carries real addresses, and the mapper would reject every such record
+    // for having no endpoints. They bind to the CONNECTION-level fields, not
+    // the per-packet sourceHost/destinationHost, which stay null.
+    @Test
+    void underscoredEndpointSpellingBindsToTheConnectionLevelFields() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","id_orig_h":"10.0.0.5","id_resp_h":"10.0.0.9",
+             "is_orig":true,"tid":17,"unit":1,"func":3}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertTrue(result.isValid(), () -> "unexpected rejection: " + describe(result));
+        assertEquals("10.0.0.5", result.value().origHost());
+        assertEquals("10.0.0.9", result.value().respHost());
+        assertNull(result.value().sourceHost());
+        assertNull(result.value().destinationHost());
+    }
+
+    // F1: request_response is the PRIMARY direction source per the design
+    // spec's §5 table, and Task 4's mapper is specified to read it BEFORE
+    // falling back to is_orig. Without this field bound, that precedence rule
+    // has nothing to read and silently always falls back -- this pins that
+    // the field actually reaches the DTO.
+    @Test
+    void requestResponseBindsWhenPresent() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","tid":17,"func":3,"request_response":"REQUEST"}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertTrue(result.isValid(), () -> "unexpected rejection: " + describe(result));
+        assertEquals("REQUEST", result.value().requestResponse());
+    }
+
+    // network_direction is request_response's alternate spelling per the
+    // design spec's §5 table, treated identically -- same pattern as
+    // unit/uint and the dotted id.orig_h/id.resp_h endpoint aliases above.
+    @Test
+    void networkDirectionAliasBindsToRequestResponse() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","tid":17,"func":3,"network_direction":"RESPONSE"}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertTrue(result.isValid(), () -> "unexpected rejection: " + describe(result));
+        assertEquals("RESPONSE", result.value().requestResponse());
+    }
+
+    // A record may legitimately carry only is_orig (no request_response at
+    // all) -- neither is required=true, and the fallback-to-is_orig case must
+    // still parse cleanly at PARSE stage; the mapper, not this parser, is
+    // where the either/or is actually enforced.
+    @Test
+    void isOrigAloneStillParsesWithoutRequestResponse() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","tid":17,"func":3,"is_orig":true}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertTrue(result.isValid(), () -> "unexpected rejection: " + describe(result));
+        assertNull(result.value().requestResponse());
+        assertEquals(Boolean.TRUE, result.value().isOrig());
+    }
+
+    // -- Extra coverage beyond the brief's floor of 4 --
+
+    // ts and tid are the DTO's other two required=true fields, and both are
+    // primitives, so this is the test that actually exercises
+    // FAIL_ON_NULL_FOR_PRIMITIVES itself: func's null-rejection above is a
+    // by-hand check (func is a String), not the flag. Without the flag, an
+    // explicit "tid": null would silently bind to 0 -- a plausible-looking
+    // transaction id -- exactly as ts:null would silently become epoch 0.
+    @Test
+    void anExplicitNullTidIsRejectedRatherThanBecomingZero() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","tid":null,"func":3}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertFalse(result.isValid());
+        assertEquals(ReasonCode.MALFORMED_JSON, result.reason());
+    }
+
+    // required=true's PRESENCE check, not its nullness check: tid is absent
+    // entirely here (not null), so this pins the same PARSE-stage rejection
+    // path JsonZeekDnsParserTest.missingTransIdFailsToParse pins for dns --
+    // both the reason and the stage matter, since isValid() alone cannot
+    // tell a structurally-broken payload apart from one missing a required
+    // field, and the archive job's DLQ column depends on which it was.
+    @Test
+    void missingTidFailsToParseAtParseStage() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","func":3}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertFalse(result.isValid());
+        assertEquals(ReasonCode.MALFORMED_JSON, result.reason());
+        assertEquals(ReasonCode.Stage.PARSE, result.reason().stage());
+    }
+
+    // modbus_detailed.log carries several columns this DTO never reads
+    // (exception_code, request_data, response_data, request_subfunction_code,
+    // response_subfunction_code, mei_type, modbus_detailed_link_id -- see
+    // contracts/source/zeek-modbus-source-v1.json's excludedRawFields).
+    // Without @JsonIgnoreProperties(ignoreUnknown = true) every real
+    // modbus_detailed.log record would throw UnrecognizedPropertyException
+    // and route to the DLQ as MALFORMED_JSON -- the same production-shaped
+    // gap JsonZeekDnsParserTest.toleratesRejectedAndTheOtherColumnsZeekAlwaysEmits
+    // pins for dns's "rejected"/"rtt"/"qclass"/"Z" columns.
+    @Test
+    void toleratesRawColumnsThisDtoDoesNotModel() {
+        String json = """
+            {"ts":1758000000.5,"uid":"CXY1","tid":17,"func":3,
+             "exception_code":0,"request_data":"AB12","response_data":"",
+             "request_subfunction_code":0,"response_subfunction_code":0,
+             "mei_type":0,"modbus_detailed_link_id":"L1"}
+            """;
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertTrue(result.isValid(), () -> "rejected a real modbus_detailed.log record: " + describe(result));
+        assertEquals(17, result.value().tid());
+    }
+
+    // General structural-garbage case, mirroring
+    // JsonZeekDnsParserTest.rejectsMalformedJson: catch(Exception) inside
+    // JsonZeekModbusParser.parse must turn ANY Jackson failure into
+    // MALFORMED_JSON, not just the required-field and null-primitive shapes
+    // the other tests target individually.
+    @Test
+    void rejectsStructurallyMalformedJson() {
+        String json = "{not json at all";
+        MappingResult<ZeekModbusRecord> result = parser.parse(json.getBytes(StandardCharsets.UTF_8));
+        assertFalse(result.isValid());
+        assertEquals(ReasonCode.MALFORMED_JSON, result.reason());
+    }
+
+    private static String describe(MappingResult<ZeekModbusRecord> result) {
+        return result.isValid() ? "valid" : result.reason() + ": " + result.detail();
+    }
+}

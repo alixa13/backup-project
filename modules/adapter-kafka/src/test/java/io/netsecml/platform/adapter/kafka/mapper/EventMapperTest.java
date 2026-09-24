@@ -38,6 +38,7 @@ class EventMapperTest {
         ConnEvent conn = switch (event) {
             case ConnEvent c -> c;
             case DnsEvent d -> throw new AssertionError("EventMapper maps conn.log exclusively; got a DnsEvent");
+            case ModbusEvent m -> throw new AssertionError("EventMapper maps conn.log exclusively; got a ModbusEvent");
         };
         assertEquals(Protocol.TCP, conn.connection().protocol());
         assertEquals(ServiceCode.SSL, conn.connection().service());
@@ -70,6 +71,7 @@ class EventMapperTest {
         ConnEvent conn = switch (result.value()) {
             case ConnEvent c -> c;
             case DnsEvent d -> throw new AssertionError("EventMapper maps conn.log exclusively; got a DnsEvent");
+            case ModbusEvent m -> throw new AssertionError("EventMapper maps conn.log exclusively; got a ModbusEvent");
         };
         assertEquals(0L, conn.measurements().durationMillis(), "duration was absent in this fixture");
         assertEquals(0L, conn.measurements().missedBytes(), "missed_bytes was absent in this fixture");

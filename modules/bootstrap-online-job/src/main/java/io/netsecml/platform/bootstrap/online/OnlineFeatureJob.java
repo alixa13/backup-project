@@ -7,6 +7,9 @@ import io.netsecml.platform.adapter.flink.process.ConnSnapshotJoinFunction;
 import io.netsecml.platform.adapter.flink.process.DnsFeatureProcessFunction;
 import io.netsecml.platform.adapter.flink.process.DnsParseMapValidateFunction;
 import io.netsecml.platform.adapter.flink.process.EventUidKeySelector;
+import io.netsecml.platform.adapter.flink.process.ModbusEntityKeySelector;
+import io.netsecml.platform.adapter.flink.process.ModbusFeatureProcessFunction;
+import io.netsecml.platform.adapter.flink.process.ModbusParseMapValidateFunction;
 import io.netsecml.platform.adapter.flink.process.ParseMapValidateFunction;
 import io.netsecml.platform.adapter.flink.process.RejectedRecord;
 import io.netsecml.platform.adapter.flink.process.SnapshotUidKeySelector;
@@ -15,11 +18,15 @@ import io.netsecml.platform.adapter.flink.source.RawBytesDeserializationSchema;
 import io.netsecml.platform.adapter.kafka.sink.FeatureVectorSerializer;
 import io.netsecml.platform.adapter.kafka.sink.RejectedRecordPayload;
 import io.netsecml.platform.adapter.kafka.sink.RejectedRecordSerializer;
+import io.netsecml.platform.domain.event.ConnEvent;
+import io.netsecml.platform.domain.event.DnsEvent;
+import io.netsecml.platform.domain.event.ModbusEvent;
 import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.event.SensorId;
 import io.netsecml.platform.domain.feature.ConnSnapshot;
 import io.netsecml.platform.domain.feature.FeatureVector;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestartStrategyOptions;
@@ -155,6 +162,126 @@ public final class OnlineFeatureJob {
         // rejects only -- never a mix of both chains'.
         DataStream<RejectedRecord> dnsRejected = dnsParsed.getSideOutput(ParseMapValidateFunction.REJECTED_TAG);
         sinkRejected(dnsRejected, bootstrapServers, dns.dlq(), "dns-dlq-sink");
+    }
+
+    // The three-protocol topology: everything the two-protocol build() above
+    // wires, plus modbus's own chain bolted on afterward. A third overload
+    // rather than a third loose ProtocolTopics parameter grafted onto the
+    // two-protocol signature above, because that signature's own two existing
+    // callers (OnlineFeatureJobTopologyTest's two-protocol cases, and this
+    // job's own conn-only overload's callers, transitively) must keep
+    // compiling unchanged -- exactly the same reasoning the two-protocol
+    // overload's own comment gives for not replacing the conn-only one.
+    //
+    // Delegates into the two-protocol build() for conn+dns rather than
+    // duplicating their wiring here: conn and dns's chains are unaffected by
+    // modbus's presence (modbus has no enrichment join, so it reads nothing
+    // the conn/dns chains produce, and nothing it produces feeds them), so
+    // there is exactly one place -- the two-protocol build() -- that wires
+    // conn and dns, and exactly one place -- modbusChain below -- that wires
+    // modbus.
+    //
+    // KNOWN SEAM (inherited from the two-protocol build() above, now a
+    // fourth protocol's problem too): a fourth protocol is a new overload and
+    // a new copy of modbus's wiring pattern, not a signature this method
+    // merely grows another argument on.
+    public static void build(StreamExecutionEnvironment env, String bootstrapServers,
+                              ProtocolTopics conn, ProtocolTopics dns, ProtocolTopics modbus, SensorId sensor) {
+        build(env, bootstrapServers, conn, dns, sensor);
+        modbusChain(env, bootstrapServers, modbus, sensor);
+    }
+
+    // Modbus's own chain: source -> parse -> narrow -> feature extraction ->
+    // sink, plus modbus's own DLQ side output and sink. Unlike dns, modbus has
+    // no conn.log enrichment join, so this chain's shape mirrors connChain's
+    // own five-stage shape rather than the two-protocol build()'s dns half --
+    // but it cannot BE connChain, because modbus's KeySelector and
+    // KeyedProcessFunction (ModbusEntityKeySelector, ModbusFeatureProcessFunction)
+    // are typed and keyed directly on ModbusEvent, never on NetworkEvent the
+    // way SourceKeySelector and Conn/DnsFeatureProcessFunction are -- see
+    // those two classes' own comments for why. That typing difference is what
+    // the narrow stage below exists to bridge.
+    private static void modbusChain(StreamExecutionEnvironment env, String bootstrapServers,
+                                     ProtocolTopics modbus, SensorId sensor) {
+        DataStream<byte[]> modbusRaw = rawSource(env, bootstrapServers, modbus.input(), "modbus-online-job",
+            "modbus-source");
+
+        SingleOutputStreamOperator<NetworkEvent> modbusParsed = modbusRaw
+            .process(new ModbusParseMapValidateFunction(sensor))
+            .name("modbus-parse")
+            .uid("modbus-parse");
+
+        // Bridges ParseMapValidateFunction's fixed NetworkEvent output (shared
+        // by every subclass, modbus's included -- see that base class's own
+        // comment) down to the ModbusEvent type ModbusEntityKeySelector and
+        // ModbusFeatureProcessFunction require. This is a structural
+        // consequence of modbus's operators being typed on ModbusEvent rather
+        // than NetworkEvent -- a sixth, stateless uid alongside the five
+        // stateful/checkpointed modbus stages: it carries no keyed state of
+        // its own, so a uid rename here (unlike those five) costs nothing on
+        // restore, but it still gets an explicit one per this job's own
+        // "every operator gets a stable uid" rule.
+        DataStream<ModbusEvent> modbusEvents = modbusParsed
+            .map(new NarrowToModbusEvent())
+            .name("modbus-event-narrow")
+            .uid("modbus-event-narrow");
+
+        DataStream<FeatureVector> modbusFeatureVectors = modbusEvents
+            .keyBy(new ModbusEntityKeySelector())
+            .process(new ModbusFeatureProcessFunction())
+            .name("modbus-features")
+            .uid("modbus-features");
+        sinkFeatureVectors(modbusFeatureVectors, bootstrapServers, modbus.featureVector(), "modbus-sink");
+
+        DataStream<RejectedRecord> modbusRejected =
+            modbusParsed.getSideOutput(ParseMapValidateFunction.REJECTED_TAG);
+        sinkRejected(modbusRejected, bootstrapServers, modbus.dlq(), "modbus-dlq-sink");
+    }
+
+    // The narrowing bridge modbusChain's own comment above describes. A named
+    // static class rather than a lambda, matching every other KeySelector/
+    // MapFunction in this job and its process package (SourceKeySelector,
+    // ConnSnapshotExtractFunction, and so on) -- none of them are lambdas.
+    // Exhaustive over NetworkEvent's sealed permits with no default arm, per
+    // this project's rule (see SourceKeySelector's and
+    // ConnSnapshotExtractFunction's own ModbusEvent/DnsEvent arms): a
+    // ConnEvent or DnsEvent reaching here is a wiring error, not a runtime
+    // condition -- modbus-parse above, built from ModbusParseMapValidateFunction,
+    // can only ever have produced a ModbusEvent.
+    //
+    // WHERE THE NARROWING HAPPENS differs between the protocols, so the next
+    // protocol's author should choose between the two shapes deliberately.
+    // ParseMapValidateFunction emits NetworkEvent for every subclass, so every
+    // chain has to get from NetworkEvent to its own event type somewhere:
+    //   - conn and dns narrow INSIDE each operator that consumes their parsed
+    //     stream: SourceKeySelector (which the two share),
+    //     ConnFeatureProcessFunction, DnsFeatureProcessFunction, and on dns's
+    //     enrichment path ConnSnapshotExtractFunction and
+    //     ConnSnapshotJoinFunction. Each is typed on NetworkEvent and switches
+    //     over its sealed permits, with a throw arm for every event type its
+    //     chain never receives -- so each one needed a new ModbusEvent arm when
+    //     ModbusEvent joined the permits. No extra operator sits on the graph,
+    //     and one selector can serve both protocols.
+    //   - modbus narrows ONCE, here, at the chain's boundary, so
+    //     ModbusEntityKeySelector and ModbusFeatureProcessFunction are typed on
+    //     ModbusEvent and carry no throw arms of their own; the throw arms for
+    //     the other event types live in this one switch instead. This adds one
+    //     stateless operator (and its uid) to the graph, and those two
+    //     operators accept only a ModbusEvent stream, so they cannot be shared
+    //     with another protocol the way SourceKeySelector is.
+    private static final class NarrowToModbusEvent implements MapFunction<NetworkEvent, ModbusEvent> {
+        @Override
+        public ModbusEvent map(NetworkEvent event) {
+            return switch (event) {
+                case ModbusEvent modbusEvent -> modbusEvent;
+                case ConnEvent ignored -> throw new IllegalStateException(
+                    "modbus chain received a ConnEvent; modbus-parse can only ever produce a ModbusEvent "
+                    + "and this is a wiring error, not a runtime condition");
+                case DnsEvent ignored -> throw new IllegalStateException(
+                    "modbus chain received a DnsEvent; modbus-parse can only ever produce a ModbusEvent "
+                    + "and this is a wiring error, not a runtime condition");
+            };
+        }
     }
 
     // Builds conn's entire chain -- source, parse, feature extraction, the
@@ -328,8 +455,17 @@ public final class OnlineFeatureJob {
             System.getenv().getOrDefault("DNS_INPUT_TOPIC", "dns"),
             System.getenv().getOrDefault("DNS_FEATURE_VECTOR_TOPIC", "netsec.dns.feature-vector.v1"),
             System.getenv().getOrDefault("DNS_DLQ_TOPIC", "netsec.dns.dlq.v1"));
+        // MODBUS_RAW_TOPIC (not *_INPUT_TOPIC): modbus's input topic was never
+        // an existing deployment's bare wire name the way conn's/dns's are --
+        // it is the newer netsec.modbus.raw.v1 naming, so its env var follows
+        // that naming from the start rather than inheriting conn/dns's older
+        // pre-protocol-qualified convention.
+        ProtocolTopics modbus = new ProtocolTopics(
+            System.getenv().getOrDefault("MODBUS_RAW_TOPIC", "netsec.modbus.raw.v1"),
+            System.getenv().getOrDefault("MODBUS_FEATURE_VECTOR_TOPIC", "netsec.modbus.feature-vector.v1"),
+            System.getenv().getOrDefault("MODBUS_DLQ_TOPIC", "netsec.modbus.dlq.v1"));
 
-        build(env, bootstrapServers, conn, dns, new SensorId(sensorId));
+        build(env, bootstrapServers, conn, dns, modbus, new SensorId(sensorId));
         env.execute("online-feature-job");
     }
 }

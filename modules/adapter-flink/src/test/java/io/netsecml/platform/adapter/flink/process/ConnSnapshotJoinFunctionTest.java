@@ -74,6 +74,10 @@ class ConnSnapshotJoinFunctionTest {
         return switch (event) {
             case DnsEvent d -> d;
             case ConnEvent ignored -> throw new AssertionError("expected a DnsEvent output, got a ConnEvent");
+            // ModbusEvent never reaches this operator (it has its own chain,
+            // per SourceKeySelector's and this class's own wiring-error
+            // arms), so seeing one here would be a test bug, same as ConnEvent.
+            case ModbusEvent ignored -> throw new AssertionError("expected a DnsEvent output, got a ModbusEvent");
         };
     }
 

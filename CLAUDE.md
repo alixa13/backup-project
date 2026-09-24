@@ -210,10 +210,10 @@ skips were hiding real defects — including a deduplication query that was
 syntactically invalid and could never have executed. **Do not read a skipped
 container test as a passing one.**
 
-Verified fresh for the flood fix (F2's repair), at `86f8e49` (commit 3 of that
-wave; commit 4, this file, changes no code). Supersedes the final-fix-wave
-verification at `a8446d4`, which this repeats in full and extends with the
-parity, flood and saturation tests. Each suite was run on its own, one module
+Verified fresh for the flood fix (F2's repair) and its review fixes, at
+`ca51ff6` (the review-fix commit; the commit after it, this file, changes no
+code). Supersedes the final-fix-wave verification at `a8446d4`, which this
+repeats in full and extends with the parity, flood and saturation tests. Each suite was run on its own, one module
 at a time, `target/surefire-reports/` cleared first — see Commands for why no
 single command proves the whole reactor at once. No containers were involved
 in this table:
@@ -366,14 +366,22 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   against a 1,000/s answered flood (falling behind real time) and ~510-560
   events/s at 10,000/s; after, ~250,000-350,000 events/s steady at both rates,
   answered or not. `ModbusFloodTest` (300,000 events at 5,000/s on one key, 30 s
-  bound) timed out before and takes ~1.3 s after. Memory is O(60 × rate) per key,
+  bound, run uncapped so the 60 s window really grows to 300,000 entries) timed
+  out before and takes ~1.5 s after; a planted O(window) regression times it out
+  again. Memory is O(60 × rate) per key,
   capped at 100,000 entries per window (1 s, 10 s, 60 s): over the cap the oldest
   entry is evicted, and for exactly as long as an evicted entry would still be
   inside the uncapped window, the vector carries `MODBUS_WINDOW_SATURATED` (bit 3,
-  value 8) — its window features (indices 35-41) under-count relative to `07b`.
-  Every vector without that bit has exactly the uncapped engine's window values,
-  and indices 0-34 are exact either way (`ModbusWindowSaturationTest`). The 60 s
-  window saturates above ~1,667 events/s on one key. Parity with the pre-fix
+  value 8): some of its window features (indices 35-41) differ from `07b`'s. Every
+  vector without that bit has exactly the uncapped engine's window values, and
+  indices 0-34 are exact either way (`ModbusWindowSaturationTest`). The bit does
+  not say which window: the three share one cap, so the 60 s window reaches it
+  first (above ~1,667 events/s on one key), and in that common case only
+  `event_rate_60s` (index 37) differs. Above 10,000/s the 10 s window saturates
+  too — its event rate is then lower, its unique counts can be, and its read/write
+  ratios can move either way — and the 1 s window needs 100,000/s. A consumer that
+  cannot tell must treat all of 35-41 as suspect. The bit never appears together
+  with `MODBUS_OUT_OF_ORDER`: an out-of-order event resets the state. Parity with the pre-fix
   engine is proved event by event, bit for bit, by `ModbusEngineParityTest`
   against a verbatim copy of the engine at `1d0878e` (the application module's
   `feature.reference` test package, never to be edited to follow production).
@@ -383,10 +391,22 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   checkpoint), which is safe only because `ModbusFeatureProcessFunction` reads the
   state through `value()` on every call and never caches it. On RocksDB/ForSt,
   every `value()`/`update()` (de)serializes the whole state, so per-event cost
-  returns to O(window size) there. A fully saturated key holds ~300,000 window
-  entries — on the order of 10 MB of heap, and of checkpoint — so many keys
-  flooding at once still add up; and the key set itself still has no TTL (see
-  the bounded-state invariant).
+  returns to O(window size) there; nothing in the online job pins the heap backend,
+  so a cluster-level `state.backend.type` of `rocksdb` or `forst` would bring the
+  flood cost back silently (correctness holds, because the operator still calls
+  `update()`). The copy-on-write argument also assumes Kryo copies these
+  collections deeply, which the default serialization config does
+  (`ModbusEntityStateSerializerTest`) and the online job does not override.
+  **Memory is still not bounded in aggregate.** A fully saturated key holds
+  ~300,000 window entries — on the order of 10 MB of heap, and of checkpoint — and
+  the key includes the unit id, so one client/server pair flooding across all 256
+  unit ids is 256 keys, ~2.5 GB. With no TTL on the key set (see the
+  bounded-state invariant), none of it is ever released, and an idle key keeps
+  whatever its windows held at its last event, since nothing purges without an
+  event. `ArrayDeque`/`HashMap` never shrink, so a key whose windows once grew
+  keeps that capacity until its segment ends; `reset()` allocates fresh
+  collections so a new segment does not inherit it. Bounding the aggregate needs
+  the TTL unit, or a cap on keys.
 - **`ModbusEntityState` falls back to Kryo (`GenericTypeInfo`)**, like
   `DnsWindowState`'s two components (`RollingCounters`, `RecordTimingState`):
   Flink's POJO analysis requires a public no-arg constructor and bean-style

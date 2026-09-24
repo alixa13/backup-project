@@ -97,11 +97,12 @@ domain → ports → application → adapters → bootstrap
 - Bounded per-key state only — no unbounded per-IP maps or event history. Conn and dns key
   per `(sensor, sourceIp)`; modbus keys per `(sensor, clientIp, serverIp, unitId)`
   (`ModbusEntityKey`). This is the rule the code aims at and holds per key — five one-minute
-  buckets each for conn and dns; for modbus, a pending-TID map capped at 4096 entries, but the
-  trailing windows themselves are bounded by TIME (the last 60 seconds), not by a constant —
-  their size is O(events in that 60s), not O(1), so a flood inflates both per-key memory and
-  per-event cost (see "Modbus limits and decisions" below, F2) — but not yet in aggregate:
-  none of `ConnFeatureProcessFunction`'s `rolling-counters`, `DnsFeatureProcessFunction`'s
+  buckets each for conn and dns; for modbus, a pending-TID map capped at 4096 entries and three
+  trailing windows bounded by TIME (the last 1, 10 and 60 seconds, as the frozen contract
+  requires) and also by count: at most 100,000 entries each
+  (`ModbusEntityState.MAX_WINDOW_ENTRIES`), beyond which a vector carries
+  `MODBUS_WINDOW_SATURATED` (see "Modbus limits and decisions" below, F2) — but not yet in
+  aggregate: none of `ConnFeatureProcessFunction`'s `rolling-counters`, `DnsFeatureProcessFunction`'s
   `dns-window-state` or `ModbusFeatureProcessFunction`'s `modbus-entity-state` carries a TTL,
   so the KEY SET keeps every key ever seen, for all three protocols, forever (see
   `OnlineFeatureJob`'s KNOWN GAP comment, which covers conn and dns).
@@ -209,28 +210,30 @@ skips were hiding real defects — including a deduplication query that was
 syntactically invalid and could never have executed. **Do not read a skipped
 container test as a passing one.**
 
-Verified fresh for the final fix wave (F1/F2/F3/F4 and the documentation
-corrections), at `a8446d4` (commit 2 of that wave; commit 3, this file, changes
-no code). Superseded the Modbus unit's own last-task verification at `9f2e97d`,
-which this repeats in full and extends with `ModbusGoldenVectorTest`. Each
-suite was run on its own, one module at a time, `target/surefire-reports/`
-cleared first — see Commands for why no single command proves the whole
-reactor at once. No containers were involved in this table:
+Verified fresh for the flood fix (F2's repair), at `86f8e49` (commit 3 of that
+wave; commit 4, this file, changes no code). Supersedes the final-fix-wave
+verification at `a8446d4`, which this repeats in full and extends with the
+parity, flood and saturation tests. Each suite was run on its own, one module
+at a time, `target/surefire-reports/` cleared first — see Commands for why no
+single command proves the whole reactor at once. No containers were involved
+in this table:
 
 | Suite | Result |
 |---|---|
-| `domain` | 156/156, 0 skipped (+1 over the prior 155: `ModbusEventTest.tsSecondsMustBeFinite`) |
+| `domain` | 172/172, 0 skipped (+16 over the prior 156: `ModbusEntityStateTest` rewritten for the in-place state, plus its window-edge, running-count, snapshot, cap and saturation tests; `QualityFlagsTest` re-pinned for bit 3 with an unchanged count) |
 | `ports` | no tests exist (no test sources in the module) |
-| `application` | 68/68, 0 skipped |
-| `adapter-kafka` | 121/121, 0 skipped (+1 over the prior 120: `ModbusEventMapperTest.tsSecondsIsTheUnroundedWireValueWhileEventTimeIsMillisecondRounded`) |
-| `adapter-flink` | 40/40, 0 skipped (+3 over the prior 37: `ModbusGoldenVectorTest`, F3's golden vector, proving all 42 values bit-identical to a hand derivation of `07b`'s `process_capture` on microsecond wire timestamps, including the 15s segment boundary and the 1s window edge) |
+| `application` | 74/74, 0 skipped (+6 over the prior 68: `ModbusEngineParityTest` ×2, `ModbusFloodTest`, `ModbusWindowSaturationTest`, and two in `ModbusBuildFeaturesUseCaseTest`: the in-place contract and the saturation bit) |
+| `adapter-kafka` | 121/121, 0 skipped |
+| `adapter-flink` | 45/45, 0 skipped (+5 over the prior 40: `ModbusEntityStateSerializerTest` ×4 — Kryo resolution, copy independence, round trip, a capped saturated round trip — and `ModbusFeatureProcessFunctionTest`'s checkpoint/restore equivalence. `ModbusGoldenVectorTest` is byte-for-byte unchanged and green) |
 | `adapter-clickhouse`, `InvalidEventRowMapperTest` only (filtered; the module's container tests were not run here) | 9/9, 0 skipped |
 | `bootstrap-online-job`, `OnlineFeatureJobTopologyTest` only (filtered) | 6/6, 0 skipped |
 | `bootstrap-archive-job`, `ArchiveJobTopologyTest` only (filtered) | 9/9, 0 skipped |
 
 Verified fresh at the same point against real containers (Kafka
 `confluentinc/cp-kafka:7.6.1`, ClickHouse 25.8), each suite run alone and
-filtered to its one class, never either bootstrap module unfiltered:
+filtered to its one class, never either bootstrap module unfiltered. The modbus
+vectors below now come from the in-place entity state, through a real Flink
+job's heap state backend:
 
 | Suite | Result | What it actually proves |
 |---|---|---|
@@ -354,31 +357,45 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   (`modbus-event-narrow`), so its key selector and process function are typed on
   `ModbusEvent`. See `OnlineFeatureJob`'s `NarrowToModbusEvent` comment, so the
   next protocol's author chooses between the two deliberately.
-- **Flood cost (F2): measured, deliberately NOT fixed in this unit.** The trailing
-  windows are bounded by TIME, not count (see the bounded-state invariant above),
-  and `ModbusEntityState.afterEvent` copies them (and the pending-TID map) on
-  every event, then `ModbusFeatureExtractor` scans the 10s deque six times.
-  Measured on the real use case, single thread, one key, no Flink or Kryo
-  overhead (production will be no faster): an answered flood of ~1000 events/s
-  saturates one core just keeping pace; an unanswered request flood reaches the
-  4096 pending cap after ~41s at 100 req/s, and at 1000 req/s throughput drops to
-  ~800 events/s — the operator falls behind real time, and consumer lag grows for
-  every modbus key on that subtask. Cost is ~192r element operations per event,
-  where r is the current event rate in events/s (~192r² per second) plus up to
-  4096 per event once the cap is full. No parity
-  impact, and M1 has no scoring path, so it does not block merge. **It blocks
-  deployment against live OT traffic.** The parity-preserving repair (mutate in
-  place; restore `07b`'s incrementally maintained 10s counters; read event rates
-  as deque sizes) must land before first deployment — it changes
-  `ModbusEntityState`'s Kryo layout, which is free only before a savepoint
-  exists — and in any case before M2.
+- **Flood cost (F2): fixed, and bounded.** `ModbusEntityState` is mutable and
+  updated in place (`advance` returns a `BeforeEvent` snapshot of the values the
+  causal features read), with `07b`'s running 10 s counts restored, so each event
+  costs amortized O(1) on the default heap state backend: every window entry is
+  appended once and leaves once. Measured on the real use case, single thread,
+  one key, 60 s of event time, no Flink or Kryo overhead: before, ~820 events/s
+  against a 1,000/s answered flood (falling behind real time) and ~510-560
+  events/s at 10,000/s; after, ~250,000-350,000 events/s steady at both rates,
+  answered or not. `ModbusFloodTest` (300,000 events at 5,000/s on one key, 30 s
+  bound) timed out before and takes ~1.3 s after. Memory is O(60 × rate) per key,
+  capped at 100,000 entries per window (1 s, 10 s, 60 s): over the cap the oldest
+  entry is evicted, and for exactly as long as an evicted entry would still be
+  inside the uncapped window, the vector carries `MODBUS_WINDOW_SATURATED` (bit 3,
+  value 8) — its window features (indices 35-41) under-count relative to `07b`.
+  Every vector without that bit has exactly the uncapped engine's window values,
+  and indices 0-34 are exact either way (`ModbusWindowSaturationTest`). The 60 s
+  window saturates above ~1,667 events/s on one key. Parity with the pre-fix
+  engine is proved event by event, bit for bit, by `ModbusEngineParityTest`
+  against a verbatim copy of the engine at `1d0878e` (the application module's
+  `feature.reference` test package, never to be edited to follow production).
+  **Caveats.** The in-place safety and the O(1) cost hold on the heap backend
+  only: Flink 2.2.1's `CopyOnWriteStateMap.get` hands out a serializer copy of a
+  state object a running checkpoint still holds (O(state size), once per key per
+  checkpoint), which is safe only because `ModbusFeatureProcessFunction` reads the
+  state through `value()` on every call and never caches it. On RocksDB/ForSt,
+  every `value()`/`update()` (de)serializes the whole state, so per-event cost
+  returns to O(window size) there. A fully saturated key holds ~300,000 window
+  entries — on the order of 10 MB of heap, and of checkpoint — so many keys
+  flooding at once still add up; and the key set itself still has no TTL (see
+  the bounded-state invariant).
 - **`ModbusEntityState` falls back to Kryo (`GenericTypeInfo`)**, like
   `DnsWindowState`'s two components (`RollingCounters`, `RecordTimingState`):
   Flink's POJO analysis requires a public no-arg constructor and bean-style
   get/is-prefixed no-argument accessors, and this class has neither (private
-  constructor; several accessors take a `ts` argument). Its savepoint-evolution
-  story is therefore Kryo's, not the POJO serializer's — F2's repair changes its
-  field layout, so that repair is free only before a savepoint exists.
+  constructor; accessors are not get/is-prefixed). Its savepoint-evolution story is
+  therefore Kryo's, not the POJO serializer's. F2's repair changed its field layout
+  (running counts, the per-window cap and the cap-eviction timestamps), which was
+  free only because the job had never been deployed, so no savepoint existed; any
+  later change to its fields is not free.
 - **Modbus event-id residual collision.** Two records sharing the same uid, tid
   and direction inside one millisecond get one event id
   (`sensor:uid:tid:direction:ts_millis`). Under a flood the tid is

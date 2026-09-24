@@ -252,21 +252,21 @@ skips were hiding real defects — including a deduplication query that was
 syntactically invalid and could never have executed. **Do not read a skipped
 container test as a passing one.**
 
-Verified fresh for the S7comm unit, at `bb3bd2d` (its end-to-end test commit;
-the commit after it, this file, changes no code). Supersedes the flood-fix
-verification at `ca51ff6`, which this repeats in full and extends with the
-S7comm tests. Each suite was run on its own, one module at a time,
+Verified fresh for the S7comm unit and its final-review fixes, at `698487b`
+(the review-fix commit; the commit after it, this file, changes no code).
+Supersedes the flood-fix verification at `ca51ff6`, which this repeats in full
+and extends with the S7comm tests. Each suite was run on its own, one module at a time,
 `target/surefire-reports/` cleared first — see Commands for why no single
 command proves the whole reactor at once. No containers were involved in this
 table:
 
 | Suite | Result |
 |---|---|
-| `domain` | 209/209, 0 skipped (+37 over the prior 172: `S7commFeatureSchemaV1Test` ×6, `S7commCategoriesTest` ×7, `LongRingTest` ×4, `S7commConnectionKeyTest` ×3, `S7commConnectionStateTest` ×17; `QualityFlagsTest`, `NetworkEventTest`, `NetworkEventSurfaceTest` and `LogTypeTest` updated for the fourth protocol with unchanged counts) |
+| `domain` | 210/210, 0 skipped (+38 over the prior 172: `S7commFeatureSchemaV1Test` ×6, `S7commCategoriesTest` ×7, `LongRingTest` ×4, `S7commConnectionKeyTest` ×3, `S7commConnectionStateTest` ×18 (one pins the run lengths past `Integer.MAX_VALUE`); `QualityFlagsTest`, `NetworkEventTest`, `NetworkEventSurfaceTest` and `LogTypeTest` updated for the fourth protocol with unchanged counts) |
 | `ports` | no tests exist (no test sources in the module) |
 | `application` | 82/82, 0 skipped (+8: `S7commBuildFeaturesUseCaseTest` ×7 and `S7commFloodTest` — a million events on one connection in ~6.5 s) |
-| `adapter-kafka` | 144/144, 0 skipped (+23: `JsonZeekS7commParserTest` ×5, `S7commFieldValuesTest` ×7, `S7commEventMapperTest` ×11) |
-| `adapter-flink` | 60/60, 0 skipped (+15: `S7commUpstreamOracleTest` ×2 — the S7 parity proof: all 2,121 records of the upstream-generated oracle through the real parser, mapper and use case, every one of the 16 features bit-identical to upstream, zero mismatches, while a planted one-line bug gives 10,842 — `S7commParseMapValidateFunctionTest` ×5, `S7commFeatureProcessFunctionTest` ×5 including the TTL expiry, `S7commConnectionStateSerializerTest` ×3. `ModbusGoldenVectorTest` gained only its required `S7commEvent` switch arm) |
+| `adapter-kafka` | 145/145, 0 skipped (+24: `JsonZeekS7commParserTest` ×5, `S7commFieldValuesTest` ×8 (one rejects a 100,000-digit malformed number in well under 2 s), `S7commEventMapperTest` ×11) |
+| `adapter-flink` | 61/61, 0 skipped (+16: `S7commUpstreamOracleTest` ×2 — the S7 parity proof: all 2,121 records of the upstream-generated oracle through the real parser, mapper and use case, every one of the 16 features bit-identical to upstream, zero mismatches, while a planted one-line bug gives 10,842 — `S7commParseMapValidateFunctionTest` ×5, `S7commFeatureProcessFunctionTest` ×6 including the TTL expiry and the reset after an outage longer than the TTL, `S7commConnectionStateSerializerTest` ×3. `ModbusGoldenVectorTest` gained only its required `S7commEvent` switch arm) |
 | `adapter-clickhouse`, `InvalidEventRowMapperTest` and `SourceVersionContractTest` only (filtered; the module's container tests were not run here) | 10/10, 0 skipped |
 | `bootstrap-online-job`, `OnlineFeatureJobTopologyTest` only (filtered) | 7/7, 0 skipped (the four-protocol topology: 32 distinct uids) |
 | `bootstrap-archive-job`, `ArchiveJobTopologyTest` only (filtered) | 10/10, 0 skipped (eight chains: 24 distinct uids) |

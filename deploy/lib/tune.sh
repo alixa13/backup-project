@@ -197,7 +197,9 @@ tune_check_drift() {
   local rec_cores rec_total total drift
   rec_cores="$(env_value "$ENV_FILE" TUNE_DETECTED_CORES)"
   rec_total="$(env_value "$ENV_FILE" TUNE_DETECTED_MEM_TOTAL_MIB)"
-  [ -n "$rec_cores" ] && [ -n "$rec_total" ] || die "deploy/.env has no resources block: run 'deploy.sh tune'"
+  if [ -z "$rec_cores" ] || [ -z "$rec_total" ]; then
+    die "deploy/.env has no resources block: run 'deploy.sh tune'"
+  fi
   total="$(awk '/^MemTotal:/ {print int($2 / 1024)}' /proc/meminfo)"
   drift=$(( (total - rec_total) * 100 / rec_total ))
   if [ "$rec_cores" != "$(nproc)" ] || [ "${drift#-}" -gt 5 ]; then

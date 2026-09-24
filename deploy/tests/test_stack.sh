@@ -51,12 +51,15 @@ DEPLOY_DIR_SAVED="$DEPLOY_DIR"; DEPLOY_DIR="$tmp/deploy"; mkdir -p "$DEPLOY_DIR/
 touch "$DEPLOY_DIR/jars/online-feature-job.jar" "$DEPLOY_DIR/jars/archive-job.jar"
 docker() { return 0; }                     # 'docker image inspect' succeeds
 list_interfaces() { printf 'lo\neth0\n'; }
+# shellcheck disable=SC2034  # stack_preflight reads ZEEK_INTERFACE
 out="$( (ZEEK_INTERFACE=eth9; stack_preflight) 2>&1; echo "exit=$?")"
 assert_eq 1 "$(grep -c 'capture interface eth9 does not exist (this host has: lo eth0 )' <<< "$out")" "preflight refuses an unknown interface"
 assert_eq 1 "$(grep -c 'exit=1' <<< "$out")" "and stops"
+# shellcheck disable=SC2034  # stack_preflight reads ZEEK_INTERFACE
 out="$( (ZEEK_INTERFACE=""; stack_preflight) 2>&1; echo "exit=$?")"
 assert_eq 1 "$(grep -c 'ZEEK_INTERFACE is not set' <<< "$out")" "preflight refuses an empty interface"
 rm "$DEPLOY_DIR/jars/archive-job.jar"
+# shellcheck disable=SC2034  # stack_preflight reads ZEEK_INTERFACE
 out="$( (ZEEK_INTERFACE=eth0; stack_preflight) 2>&1; echo "exit=$?")"
 assert_eq 1 "$(grep -c "job JARs missing: run 'deploy.sh build' first" <<< "$out")" "preflight wants the JARs"
 DEPLOY_DIR="$DEPLOY_DIR_SAVED"

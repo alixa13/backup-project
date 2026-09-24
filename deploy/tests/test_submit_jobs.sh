@@ -54,7 +54,7 @@ assert_eq 0 "$(grep -c -- ' -s ' "$tmp/flink-args")" "first start has no -s"
 # prune keeps the three newest savepoints.
 for i in 1 2 3 4 5; do restore_point "$DATA/savepoints/archive-job/savepoint-$i" "2026-09-0$i 10:00"; done
 prune_restore_points archive-job
-assert_eq "savepoint-3 savepoint-4 savepoint-5" "$(ls "$DATA/savepoints/archive-job" | sort | tr '\n' ' ' | sed 's/ $//')" "prune keeps the 3 newest"
+assert_eq "savepoint-3 savepoint-4 savepoint-5" "$(cd "$DATA/savepoints/archive-job" && printf '%s\n' * | sort | tr '\n' ' ' | sed 's/ $//')" "prune keeps the 3 newest"
 
 # Review Focus 1: a failed submission logs how to start that job fresh, and the
 # supervisor carries on to the next job.

@@ -6,6 +6,7 @@
 # Absolute paths to deploy/ and the repository root, from this file's location,
 # so every command works from any working directory.
 DEPLOY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck disable=SC2034  # read by the modules that source this file
 REPO_ROOT="$(cd "${DEPLOY_DIR}/.." && pwd)"
 ENV_FILE="${ENV_FILE:-${DEPLOY_DIR}/.env}"
 COMPOSE_PROJECT="netsec-ml"

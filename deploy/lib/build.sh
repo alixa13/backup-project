@@ -34,7 +34,7 @@ build_run() {
   maven -pl modules/bootstrap-online-job,modules/bootstrap-archive-job -am -DskipTests package
   cp "${REPO_ROOT}"/modules/bootstrap-online-job/target/bootstrap-online-job-*-all.jar "${DEPLOY_DIR}/jars/online-feature-job.jar"
   cp "${REPO_ROOT}"/modules/bootstrap-archive-job/target/bootstrap-archive-job-*-all.jar "${DEPLOY_DIR}/jars/archive-job.jar"
-  log "jars: $(cd "${DEPLOY_DIR}/jars" && ls -1 | tr '\n' ' ')"
+  log "jars: $(cd "${DEPLOY_DIR}/jars" && printf '%s ' *.jar)"
 
   # The sensor image (compiles two plugins: ~7 minutes the first time).
   if [ "$jars_only" -eq 0 ]; then

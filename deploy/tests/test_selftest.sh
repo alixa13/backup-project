@@ -25,7 +25,8 @@ assert_eq "SELFTEST-1-M SELFTEST-1-M" "$(jq -r .uid "$tmp/modbus_detailed.jsonl"
 assert_eq true "$(jq -s '.[1].ts > .[0].ts' "$tmp/s7comm.jsonl")" "response after request"
 
 # The production parsers accept all four records.
-jar="$(ls "${REPO_ROOT}"/modules/bootstrap-online-job/target/bootstrap-online-job-*-all.jar | head -n 1)"
+jars=("${REPO_ROOT}"/modules/bootstrap-online-job/target/bootstrap-online-job-*-all.jar)
+jar="${jars[0]}"
 out="$(java -cp "$jar" io.netsecml.platform.bootstrap.online.ZeekRecordCheck \
   --modbus "$tmp/modbus_detailed.jsonl" --s7comm "$tmp/s7comm.jsonl")"; status=$?
 assert_eq 0 "$status" "ZeekRecordCheck passes the selftest records"

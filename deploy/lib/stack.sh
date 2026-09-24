@@ -43,8 +43,9 @@ taskmanager_registered() { [ "$(flink_rest /overview | jq '.taskmanagers')" -ge 
 # Refuse to start anything that cannot work: missing JARs or Zeek image, an
 # unset or unknown capture interface (Review Focus 2), no resources block.
 stack_preflight() {
-  [ -f "${DEPLOY_DIR}/jars/online-feature-job.jar" ] && [ -f "${DEPLOY_DIR}/jars/archive-job.jar" ] \
-    || die "job JARs missing: run 'deploy.sh build' first"
+  if [ ! -f "${DEPLOY_DIR}/jars/online-feature-job.jar" ] || [ ! -f "${DEPLOY_DIR}/jars/archive-job.jar" ]; then
+    die "job JARs missing: run 'deploy.sh build' first"
+  fi
   docker image inspect "$ZEEK_IMAGE" >/dev/null 2>&1 || die "Zeek image ${ZEEK_IMAGE} missing: run 'deploy.sh build' first"
   local interfaces
   interfaces="$(list_interfaces | tr '\n' ' ')"

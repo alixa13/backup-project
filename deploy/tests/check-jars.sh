@@ -37,7 +37,10 @@ NEEDED=(
 
 for job in online archive; do
   # The shaded JAR carries the classifier "all".
-  jar="$(ls "$REPO"/modules/bootstrap-${job}-job/target/bootstrap-${job}-job-*-all.jar 2>/dev/null | head -n 1)"
+  module="bootstrap-${job}-job"
+  jars=("${REPO}/modules/${module}/target/${module}"-*-all.jar)
+  jar="${jars[0]}"
+  [ -f "$jar" ] || jar=""
   assert_eq yes "$([ -n "$jar" ] && [ -f "$jar" ] && echo yes || echo no)" "${job}: shaded JAR exists"
   [ -n "$jar" ] || continue
   entries="$(unzip -Z1 "$jar")"

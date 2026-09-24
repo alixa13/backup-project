@@ -25,6 +25,7 @@ assert_eq 127.0.0.1 "$(BIND_ADDRESS=0.0.0.0 host_addr)" "0.0.0.0 -> loopback"
 assert_eq 10.1.2.3 "$(BIND_ADDRESS=10.1.2.3 host_addr)" "a specific bind address"
 
 # load_env without a deploy/.env stops with the way forward.
+# shellcheck disable=SC2034  # load_env reads ENV_FILE
 out="$( (ENV_FILE="$tmp/none"; load_env) 2>&1; echo "exit=$?")"
 assert_eq 1 "$(grep -c "run './deploy/deploy.sh install" <<< "$out")" "load_env names install"
 assert_eq 1 "$(grep -c 'exit=1' <<< "$out")" "load_env exits 1"

@@ -40,6 +40,16 @@ pytest tests/unit/               # unit tests only
 pytest -k test_name              # single test
 ```
 
+### Deployment (`deploy/`)
+```sh
+./deploy/deploy.sh help              # every command
+bash deploy/tests/run-all.sh         # every deploy check that needs no running stack
+```
+
+The stack (`deploy.sh up`, `selftest`, `zeek-check --live`) runs on the server
+only: the development machine does not have the hardware, so never start it
+here. `deploy/README.md` is the operator guide.
+
 ## Architecture
 
 **Data flow:** External Kafka (`conn`, `dns`, `netsec.modbus.raw.v1` and `netsec.s7comm.raw.v1` topics) → Online Flink job (parse → validate → bounded keyed state → per-schema feature vector — conn's own 20 values, dns's 24 (the common tier, whose conn-derived fields come from a non-blocking left join against conn.log snapshots, plus dns's own protocol tier), modbus's 42 (exactly the externally frozen upstream contract, keyed per `(sensor, client, server, unit)`), s7comm's 16 (exactly the externally frozen upstream contract, keyed per `(sensor, uid)`)) → internal Kafka topics (separate feature-vector and DLQ topics per protocol: `netsec.<protocol>.feature-vector.v1` and `netsec.<protocol>.dlq.v1` for `conn`, `dns`, `modbus` and `s7comm`) → Archive Flink job → ClickHouse. ONNX inference is not yet wired into either job (see Implementation state).
@@ -218,6 +228,17 @@ deliverables:
 - the parity oracle: `tests/fixtures/s7comm/upstream_oracle_v1.jsonl`, generated
   by running upstream's own builders (`tests/fixtures/s7comm/generate_upstream_oracle.py`)
 
+The deployment unit (`feat/deploy-mvp`, from `s7`) puts the Modbus + S7comm
+pipeline on one server: `deploy/deploy.sh` (doctor, install, tune, build, up,
+down, restart, status, logs, sql, selftest, zeek-check, uninstall) over a
+`netsec-ml` Compose project -- KRaft Kafka, ClickHouse, a Flink 2.2.1 session
+cluster with a resuming job supervisor, and a pinned Zeek 7.0.9 sensor
+(icsnpp-modbus v1.0.0, icsnpp-s7comm 7ebeb03, zeek-kafka v1.2.0). Both job
+modules build a shaded `-all` JAR. `ZeekRecordCheck` (bootstrap-online-job)
+runs real Zeek output through the production parsers; its test is pinned to
+`tests/fixtures/zeek/`, real ICSNPP output. Design:
+`docs/superpowers/specs/2026-09-24-server-deployment-design.md`.
+
 The pipeline is now: external `conn`, `dns`, `netsec.modbus.raw.v1` and
 `netsec.s7comm.raw.v1` topics →
 parse/validate → bounded keyed state → per-schema `FeatureVector` (conn: 20
@@ -275,6 +296,8 @@ table:
 | `adapter-clickhouse`, `InvalidEventRowMapperTest` and `SourceVersionContractTest` only (filtered; the module's container tests were not run here) | 10/10, 0 skipped |
 | `bootstrap-online-job`, `OnlineFeatureJobTopologyTest` only (filtered) | 8/8, 0 skipped (the four-protocol topology: 32 distinct uids; the eighth test, added by the minor-fix commit, proves the TTL `main()` passes reaches `s7comm-features` -- a planted bug that drops it for the default fails it) |
 | `bootstrap-archive-job`, `ArchiveJobTopologyTest` only (filtered) | 10/10, 0 skipped (eight chains: 24 distinct uids) |
+| `bootstrap-online-job`, `ZeekRecordCheckTest` only (filtered) | 8/8, 0 skipped (real ICSNPP output: 84/84 s7comm accepted; modbus 45/48, the 3 rejections upstream's own engine makes) |
+| `deploy/tests/run-all.sh` | every file 0 failed, shellcheck clean (no stack started: builds, stubs, `compose config`, offline `zeek -r`) |
 
 Verified fresh at the same point against real containers (Kafka
 `confluentinc/cp-kafka:7.6.1`, ClickHouse 25.8), each suite run alone and
@@ -294,6 +317,11 @@ were not re-run):
 | `adapter-clickhouse` (full suite, on `feat/clickhouse-archive-job`, before the DNS unit) | 37/37, 0 skipped at the time — now stale | Includes `DdlMigrationTest` — `001_mvp_tables.sql` has now been executed by a real ClickHouse 25.8 server, not merely read. Stale because the DNS unit's commit `22465c4` added a ninth test to `InvalidEventRowMapperTest` (`everyLogTypeHasASourceContractFileOnDisk`); that class alone is 9/9 fresh (run with `SourceVersionContractTest` in the filtered row above), so the true full-suite count is at least 38 and has not been re-verified against containers |
 | `FeatureVectorDeduplicationTest` | 3/3 | The committed dedup query runs and resolves duplicates |
 | `ClientV2InserterTest` | 4/4 | An unknown column is rejected, not silently skipped |
+
+**Not yet verified: the deployed stack itself.** `deploy.sh up`, `selftest`,
+`zeek-check --live` and a `down`/`up` restore have not run anywhere: the
+development machine cannot hold the stack. The first run on the server is that
+verification.
 
 **Not verified:** `ClickHouseOutageTest` — the Definition of Done's headline claim
 that a ClickHouse failure cannot stop feature production. It is OOM-killed during
@@ -491,8 +519,18 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   when the tid comes round again. This matches `07b`, which raises on an
   unparseable function code, so it is not a parity defect: resolving these
   codes would feed out-of-distribution records to a frozen model, and is the
-  model team's call, not a Java-side fix. Unverified offline: no real
-  `modbus_detailed` sample exists in the repo.
+  model team's call, not a Java-side fix. Measured on real Zeek output
+  (`tests/fixtures/zeek/`, `ZeekRecordCheckTest`): 3 of ICSNPP's 48 sample
+  records are DLQ'd this way -- an `_EXCEPTION` response, and both halves of a
+  function-43 exchange, because Zeek names function 43
+  `ENCAP_INTERFACE_TRANSPORT` while upstream's `FUNCTION_NAME_TO_CODE` spells it
+  `ENCAPSULATED_INTERFACE_TRANSPORT`, so upstream's engine rejects real FC-43
+  records too.
+- **The sensor must run icsnpp-modbus v1.0.0.** v2.0.0 (2025-09-03) writes
+  `modbus_detailed` as one record per request/response pair (`matched`,
+  `request_values`, `response_values`; no `is_orig`, no `request_response`, one
+  `ts`). Such a record is rejected (`direction is required`), never misread
+  (`ZeekRecordCheckTest`). The deployment's Zeek image pins v1.0.0.
 - **Partitioning precision.** The per-key arrival-order requirement above,
   "partition the modbus topic by `(client_ip, server_ip)`", means the
   CONNECTION-level pair (Zeek's `id_orig_h`/`id_resp_h`), never the per-packet

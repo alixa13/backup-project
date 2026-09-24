@@ -15,17 +15,17 @@ public final class QualityFlags {
 
     public static final int NONE = 0;
 
-    // BIT LAYOUT CONVENTION for protocols 3-6 (HTTP, SSH, Modbus, S7comm): bit
-    // 0 (CONN_ENRICHMENT_ABSENT) is PROTOCOL-AGNOSTIC -- every protocol that
-    // consumes the common tier's conn.log enrichment shares this exact bit,
-    // rather than each protocol defining its own copy of it. Bit 1 onward is
-    // where each protocol-specific flag lives, but each bit still has ONE
-    // GLOBAL MEANING, not a per-protocol one: every protocol-specific flag
-    // takes the next unused bit and keeps that meaning permanently, because
-    // archived rows outlive the code that wrote them. DNS claims bit 1
-    // (DNS_RESPONSE_ABSENT); modbus takes the next free bits, 2
-    // (MODBUS_OUT_OF_ORDER) and 3 (MODBUS_WINDOW_SATURATED); a consumer that forgets to check a row's own
-    // `log_type` still reads the word correctly, and no two constants in this
+    // BIT LAYOUT CONVENTION for protocols 3-6 (HTTP, SSH, Modbus, S7comm): bit 0
+    // (CONN_ENRICHMENT_ABSENT) is PROTOCOL-AGNOSTIC -- every protocol that
+    // consumes the common tier's conn.log enrichment shares this exact bit, rather
+    // than each protocol defining its own copy of it. Bit 1 onward is where each
+    // protocol-specific flag lives, but each bit still has ONE GLOBAL MEANING, not
+    // a per-protocol one: every protocol-specific flag takes the next unused bit
+    // and keeps that meaning permanently, because archived rows outlive the code
+    // that wrote them. DNS claims bit 1 (DNS_RESPONSE_ABSENT); modbus takes the
+    // next free bits, 2 (MODBUS_OUT_OF_ORDER) and 3 (MODBUS_WINDOW_SATURATED), and
+    // s7comm bit 4 (S7COMM_OUT_OF_ORDER); a consumer that forgets to check a row's
+    // own `log_type` still reads the word correctly, and no two constants in this
     // class ever share a value.
     public static final int CONN_ENRICHMENT_ABSENT = 1;
 
@@ -71,6 +71,16 @@ public final class QualityFlags {
     // out-of-order event resets the state, leaving one entry per window.
     // Bit 3, the next free bit, one global meaning like its siblings.
     public static final int MODBUS_WINDOW_SATURATED = 8;
+
+    // Set when an s7comm record's timestamp is earlier than the last record's
+    // for the same (sensor, uid) connection. Unlike MODBUS_OUT_OF_ORDER, nothing
+    // is reset: no s7comm-feature-v1 feature reads time, so the record is
+    // processed where it arrived and only flagged. The upstream offline builder
+    // processes records in stored order and has no such notion; a streaming
+    // operator sees arrival order, and this keeps a violated partitioning
+    // requirement (the sensor must partition the s7comm topic by uid)
+    // observable. Bit 4, the next free bit.
+    public static final int S7COMM_OUT_OF_ORDER = 16;
 
     // Non-instantiable: every member is a constant.
     private QualityFlags() {

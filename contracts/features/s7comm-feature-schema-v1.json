@@ -1,0 +1,48 @@
+{
+  "id": "s7comm-feature-v1",
+  "semanticVersion": "1.0.0",
+  "inputDtype": "float32",
+  "featureCount": 16,
+  "notes": "Mirrors the upstream model team's frozen S7comm Stage 1 / Stage 2 raw feature contract (STAGE1_RAW_FEATURES in two-models-info/S7___/90_attack_type_mode_router_v2.py, transcribed as tests/fixtures/contracts/s7comm_stage1_raw_features_v1.json) feature-for-feature: same 16 names in the same order, no common tier. Every value is read AFTER the current event has been applied to the (sensor, uid) connection state, as upstream's builders do. missingPolicy: REQUIRED when the feature's source field is required for the record to be scored at all (a record whose direction cannot be resolved is rejected to the DLQ); DEFAULT_ZERO when the value is 0 until there is history to compute it from; SENTINEL for the two categorical codes, whose absence is itself a category carried as a documented negative code (see categoricalCodes). Design: docs/superpowers/specs/2026-09-24-s7comm-stage1-design.md.",
+  "categoricalCodes": {
+    "s7_rosctr": {
+      "encode": "the record's ROSCTR code (0 <= n < 2^24); -1 when absent",
+      "decode": "-1 -> \"__MISSING__\"; n -> decimal string of n (upstream _cat)"
+    },
+    "s7_operation": {
+      "encode": "the record's S7 function code (0 <= n < 2^24); when absent, the upper-cased function_name mapped back through functionNames if it is one of them, else -2; -1 when both are absent",
+      "decode": "-1 -> \"__MISSING__\"; -2 -> \"__UNSEEN__\"; n -> functionNames[n], else \"FUNCTION_0x%02X\" of n (upstream _operation)",
+      "functionNames": {
+        "4": "READ_VAR",
+        "5": "WRITE_VAR",
+        "26": "REQUEST_DOWNLOAD",
+        "27": "DOWNLOAD_BLOCK",
+        "28": "DOWNLOAD_ENDED",
+        "29": "START_UPLOAD",
+        "30": "UPLOAD",
+        "31": "END_UPLOAD",
+        "40": "PI_SERVICE",
+        "41": "PLC_STOP",
+        "240": "SETUP_COMMUNICATION"
+      }
+    }
+  },
+  "features": [
+    { "index": 0, "name": "s7_outstanding_requests", "unit": "count", "missingPolicy": "DEFAULT_ZERO", "formula": "unmatched request PDU references after this event" },
+    { "index": 1, "name": "s7_outstanding_mean_16", "unit": "count", "missingPolicy": "DEFAULT_ZERO", "formula": "mean of the last <=16 values of s7_outstanding_requests, this event's included" },
+    { "index": 2, "name": "s7_response_match_rate_16", "unit": "ratio", "missingPolicy": "DEFAULT_ZERO", "formula": "matched / count over the last <=16 responses; 0 before any response" },
+    { "index": 3, "name": "s7_same_function_run_length", "unit": "count", "missingPolicy": "DEFAULT_ZERO", "formula": "current run of requests carrying the same function code; 0 before any" },
+    { "index": 4, "name": "s7_same_direction_run_length", "unit": "count", "missingPolicy": "DEFAULT_ZERO", "formula": "current run of events in the same direction" },
+    { "index": 5, "name": "s7_request_ratio_16", "unit": "ratio", "missingPolicy": "DEFAULT_ZERO", "formula": "requests / count over the last <=16 events" },
+    { "index": 6, "name": "s7_direction_change_rate_16", "unit": "ratio", "missingPolicy": "DEFAULT_ZERO", "formula": "mean of the last <=16 direction-change flags; the first event contributes 0" },
+    { "index": 7, "name": "s7_function_change_rate_16", "unit": "ratio", "missingPolicy": "DEFAULT_ZERO", "formula": "mean of the last <=16 function-change flags of requests carrying a function code; 0 before any" },
+    { "index": 8, "name": "s7_function_entropy_16", "unit": "ratio", "missingPolicy": "DEFAULT_ZERO", "formula": "Shannon entropy of the last <=16 request function codes / log2(max(2, min(16, n))); 0 for n <= 1" },
+    { "index": 9, "name": "s7_function_transition_entropy_16", "unit": "ratio", "missingPolicy": "DEFAULT_ZERO", "formula": "Shannon entropy of the last <=16 (previous, current) request function transitions / log2(max(2, min(16, n))); 0 for n <= 1" },
+    { "index": 10, "name": "s7_rosctr_change_rate_16", "unit": "ratio", "missingPolicy": "DEFAULT_ZERO", "formula": "mean of the last <=16 ROSCTR-change flags of events carrying a ROSCTR code; 0 before any" },
+    { "index": 11, "name": "s7_pdu_reference_unique_ratio_32", "unit": "ratio", "missingPolicy": "DEFAULT_ZERO", "formula": "distinct / count over the last <=32 request PDU references; 0 before any request" },
+    { "index": 12, "name": "is_request_direction", "unit": "boolean", "missingPolicy": "REQUIRED", "formula": "1 iff the destination port of this record is 102" },
+    { "index": 13, "name": "s7_function_changed", "unit": "boolean", "missingPolicy": "DEFAULT_ZERO", "formula": "1 iff this request's function code differs from the previous request's; 0 for responses" },
+    { "index": 14, "name": "s7_rosctr", "unit": "code", "missingPolicy": "SENTINEL", "formula": "ROSCTR code; -1 = __MISSING__ (see categoricalCodes)" },
+    { "index": 15, "name": "s7_operation", "unit": "code", "missingPolicy": "SENTINEL", "formula": "S7 function code; -1 = __MISSING__, -2 = unseen function_name (see categoricalCodes)" }
+  ]
+}

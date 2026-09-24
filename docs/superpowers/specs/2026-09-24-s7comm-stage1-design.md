@@ -227,9 +227,13 @@ Each is a deliberate deviation from, or addition to, upstream.
   every other name to `-2` (decoded `"__UNSEEN__"`). That equals upstream only when such a name
   never appeared in training; ICSNPP writes the code whenever it writes a name, so the case is not
   expected. Recorded as a limit.
-- **R7 — `log2`.** Java has no `log2`; `ln(x)/ln(2)` can differ from C's `log2` in the last bit of
-  a double. The vector is float32, so this almost never survives rounding. The upstream-generated
-  oracle (§11) is the arbiter: any mismatch it finds changes the implementation, not the fixture.
+- **R7 — `log2` and summation, settled by proof.** Java has no `log2`, and Python ≥ 3.12's `sum()` is
+  compensated. Checked exhaustively on 2026-09-24 over every input the two entropy features can
+  reach — all 65,534 ordered count sequences for n = 2..16 — computing Java's way (plain summation,
+  `Math.log(x) / Math.log(2)`) and Python's (`sum`, glibc `math.log2`): the double results differ in
+  14,436 cases, the float32 results in none, and plain summation on the Python side also differs in
+  none. The vector is float32, so neither difference can reach it, whichever Python version the model
+  team trained on. The Java uses the plain form.
 - **R8 — float32.** Upstream's raw features are float64; the platform's vectors are float32 for
   every protocol. The oracle compares against upstream's value rounded to float32.
 - **R9 — narrowing style.** The chain narrows `NetworkEvent` to `S7commEvent` once, at its

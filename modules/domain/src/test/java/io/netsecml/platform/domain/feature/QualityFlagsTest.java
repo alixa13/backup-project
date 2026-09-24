@@ -28,9 +28,11 @@ class QualityFlagsTest {
         assertEquals(2, QualityFlags.DNS_RESPONSE_ABSENT);
         assertEquals(4, QualityFlags.MODBUS_OUT_OF_ORDER);
         assertEquals(8, QualityFlags.MODBUS_WINDOW_SATURATED);
+        assertEquals(16, QualityFlags.S7COMM_OUT_OF_ORDER);
 
         int[] bits = {QualityFlags.CONN_ENRICHMENT_ABSENT, QualityFlags.DNS_RESPONSE_ABSENT,
-            QualityFlags.MODBUS_OUT_OF_ORDER, QualityFlags.MODBUS_WINDOW_SATURATED};
+            QualityFlags.MODBUS_OUT_OF_ORDER, QualityFlags.MODBUS_WINDOW_SATURATED,
+            QualityFlags.S7COMM_OUT_OF_ORDER};
 
         // Pairwise distinctness: no two constants may ever share a bit position.
         int all = 0;
@@ -39,7 +41,7 @@ class QualityFlagsTest {
             assertEquals(0, all & bit, "flag " + bit + " overlaps an earlier one");
             all |= bit;
         }
-        assertEquals(15, all, "all four bits must be distinct and non-overlapping");
+        assertEquals(31, all, "all five bits must be distinct and non-overlapping");
 
         // Each bit must be independently recoverable from the combined value --
         // this is what lets a ClickHouse query filter on one protocol's own

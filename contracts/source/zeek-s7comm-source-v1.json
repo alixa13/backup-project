@@ -1,0 +1,32 @@
+{
+  "id": "zeek-s7comm-source-v1",
+  "description": "Fields read from one ICSNPP s7comm.log record (icsnpp-s7comm package) delivered as one Kafka JSON message. Field resolution mirrors the upstream model team's production adapter (two-models-info/S7___/kafka_source.py, normalize_zeek_message): for each canonical field the first present, non-empty alias wins. Integer fields follow upstream's _int_or_none: a JSON integer as is, a boolean as 0/1, a JSON float truncated toward zero, a string parsed as a Python integer literal (decimal, 0x, 0o or 0b) or else as a decimal float truncated toward zero; underscore digit separators are not accepted. Design: docs/superpowers/specs/2026-09-24-s7comm-stage1-design.md section 5.",
+  "requiredFields": [
+    { "name": "ts", "type": "number", "notes": "epoch seconds, fractional part allowed, also accepted as a decimal string; negative, non-finite or year-2300-and-later values are rejected (INVALID_TIMESTAMP). No s7comm-feature-v1 feature reads time: ts orders records, stamps the event id's ts_millis component, and flags an out-of-order record" },
+    { "name": "uid", "type": "string", "notes": "Zeek uid; the connection state key (sensor, uid) and part of the event id. Required, unlike upstream, which falls back to an endpoint flow key: Zeek always writes it (design ruling R1)" },
+    { "name": "pdu_reference", "type": "integer", "notes": "aliases pdu_ref, pdu_ref_num. 0-65535, the S7 header's 16-bit PDU reference: request/response matching, the outstanding set and PDU uniqueness. Required, unlike upstream (design ruling R2)" }
+  ],
+  "optionalFields": [
+    { "name": "source_h", "type": "string", "notes": "aliases src_h, src. PER-PACKET sender of THIS record. When source_h, source_p, destination_h and destination_p are all present they are used as they are, and the connection pair below is ignored (upstream's precedence)" },
+    { "name": "source_p", "type": "integer", "notes": "alias src_p. Per-packet sender port" },
+    { "name": "destination_h", "type": "string", "notes": "aliases dst_h, dst. Per-packet receiver of THIS record" },
+    { "name": "destination_p", "type": "integer", "notes": "alias dst_p. Per-packet receiver port; destination port 102 makes the record a request" },
+    { "name": "id_orig_h", "type": "string", "notes": "CONNECTION-level originator, identical on a request and on its response. Accepted spellings, first present wins: id_orig_h (what this platform's sensor emits), id.orig_h (Zeek's dotted JSON), a nested id object's orig_h, and orig_h. Used only when the per-packet four are incomplete, and then oriented by is_orig" },
+    { "name": "id_orig_p", "type": "integer", "notes": "same spellings as id_orig_h" },
+    { "name": "id_resp_h", "type": "string", "notes": "CONNECTION-level responder; same spellings and use as id_orig_h" },
+    { "name": "id_resp_p", "type": "integer", "notes": "same spellings as id_orig_h" },
+    { "name": "is_orig", "type": "boolean", "notes": "whether the connection originator sent THIS record: true -> source = orig, destination = resp; false -> the reverse. Required when the connection pair resolves the endpoints. Accepted as a JSON boolean, a number (0 = false), or one of true t 1 yes y orig originator / false f 0 no n resp responder (any case, surrounding spaces ignored); anything else is rejected, as upstream raises" },
+    { "name": "rosctr_code", "type": "integer", "notes": "alias rosctr. 0 <= n < 2^24. Source for s7_rosctr and s7_rosctr_change_rate_16; absent -> the __MISSING__ category" },
+    { "name": "function_code", "type": "integer", "notes": "alias function. 0 <= n < 2^24. Source for s7_operation and every request-function feature" },
+    { "name": "function_name", "type": "string", "notes": "used only when function_code is absent: upper-cased and mapped back to its code if it is one of upstream's FUNCTION_NAMES, else the unseen-name code -2. Empty is the same as absent" }
+  ],
+  "excludedRawFields": [
+    { "name": "rosctr_name", "notes": "the frozen s7_rosctr stores the code category, not the name (upstream spec section 2.2, feature 15)" },
+    { "name": "subfunction_code", "notes": "not an input to either frozen model" },
+    { "name": "subfunction_name", "notes": "not an input to either frozen model" },
+    { "name": "error_class", "notes": "not an input to either frozen model" },
+    { "name": "error_code", "notes": "not an input to either frozen model" },
+    { "name": "parameter_length, data_length, item_count, varspec_syntax_id, item_transport_size, item_length, db_number, area_code, address_bit, address_byte, address_bit_offset, data_return_code, data_transport_size, data_length_value, data_value_hex, write_value_hex", "notes": "PCAP research fields, excluded from both frozen models (upstream spec section 6.1)" }
+  ],
+  "invalidRecordPolicy": "Input that is not a single JSON object routes to the s7comm DLQ as MALFORMED_JSON (parse stage). A missing uid, ts or pdu_reference, an unreadable is_orig, or unresolvable or blank endpoints is MISSING_REQUIRED_FIELD; an unreadable or out-of-range ts is INVALID_TIMESTAMP; an unreadable or out-of-range port is INVALID_PORT; an unreadable or out-of-range pdu_reference, rosctr_code or function_code is INVALID_COUNTER (all map stage). Unknown additive fields are tolerated and ignored."
+}

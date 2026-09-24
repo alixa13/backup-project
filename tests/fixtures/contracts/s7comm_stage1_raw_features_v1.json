@@ -1,0 +1,19 @@
+{
+  "source": "two-models-info/S7___/90_attack_type_mode_router_v2.py, STAGE1_RAW_FEATURES; file sha256 fa6308ca15619d25b97105e703ca442e3788792fd4155fbe95e40ea1508e9b01",
+  "note": "Transcribed verbatim. The upstream project ships no JSON contract for S7comm; this list is the frozen raw order both frozen models (Stage 1 v4_causal_final_r1 and Stage 2 attack_mode_router_v1_r2) consume.",
+  "continuous": [
+    "s7_outstanding_requests", "s7_outstanding_mean_16", "s7_response_match_rate_16",
+    "s7_same_function_run_length", "s7_same_direction_run_length", "s7_request_ratio_16",
+    "s7_direction_change_rate_16", "s7_function_change_rate_16", "s7_function_entropy_16",
+    "s7_function_transition_entropy_16", "s7_rosctr_change_rate_16", "s7_pdu_reference_unique_ratio_32"
+  ],
+  "binary": ["is_request_direction", "s7_function_changed"],
+  "categorical": ["s7_rosctr", "s7_operation"],
+  "feature_order": [
+    "s7_outstanding_requests", "s7_outstanding_mean_16", "s7_response_match_rate_16",
+    "s7_same_function_run_length", "s7_same_direction_run_length", "s7_request_ratio_16",
+    "s7_direction_change_rate_16", "s7_function_change_rate_16", "s7_function_entropy_16",
+    "s7_function_transition_entropy_16", "s7_rosctr_change_rate_16", "s7_pdu_reference_unique_ratio_32",
+    "is_request_direction", "s7_function_changed", "s7_rosctr", "s7_operation"
+  ]
+}

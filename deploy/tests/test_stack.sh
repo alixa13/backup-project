@@ -26,6 +26,12 @@ assert_eq 0 "$(printf '' | sum_offsets)" "sum_offsets of nothing"
 assert_eq 42 "$(checkpoint_age 1000042000 <<< '{"latest":{"completed":{"latest_ack_timestamp":1000000000}}}')" "checkpoint age"
 assert_eq none "$(checkpoint_age 1 <<< '{"latest":{"completed":null}}')" "no checkpoint yet"
 
+# Epoch milliseconds: exactly 13 digits and within a second of 'date +%s' --
+# never a width modifier like %3N, which some date implementations ignore.
+ms="$(now_millis)"
+assert_eq 1 "$(grep -cE '^[0-9]{13}$' <<< "$ms")" "now_millis is 13 digits"
+assert_eq yes "$([ $(( ${ms:0:10} - $(date +%s) )) -le 1 ] && echo yes || echo no)" "now_millis agrees with date +%s"
+
 # Review Focus 3: 'compose exec' reads stdin; inside the topic loop it must not
 # swallow topics.conf, or only the first topic is ever created.
 set -a; . "${DEPLOY_DIR}/.env.template"; set +a

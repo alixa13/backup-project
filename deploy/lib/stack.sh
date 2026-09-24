@@ -21,6 +21,15 @@ checkpoint_age() {
      else (($now - .latest.completed.latest_ack_timestamp) / 1000 | floor | tostring) end'
 }
 
+# Epoch milliseconds. Cut from %N (nanoseconds, which every date implementation
+# supports) rather than asked for as %3N: some implementations ignore the width
+# and print all nine digits.
+now_millis() {
+  local ns
+  ns="$(date +%s%N)"
+  printf '%s\n' "${ns:0:13}"
+}
+
 # True when both jobs are RUNNING on the cluster.
 jobs_running() {
   [ "$(flink_rest /jobs/overview | running_job_names | grep -cxE 'online-feature-job|archive-job')" -eq 2 ]
@@ -126,7 +135,7 @@ stack_status() {
   if flink_rest /overview >/dev/null 2>&1; then
     log "Flink jobs:"
     local now jid name
-    now="$(date +%s%3N)"
+    now="$(now_millis)"
     while read -r jid name; do
       [ -n "$jid" ] || continue
       printf '  %-20s RUNNING   last checkpoint %ss ago\n' "$name" "$(flink_rest "/jobs/${jid}/checkpoints" | checkpoint_age "$now")"

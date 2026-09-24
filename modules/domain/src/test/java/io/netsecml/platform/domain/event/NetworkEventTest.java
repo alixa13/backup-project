@@ -137,24 +137,41 @@ class NetworkEventTest {
             ModbusEvent.ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.6", 3, "1", "1",
             null, null, false, new double[0], new double[0]);
 
+        Instant s7EventTime = Instant.parse("2026-09-24T10:00:00Z");
+        NetworkEvent s7Event = new S7commEvent(
+            new EventEnvelope(EventId.derive(new SensorId("s"), "S"),
+                s7EventTime, new SensorId("s"), LogType.S7COMM, "S"),
+            s7EventTime.getEpochSecond(), "10.0.0.5", 50001, "10.0.0.6", 102, 7, 1, 4, null);
+
         String describedConn = switch (connEvent) {
             case ConnEvent conn -> "conn:" + conn.connection().sourceIp();
             case DnsEvent dns -> "dns:" + dns.sourceIp();
             case ModbusEvent modbus -> "modbus:" + modbus.sourceIp();
+            case S7commEvent s7 -> "s7comm:" + s7.sourceIp();
         };
         String describedDns = switch (dnsEvent) {
             case ConnEvent conn -> "conn:" + conn.connection().sourceIp();
             case DnsEvent dns -> "dns:" + dns.sourceIp();
             case ModbusEvent modbus -> "modbus:" + modbus.sourceIp();
+            case S7commEvent s7 -> "s7comm:" + s7.sourceIp();
         };
         String describedModbus = switch (modbusEvent) {
             case ConnEvent conn -> "conn:" + conn.connection().sourceIp();
             case DnsEvent dns -> "dns:" + dns.sourceIp();
             case ModbusEvent modbus -> "modbus:" + modbus.sourceIp();
+            case S7commEvent s7 -> "s7comm:" + s7.sourceIp();
         };
 
         assertTrue(describedConn.startsWith("conn:"));
         assertTrue(describedDns.startsWith("dns:"));
+        String describedS7 = switch (s7Event) {
+            case ConnEvent conn -> "conn:" + conn.connection().sourceIp();
+            case DnsEvent dns -> "dns:" + dns.sourceIp();
+            case ModbusEvent modbus -> "modbus:" + modbus.sourceIp();
+            case S7commEvent s7 -> "s7comm:" + s7.sourceIp();
+        };
+
         assertTrue(describedModbus.startsWith("modbus:"));
+        assertTrue(describedS7.startsWith("s7comm:"));
     }
 }

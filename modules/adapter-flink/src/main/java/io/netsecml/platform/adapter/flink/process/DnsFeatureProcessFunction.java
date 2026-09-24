@@ -4,6 +4,7 @@ import io.netsecml.platform.application.usecase.DnsBuildFeaturesUseCase;
 import io.netsecml.platform.domain.event.ConnEvent;
 import io.netsecml.platform.domain.event.DnsEvent;
 import io.netsecml.platform.domain.event.ModbusEvent;
+import io.netsecml.platform.domain.event.S7commEvent;
 import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.feature.DnsWindowState;
 import io.netsecml.platform.domain.feature.FeatureBuildResult;
@@ -83,6 +84,10 @@ public final class DnsFeatureProcessFunction extends KeyedProcessFunction<Source
             case ModbusEvent ignored -> throw new IllegalStateException(
                 "DnsFeatureProcessFunction received a ModbusEvent; the modbus chain is separate by design "
                 + "(docs/superpowers/specs/2026-09-21-modbus-stage1-design.md section 10) "
+                + "and this is a wiring error, not a runtime condition");
+            case S7commEvent ignored -> throw new IllegalStateException(
+                "DnsFeatureProcessFunction received an S7commEvent; the s7comm chain is separate by design "
+                + "(docs/superpowers/specs/2026-09-24-s7comm-stage1-design.md section 10) "
                 + "and this is a wiring error, not a runtime condition");
         };
 

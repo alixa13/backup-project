@@ -7,6 +7,7 @@ import io.netsecml.platform.domain.event.ConnEvent;
 import io.netsecml.platform.domain.event.DnsEvent;
 import io.netsecml.platform.domain.event.MappingResult;
 import io.netsecml.platform.domain.event.ModbusEvent;
+import io.netsecml.platform.domain.event.S7commEvent;
 import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.event.SensorId;
 import io.netsecml.platform.domain.feature.FeatureBuildResult;
@@ -61,6 +62,7 @@ class ModbusGoldenVectorTest {
         assertTrue(mapped.isValid(), () -> "mapper rejected the fixture: " + mapped.reason() + ": " + mapped.detail());
         return switch (mapped.value()) {
             case ModbusEvent m -> m;
+            case S7commEvent s -> throw new AssertionError("ModbusEventMapper maps modbus_detailed.log exclusively; got an S7commEvent");
             case ConnEvent c -> throw new AssertionError("ModbusEventMapper maps modbus_detailed.log exclusively; got a ConnEvent");
             case DnsEvent d -> throw new AssertionError("ModbusEventMapper maps modbus_detailed.log exclusively; got a DnsEvent");
         };

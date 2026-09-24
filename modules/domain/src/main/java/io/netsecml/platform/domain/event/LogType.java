@@ -8,21 +8,22 @@ import java.util.Locale;
 // different concept in this same package, and it is frozen into conn-feature-v1
 // as features 11-12 — the two must never be conflated.
 //
-// CONN, DNS and MODBUS exist because each has a DTO (or event record), a
-// mapper and a feature schema. A constant is added per log type as each one
-// lands; Java should not advertise support that has nothing behind it. DNS
-// was the second constant this enum ever had, MODBUS the third -- see
-// NetworkEvent's javadoc for what adding each one did to the sealed
-// hierarchy's switches.
+// CONN, DNS, MODBUS and S7COMM exist because each has a DTO (or event
+// record), a mapper and a feature schema. A constant is added per log type as
+// each one lands; Java should not advertise support that has nothing behind
+// it. DNS was the second constant this enum ever had, MODBUS the third,
+// S7COMM the fourth -- see NetworkEvent's javadoc for what adding each one did
+// to the sealed hierarchy's switches.
 public enum LogType {
-    CONN, DNS, MODBUS;
+    CONN, DNS, MODBUS, S7COMM;
 
     // The lowercase form used on the Kafka wire and in ClickHouse's log_type
     // column. Matches Zeek's own log naming for CONN and DNS (conn.log,
     // dns.log); for MODBUS it is "modbus", the wire's own name for what is
     // actually ICSNPP's modbus_detailed.log, not base Zeek's own modbus.log
     // (see ModbusFeatureSchemaV1's javadoc for why only the detailed log has
-    // the fields this platform's schema needs).
+    // the fields this platform's schema needs). For S7COMM it is "s7comm",
+    // ICSNPP's own s7comm.log.
     public String wireName() {
         return name().toLowerCase(Locale.ROOT);
     }

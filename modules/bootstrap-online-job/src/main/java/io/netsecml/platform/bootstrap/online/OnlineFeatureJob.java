@@ -21,6 +21,7 @@ import io.netsecml.platform.adapter.kafka.sink.RejectedRecordSerializer;
 import io.netsecml.platform.domain.event.ConnEvent;
 import io.netsecml.platform.domain.event.DnsEvent;
 import io.netsecml.platform.domain.event.ModbusEvent;
+import io.netsecml.platform.domain.event.S7commEvent;
 import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.event.SensorId;
 import io.netsecml.platform.domain.feature.ConnSnapshot;
@@ -274,6 +275,9 @@ public final class OnlineFeatureJob {
         public ModbusEvent map(NetworkEvent event) {
             return switch (event) {
                 case ModbusEvent modbusEvent -> modbusEvent;
+                case S7commEvent ignored -> throw new IllegalStateException(
+                    "modbus chain received an S7commEvent; modbus-parse can only ever produce a ModbusEvent "
+                    + "and this is a wiring error, not a runtime condition");
                 case ConnEvent ignored -> throw new IllegalStateException(
                     "modbus chain received a ConnEvent; modbus-parse can only ever produce a ModbusEvent "
                     + "and this is a wiring error, not a runtime condition");

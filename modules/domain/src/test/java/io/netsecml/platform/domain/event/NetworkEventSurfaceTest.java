@@ -40,23 +40,17 @@ class NetworkEventSurfaceTest {
     // it stayed green with a stale expectation until updated here, which is
     // worth noting: the compiler's exhaustiveness alarm covers switches, not
     // this reflective assertion. It stayed green with a stale expectation again
-    // when ModbusEvent joined permits, for the same reason -- updated here too.
-    //
-    // ModbusEvent is a deliberate, narrow exception to "only log types with a
-    // parser, mapper and feature schema": its schema and parser exist, but its
-    // mapper is a later task in this same unit (its return type IS ModbusEvent,
-    // so it cannot come first). Nothing in production code can construct a
-    // ModbusEvent without that mapper, so this is not the rule being violated --
-    // see NetworkEvent's own javadoc for the full reasoning.
+    // when ModbusEvent joined permits, and again when S7commEvent did, for the
+    // same reason -- updated here each time.
     @Test
     void permitsListsOnlyImplementedLogTypes() {
         List<String> permitted = Arrays.stream(NetworkEvent.class.getPermittedSubclasses())
             .map(Class::getSimpleName)
             .toList();
 
-        assertEquals(List.of("ConnEvent", "DnsEvent", "ModbusEvent"), permitted,
-            "conn, dns and modbus are the only log types with a parser/event and schema today "
-            + "(modbus's mapper is a later task in this unit); add a record when the next protocol lands");
+        assertEquals(List.of("ConnEvent", "DnsEvent", "ModbusEvent", "S7commEvent"), permitted,
+            "conn, dns, modbus and s7comm are the only log types with a parser, mapper and schema today; "
+            + "add a record when the next protocol lands");
     }
 
     // Sealing is what makes the compiler flag an unhandled case later. An

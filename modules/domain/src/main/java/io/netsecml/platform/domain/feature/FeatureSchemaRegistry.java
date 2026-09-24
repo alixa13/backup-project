@@ -15,15 +15,15 @@ import java.util.Map;
 // LogType.values() fails until you do.
 public final class FeatureSchemaRegistry {
 
-    // conn, dns and modbus today. An entry is added when a log type has a frozen
-    // schema behind it -- the same rule LogType states about its own constants.
-    // This is the third entry this map has ever had: everyLogTypeConstantHasARegisteredSchema
-    // walks LogType.values() and previously asserted only two, exactly because a
-    // third log type had not arrived yet.
+    // conn, dns, modbus and s7comm today. An entry is added when a log type has a
+    // frozen schema behind it -- the same rule LogType states about its own
+    // constants. everyLogTypeConstantHasARegisteredSchema walks LogType.values(),
+    // so a constant added without its entry fails there.
     private static final Map<LogType, FeatureSchema> BY_LOG_TYPE =
         Map.of(LogType.CONN, ConnFeatureSchemaV1.SCHEMA,
                LogType.DNS, DnsFeatureSchemaV1.SCHEMA,
-               LogType.MODBUS, ModbusFeatureSchemaV1.SCHEMA);
+               LogType.MODBUS, ModbusFeatureSchemaV1.SCHEMA,
+               LogType.S7COMM, S7commFeatureSchemaV1.SCHEMA);
 
     // Derived from the same source, so the two lookups cannot disagree about
     // which schema a log type produces.

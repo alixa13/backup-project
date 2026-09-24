@@ -48,6 +48,7 @@ class ModbusEventMapperTest {
     private static ModbusEvent asModbusEvent(NetworkEvent event) {
         return switch (event) {
             case ModbusEvent m -> m;
+            case S7commEvent s -> throw new AssertionError("ModbusEventMapper maps modbus_detailed.log exclusively; got an S7commEvent");
             case ConnEvent c -> throw new AssertionError("ModbusEventMapper maps modbus_detailed.log exclusively; got a ConnEvent");
             case DnsEvent d -> throw new AssertionError("ModbusEventMapper maps modbus_detailed.log exclusively; got a DnsEvent");
         };

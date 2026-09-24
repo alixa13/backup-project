@@ -40,7 +40,14 @@ import java.time.Instant;
 // (ModbusFeatureSchemaV1) -- the admission rule stated above this paragraph --
 // so, unlike DnsEvent's own arrival, nothing about its permits membership was
 // ever ahead of what it depends on.
-public sealed interface NetworkEvent permits ConnEvent, DnsEvent, ModbusEvent {
+//
+// S7commEvent joined in the same change as its parser (JsonZeekS7commParser),
+// mapper (S7commEventMapper) and schema (S7commFeatureSchemaV1), so its
+// admission never ran ahead of what it depends on. As before, every
+// exhaustive switch over this interface gained an explicit case S7commEvent
+// arm, never a default, and NetworkEventSurfaceTest's permittedSubclasses
+// assertion was updated by hand.
+public sealed interface NetworkEvent permits ConnEvent, DnsEvent, ModbusEvent, S7commEvent {
 
     // Every log type carries the same identity block; only the payload differs.
     EventEnvelope envelope();

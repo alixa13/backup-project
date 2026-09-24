@@ -100,6 +100,7 @@ class DnsEventMapperTest {
             case DnsEvent d -> d;
             case ConnEvent c -> throw new AssertionError("DnsEventMapper maps dns.log exclusively; got a ConnEvent");
             case ModbusEvent m -> throw new AssertionError("DnsEventMapper maps dns.log exclusively; got a ModbusEvent");
+            case S7commEvent s -> throw new AssertionError("DnsEventMapper maps dns.log exclusively; got an S7commEvent");
         };
         assertEquals("example.com", dns.query().name());
         assertEquals(DnsQType.A, dns.query().qtype());
@@ -145,6 +146,7 @@ class DnsEventMapperTest {
             case DnsEvent d -> d;
             case ConnEvent c -> throw new AssertionError("DnsEventMapper maps dns.log exclusively; got a ConnEvent");
             case ModbusEvent m -> throw new AssertionError("DnsEventMapper maps dns.log exclusively; got a ModbusEvent");
+            case S7commEvent s -> throw new AssertionError("DnsEventMapper maps dns.log exclusively; got an S7commEvent");
         };
         assertNotNull(dns.response(), "rcode was present, so a response must be built even with no answers");
         assertEquals(DnsRcode.NXDOMAIN, dns.response().rcode());
@@ -164,6 +166,7 @@ class DnsEventMapperTest {
             case DnsEvent d -> d;
             case ConnEvent c -> throw new AssertionError("DnsEventMapper maps dns.log exclusively; got a ConnEvent");
             case ModbusEvent m -> throw new AssertionError("DnsEventMapper maps dns.log exclusively; got a ModbusEvent");
+            case S7commEvent s -> throw new AssertionError("DnsEventMapper maps dns.log exclusively; got an S7commEvent");
         };
         assertNotNull(dns.response());
         assertEquals(0, dns.response().answerCount(), "answers was also present-but-empty in this fixture");
@@ -239,6 +242,7 @@ class DnsEventMapperTest {
             case DnsEvent d -> d;
             case ConnEvent c -> throw new AssertionError("DnsEventMapper maps dns.log exclusively; got a ConnEvent");
             case ModbusEvent m -> throw new AssertionError("DnsEventMapper maps dns.log exclusively; got a ModbusEvent");
+            case S7commEvent s -> throw new AssertionError("DnsEventMapper maps dns.log exclusively; got an S7commEvent");
         };
         assertNull(dns.response());
     }
@@ -266,6 +270,7 @@ class DnsEventMapperTest {
             case DnsEvent d -> d;
             case ConnEvent c -> throw new AssertionError("DnsEventMapper maps dns.log exclusively; got a ConnEvent");
             case ModbusEvent m -> throw new AssertionError("DnsEventMapper maps dns.log exclusively; got a ModbusEvent");
+            case S7commEvent s -> throw new AssertionError("DnsEventMapper maps dns.log exclusively; got an S7commEvent");
         };
         assertEquals(0L, event.response().firstTtlSeconds(),
             "dns_ttl is DEFAULT_ZERO in the frozen contract, so an unusable value defaults to 0");

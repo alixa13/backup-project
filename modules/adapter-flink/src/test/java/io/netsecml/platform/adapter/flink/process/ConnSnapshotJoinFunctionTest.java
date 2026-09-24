@@ -78,6 +78,7 @@ class ConnSnapshotJoinFunctionTest {
             // per SourceKeySelector's and this class's own wiring-error
             // arms), so seeing one here would be a test bug, same as ConnEvent.
             case ModbusEvent ignored -> throw new AssertionError("expected a DnsEvent output, got a ModbusEvent");
+            case S7commEvent ignored -> throw new AssertionError("expected a DnsEvent output, got an S7commEvent");
         };
     }
 

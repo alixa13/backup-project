@@ -4,20 +4,17 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 class LogTypeTest {
-    // Only implemented log types get a constant. Adding ssh/http/s7comm here
-    // before their mapper and schema exist would advertise support that is not
+    // Only implemented log types get a constant. Adding ssh/http here before
+    // their mapper and schema exist would advertise support that is not
     // there; this test records that intent so the omission is deliberate. DNS
     // joined CONN here once its mapper/event and dns-feature-v1 schema existed --
     // this is a plain array-equality assertion, not a switch, so it did not fail
     // at compile time when LogType.DNS was added; it went red only when this
-    // test actually ran. MODBUS joins here too, one task ahead of its own
-    // mapper: its schema (modbus-feature-v1) and its FeatureSchemaRegistry entry
-    // both already exist, and NetworkEvent.permits admits ModbusEvent on the
-    // same narrow, documented exception (see NetworkEvent's javadoc) -- the
-    // mapper is what discharges the obligation in full, in this unit's next task.
+    // test actually ran. MODBUS joined the same way. S7COMM joined with its
+    // event, mapper and schema in one change.
     @Test
     void onlyImplementedLogTypesArePresent() {
-        assertArrayEquals(new LogType[]{LogType.CONN, LogType.DNS, LogType.MODBUS}, LogType.values());
+        assertArrayEquals(new LogType[]{LogType.CONN, LogType.DNS, LogType.MODBUS, LogType.S7COMM}, LogType.values());
     }
 
     // wireName is what reaches Kafka and the ClickHouse log_type column. It is
@@ -28,5 +25,6 @@ class LogTypeTest {
         assertEquals("conn", LogType.CONN.wireName());
         assertEquals("dns", LogType.DNS.wireName());
         assertEquals("modbus", LogType.MODBUS.wireName());
+        assertEquals("s7comm", LogType.S7COMM.wireName());
     }
 }

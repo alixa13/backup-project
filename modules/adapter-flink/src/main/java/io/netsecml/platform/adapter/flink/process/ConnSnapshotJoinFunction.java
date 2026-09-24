@@ -3,6 +3,7 @@ package io.netsecml.platform.adapter.flink.process;
 import io.netsecml.platform.domain.event.ConnEvent;
 import io.netsecml.platform.domain.event.DnsEvent;
 import io.netsecml.platform.domain.event.ModbusEvent;
+import io.netsecml.platform.domain.event.S7commEvent;
 import io.netsecml.platform.domain.event.NetworkEvent;
 import io.netsecml.platform.domain.feature.ConnSnapshot;
 import io.netsecml.platform.domain.feature.ConnSnapshotDelta;
@@ -136,6 +137,10 @@ public final class ConnSnapshotJoinFunction
             case ModbusEvent ignored -> throw new IllegalStateException(
                 "ConnSnapshotJoinFunction received a ModbusEvent on input 1; the modbus chain is separate "
                 + "by design (docs/superpowers/specs/2026-09-21-modbus-stage1-design.md section 10) "
+                + "and this is a wiring error, not a runtime condition");
+            case S7commEvent ignored -> throw new IllegalStateException(
+                "ConnSnapshotJoinFunction received an S7commEvent on input 1; the s7comm chain is separate "
+                + "by design (docs/superpowers/specs/2026-09-24-s7comm-stage1-design.md section 10) "
                 + "and this is a wiring error, not a runtime condition");
         };
 

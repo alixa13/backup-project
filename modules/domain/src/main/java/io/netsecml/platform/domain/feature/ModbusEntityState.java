@@ -51,15 +51,26 @@ import java.util.Map;
 // memory still grows with the flood rate, so each of the three windows also
 // holds at most MAX_WINDOW_ENTRIES entries: over the cap, the oldest entry is
 // evicted (after the purge, so it is always an entry 07b would still hold,
-// and never the entry just appended). A capped window then under-counts
-// relative to 07b for as long as an evicted entry would still be inside it,
-// and exactly then windowSaturated() is true and ModbusBuildFeaturesUseCase
-// sets QualityFlags.MODBUS_WINDOW_SATURATED on the vector. Every vector
-// without that bit carries exactly the window values an uncapped engine
-// would; the causal features (group C) never read a window and are exact
-// either way. At 100,000 entries the 60 s
-// window saturates above ~1,667 events/s on one key, the 10 s window above
-// 10,000/s and the 1 s window above 100,000/s.
+// and never the entry just appended). A capped window then holds fewer
+// entries than 07b's would for as long as an evicted entry would still be
+// inside it, and exactly then windowSaturated() is true and
+// ModbusBuildFeaturesUseCase sets QualityFlags.MODBUS_WINDOW_SATURATED on the
+// vector. Every vector without that bit carries exactly the window values an
+// uncapped engine would; the causal features (group C) never read a window
+// and are exact either way. All three windows share one cap, so the 60 s
+// window, which holds the most entries, reaches it first -- above ~1,667
+// events/s on one key -- and in that common case only event_rate_60s differs
+// from 07b. The 10 s window saturates above 10,000/s and the 1 s window above
+// 100,000/s. A saturated window's event rate is lower than 07b's, its unique
+// counts can be, and its read/write ratios can move either way; the bit does
+// not say which window.
+//
+// Memory note: ArrayDeque and HashMap never shrink their backing arrays, so a
+// key whose windows once grew large keeps that capacity (a few MB at the cap)
+// until its segment ends; reset() therefore allocates fresh collections
+// rather than clearing the grown ones. A key that goes idle keeps whatever
+// its windows held at its last event -- nothing purges without an event --
+// and with no TTL on the key set, that is for as long as the job runs.
 //
 // Still Kryo, not the POJO serializer: TypeInformation.of(ModbusEntityState
 // .class) resolves to GenericTypeInfo (Kryo), because Flink's POJO analysis
@@ -121,16 +132,16 @@ public final class ModbusEntityState {
     //   - see evictOldestIfOverCap's own comment for the deployment
     //     assumption that makes "insertion order" and "timestamp order"
     //     the same order for a well-behaved caller.
-    private final LinkedHashMap<String, Double> pending = new LinkedHashMap<>();
+    private LinkedHashMap<String, Double> pending = new LinkedHashMap<>();
 
     // Trailing-window deques, upstream's w1_ts, w60_ts and w10_events. w1/w60
     // are used purely as counts (event_rate_1s = len(w1_ts), event_rate_60s =
     // len(w60_ts) / 60.0), so they hold only timestamps; w10 holds the fuller
     // upstream tuple because a purge must know which running counts the
     // leaving entry had incremented.
-    private final ArrayDeque<Double> window1s = new ArrayDeque<>();
-    private final ArrayDeque<Double> window60s = new ArrayDeque<>();
-    private final ArrayDeque<Window10Entry> window10s = new ArrayDeque<>();
+    private ArrayDeque<Double> window1s = new ArrayDeque<>();
+    private ArrayDeque<Double> window60s = new ArrayDeque<>();
+    private ArrayDeque<Window10Entry> window10s = new ArrayDeque<>();
 
     // The running 10 s counts, exactly upstream's fc_counter_10 (function
     // code -> events in the window), addr_counter_10 (address -> events in
@@ -147,8 +158,8 @@ public final class ModbusEntityState {
     // a record carrying one would count differently here than upstream.
     // Kept as it was, deliberately -- this class changed how it counts, not
     // what it counts.
-    private final HashMap<Integer, Integer> functionCounts10s = new HashMap<>();
-    private final HashMap<Double, Integer> addressCounts10s = new HashMap<>();
+    private HashMap<Integer, Integer> functionCounts10s = new HashMap<>();
+    private HashMap<Double, Integer> addressCounts10s = new HashMap<>();
     private int readCount10s;
     private int writeCount10s;
 
@@ -233,7 +244,11 @@ public final class ModbusEntityState {
     }
 
     // Mirrors the upstream engine's reset_for_new_segment(): every field this
-    // class carries goes back to its zero value, in place. (The upstream
+    // class carries goes back to its zero value, in place. The collections are
+    // replaced rather than cleared, so a segment that grew them to flood size
+    // does not leave its large, now-empty backing arrays behind (see the class
+    // comment's memory note); a reset happens at most once per segment, so
+    // the allocation is cheap next to the events it separates. (The upstream
     // method also resets segment_local_id / position_in_segment, but those
     // are the upstream engine's own audit columns, outside
     // modbus-feature-v1's 42 frozen features -- not part of this class's
@@ -243,12 +258,12 @@ public final class ModbusEntityState {
         prevFunctionCode = null;
         lastAddress = null;
         lastQuantity = null;
-        pending.clear();
-        window1s.clear();
-        window60s.clear();
-        window10s.clear();
-        functionCounts10s.clear();
-        addressCounts10s.clear();
+        pending = new LinkedHashMap<>();
+        window1s = new ArrayDeque<>();
+        window60s = new ArrayDeque<>();
+        window10s = new ArrayDeque<>();
+        functionCounts10s = new HashMap<>();
+        addressCounts10s = new HashMap<>();
         readCount10s = 0;
         writeCount10s = 0;
         lastCapEvicted1s = Double.NEGATIVE_INFINITY;

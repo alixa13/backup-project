@@ -116,20 +116,11 @@ final class ModbusEventStreams {
         return stream;
     }
 
-    // `length` events at `ratePerSecond` of event time on one key, in pairs:
-    // an even pair is a request and its response, an odd pair is two requests
-    // on one tid that nobody answers -- a flood that is half answered, half
-    // not.
-    static List<ModbusEvent> steadyFlood(int length, double ratePerSecond) {
-        List<ModbusEvent> stream = new ArrayList<>(length);
-        for (int i = 0; i < length; i++) {
-            stream.add(steadyFloodEvent(i, ratePerSecond));
-        }
-        return stream;
-    }
-
-    // The i-th event of steadyFlood, for callers that stream a flood too long
-    // to hold in memory at once.
+    // The i-th event of a flood at `ratePerSecond` of event time on one key,
+    // generated one at a time so a flood too long to hold in memory can be
+    // streamed. Events come in pairs: an even pair is a request and its
+    // response, an odd pair is two requests on one tid that nobody answers --
+    // a flood that is half answered, half not.
     static ModbusEvent steadyFloodEvent(int i, double ratePerSecond) {
         double ts = BASE_TS + i / ratePerSecond;
         int pair = i / 2;

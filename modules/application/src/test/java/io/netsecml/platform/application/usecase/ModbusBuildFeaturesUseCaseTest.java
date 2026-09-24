@@ -130,17 +130,19 @@ class ModbusBuildFeaturesUseCaseTest {
     }
 
     @Test
-    void aSaturatedWindowSetsItsQualityBitAlongsideOutOfOrder() {
+    void aSaturatedWindowSetsItsQualityBitAndAnOutOfOrderResetClearsIt() {
         // Cap 1: the second event evicts the first from every window while it is
-        // still inside them, so that vector's window features under-count.
+        // still inside them, so that vector's window features differ from the
+        // uncapped engine's.
         ModbusEntityState state = ModbusEntityState.emptyWithWindowCap(1);
         assertEquals(QualityFlags.NONE, useCase().build(request(1000.0, 3, "17"), state).vector().qualityFlags());
         assertEquals(QualityFlags.MODBUS_WINDOW_SATURATED,
             useCase().build(request(1000.5, 3, "18"), state).vector().qualityFlags());
 
-        // Time going backwards resets the segment (clearing saturation) and flags
-        // out-of-order; the next in-segment event saturates again, and the two
-        // bits are independent.
+        // Time going backwards resets the segment and flags out-of-order. The
+        // reset leaves one entry per window, so that vector cannot be saturated:
+        // the two bits never appear on the same vector. The next in-segment
+        // event saturates again.
         assertEquals(QualityFlags.MODBUS_OUT_OF_ORDER,
             useCase().build(request(999.0, 3, "19"), state).vector().qualityFlags());
         assertEquals(QualityFlags.MODBUS_WINDOW_SATURATED,

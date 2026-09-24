@@ -35,6 +35,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 // (checkpoint, then restore) loses nothing the next event reads -- including
 // the running 10 s counts, which, unlike the windows, are not recomputed
 // from anything.
+//
+// The serializer comes from a default SerializerConfigImpl, which is what the
+// online job actually runs with: it configures no serialization in code. A
+// cluster-level serialization config registering a shallow-copying Kryo
+// serializer for these collections would void this test's premise -- and
+// with it the copy-on-write safety argument -- without failing it.
 class ModbusEntityStateSerializerTest {
 
     private static final SensorId SENSOR = new SensorId("sensor-eu-1");

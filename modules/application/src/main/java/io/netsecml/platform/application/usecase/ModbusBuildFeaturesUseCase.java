@@ -88,6 +88,18 @@ public final class ModbusBuildFeaturesUseCase implements BuildFeaturesUseCase<Mo
     // mutable and why that is safe in Flink's heap state backend). A caller
     // must therefore not reuse a state object it has passed here as if it
     // still held the state from before this event.
+    //
+    // The state is advanced before the vector is built, so if anything after
+    // advance(...) threw, the state would already count an event that
+    // produced no vector. Nothing there throws on a valid ModbusEvent (the
+    // extractor's newSegment guard cannot fire after this method's own reset,
+    // and FeatureVector rejects only a blank event id or a null values array,
+    // sensor, log type or producedAt, all of which a valid event, the
+    // extractor and the clock always supply), and
+    // ModbusFeatureProcessFunction catches nothing: a throw fails the task and
+    // Flink restores this key's state from the last checkpoint, discarding the
+    // half-applied event. A caller that caught the exception and carried on
+    // with the same state object would lose that guarantee.
     @Override
     public FeatureBuildResult<ModbusEntityState> build(ModbusEvent event, ModbusEntityState currentState) {
         // event.tsSeconds() is the ONE value both this class and

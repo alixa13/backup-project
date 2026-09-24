@@ -55,13 +55,21 @@ public final class QualityFlags {
 
     // Set when at least one of the modbus entity state's trailing windows (1 s,
     // 10 s, 60 s) has lost an entry to its per-window cap that the upstream
-    // engine's uncapped window would still hold -- so that window's rate,
-    // unique-count or ratio features (indices 35-41) under-count relative to
-    // upstream for this vector. Only a flood above ~1,667 events/s on one
-    // (client_ip, server_ip, unit) key reaches it (see ModbusEntityState's
-    // own comment). Every modbus vector WITHOUT this bit carries exactly the
-    // window values the uncapped engine would; indices 0-34 are exact either
-    // way. Bit 3, the next free bit, one global meaning like its siblings.
+    // engine's uncapped window would still hold, so some of this vector's
+    // window features (indices 35-41) differ from upstream's. Which ones
+    // depends on which windows are saturated, and the bit does not say: the
+    // windows share one cap, so the 60 s window reaches it first (above
+    // ~1,667 events/s on one (client_ip, server_ip, unit) key), and in that
+    // common case only event_rate_60s (index 37) differs. Above 10,000
+    // events/s the 10 s window saturates too: its event rate (36) is then
+    // lower than upstream's, its unique counts (38, 39) can be, and its
+    // read/write ratios (40, 41) can move either way. The 1 s window (35)
+    // needs 100,000 events/s. A consumer that cannot tell must treat all of
+    // 35-41 as suspect. Every modbus vector WITHOUT this bit carries exactly
+    // the window values the uncapped engine would; indices 0-34 are exact
+    // either way. Never set together with MODBUS_OUT_OF_ORDER: an
+    // out-of-order event resets the state, leaving one entry per window.
+    // Bit 3, the next free bit, one global meaning like its siblings.
     public static final int MODBUS_WINDOW_SATURATED = 8;
 
     // Non-instantiable: every member is a constant.

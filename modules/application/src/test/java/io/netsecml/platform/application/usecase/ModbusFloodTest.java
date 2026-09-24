@@ -15,6 +15,13 @@ import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 // copied or rescanned its windows on every event did ~192r element operations
 // per event and could not keep pace with ~1000 events/s on one key; this test
 // holds the engine to amortized constant work per event instead.
+//
+// It runs WITHOUT the per-window cap (emptyWithWindowCap(Integer.MAX_VALUE)):
+// the cap bounds how large a window can get, so under it even per-event work
+// proportional to the window would be bounded, and a regression to such work
+// could still finish inside the time limit on a fast machine. Uncapped, the
+// 60 s window really does grow to all 300,000 entries, and only constant work
+// per event fits the bound.
 class ModbusFloodTest {
 
     @Test
@@ -22,12 +29,13 @@ class ModbusFloodTest {
         // 300,000 events is 60 s of event time at 5,000 events/s, half of them
         // answered request/response pairs and half unanswered requests. The
         // 30 s bound is generous on purpose: amortized constant work finishes
-        // in a second or two, while per-event window copies take hours.
+        // in a second or two, while per-event work proportional to a window of
+        // up to 300,000 entries is on the order of 10^10 operations.
         int events = 300_000;
         double ratePerSecond = 5_000.0;
         ModbusBuildFeaturesUseCase useCase = new ModbusBuildFeaturesUseCase(Clock.systemUTC());
         assertTimeoutPreemptively(Duration.ofSeconds(30), () -> {
-            ModbusEntityState state = ModbusEntityState.empty();
+            ModbusEntityState state = ModbusEntityState.emptyWithWindowCap(Integer.MAX_VALUE);
             for (int i = 0; i < events; i++) {
                 state = useCase.build(ModbusEventStreams.steadyFloodEvent(i, ratePerSecond), state).newState();
             }

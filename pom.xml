@@ -40,6 +40,7 @@
     <onnxruntime.version>1.20.0</onnxruntime.version>
     <maven.compiler.plugin.version>3.13.0</maven.compiler.plugin.version>
     <maven.surefire.plugin.version>3.2.5</maven.surefire.plugin.version>
+    <maven.shade.plugin.version>3.6.2</maven.shade.plugin.version>
   </properties>
 
   <!--
@@ -137,6 +138,11 @@
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-surefire-plugin</artifactId>
           <version>${maven.surefire.plugin.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-shade-plugin</artifactId>
+          <version>${maven.shade.plugin.version}</version>
         </plugin>
       </plugins>
     </pluginManagement>

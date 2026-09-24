@@ -179,6 +179,18 @@ TaskManager slots = 2 × parallelism (two jobs). Each service gets a Docker `cpu
 from its share of `C` (TaskManager 45%, ClickHouse 25%, Kafka 15%, Zeek 15%), so our
 stack can never starve the server's other services.
 
+**Correction (2026-09-24, final review).** As first written, this section
+allocated more than its budget: the four shares split 90% of `B` while the
+JobManager's fixed 1 GiB (and the job supervisor's 640 MiB) sat outside it, and
+the four CPU shares summed to all of `C` with the JobManager's core on top. On
+an 8 GiB host the limits exceeded the budget, eating the reserve meant for the
+host's other containers. Now the JobManager (1024 MiB) and the job supervisor
+(640 MiB) come off the top and the four shares split `B − 1664`; the CPU shares
+are TaskManager 35%, ClickHouse 25%, Kafka 15%, Zeek 15%, JobManager 10% (at most
+one core), with a 0.25 floor; and the minimum budget is 5000 MiB, the smallest
+at which the whole allocation fits. `deploy/tests/test_tune.sh` checks that it
+fits on 20 host shapes and at the minimum.
+
 **Output:** a marked block in `deploy/.env` (`# --- resources: written by deploy.sh tune
 <date> ---`) and a printed table — detected hardware, what other containers use, and
 each service's allocation. `up` warns when the hardware differs from what the block

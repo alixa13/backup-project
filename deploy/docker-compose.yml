@@ -149,7 +149,7 @@ services:
       - ./jars:/opt/netsec/jars:ro
       - ./flink/submit-jobs.sh:/opt/netsec/submit-jobs.sh:ro
       - ${NETSEC_DATA_DIR}/flink:/flink-data
-    mem_limit: 640m
+    mem_limit: ${JOB_SUBMITTER_MEMORY_MIB}m
 
   # The Zeek sensor (design §4): sniffs ZEEK_INTERFACE on the host network and
   # sends the two OT logs to Kafka's loopback listener.

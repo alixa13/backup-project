@@ -3,7 +3,12 @@
 # rulings P4, P5, P10). tune_compute is pure arithmetic so the tests can pin
 # it; the rest detects the hardware and writes the result into deploy/.env.
 
-TUNE_MIN_BUDGET_MIB=4352          # the floors below sum to 4224, plus slack
+TUNE_JM_MIB=1024                  # the JobManager: fixed (P4)
+TUNE_SUBMITTER_MIB=640            # the job supervisor: fixed
+# The smallest budget whose allocation still fits inside it: the fixed 1664 MiB
+# plus a split whose floored shares (1280 + 768 + 768 + 384 at the edge) fit
+# in what remains -- from 3292 MiB up (final review, Important 3).
+TUNE_MIN_BUDGET_MIB=5000
 TUNE_BLOCK_BEGIN="# --- resources: written by deploy.sh tune"
 TUNE_BLOCK_END="# --- end of resources ---"
 
@@ -16,10 +21,11 @@ clamp() {
 }
 
 # A CPU share in hundredths, printed as a Docker cpus value ("1.35"), never
-# below 0.50: a limit is a ceiling, and half a core keeps a service responsive.
+# below 0.25: a limit is a ceiling, and a quarter core keeps a service
+# responsive while the shares of a 4-core host still fit its 3 usable cores.
 cpus_value() {
   local hundredths="$1"
-  [ "$hundredths" -lt 50 ] && hundredths=50
+  [ "$hundredths" -lt 25 ] && hundredths=25
   printf '%d.%02d\n' $((hundredths / 100)) $((hundredths % 100))
 }
 
@@ -44,13 +50,16 @@ tune_compute() {
     return 2
   fi
 
-  # Memory split (design §7), each clamped to its floor and ceiling. The
-  # JobManager is fixed (P4); each Flink process is its container less 64 MiB (P5).
-  local tm ch kafka zeek jm=1024
-  tm="$(clamp $(( budget * 40 / 100 )) 1280 16384)"
-  ch="$(clamp $(( budget * 25 / 100 )) 768 16384)"
-  kafka="$(clamp $(( budget * 15 / 100 )) 768 6144)"
-  zeek="$(clamp $(( budget * 10 / 100 )) 384 4096)"
+  # Memory: the fixed JobManager (P4) and job supervisor come off the top, and
+  # the rest is split (design §7), each share clamped to its floor and
+  # ceiling -- so everything handed out fits inside the budget (final review,
+  # Important 3). Each Flink process is its container less 64 MiB (P5).
+  local split=$(( budget - TUNE_JM_MIB - TUNE_SUBMITTER_MIB ))
+  local tm ch kafka zeek
+  tm="$(clamp $(( split * 40 / 100 )) 1280 16384)"
+  ch="$(clamp $(( split * 25 / 100 )) 768 16384)"
+  kafka="$(clamp $(( split * 15 / 100 )) 768 6144)"
+  zeek="$(clamp $(( split * 10 / 100 )) 384 4096)"
 
   # CPU: keep a quarter of the cores (at least one) for the host, split the
   # rest; an override may not exceed the host.
@@ -60,6 +69,11 @@ tune_compute() {
   [ "$usable" -lt 1 ] && usable=1
   [ "$cpus_override" -gt 0 ] && usable="$cpus_override"
   [ "$usable" -gt "$cores" ] && usable="$cores"
+
+  # The five CPU shares sum to the usable cores: TaskManager 35%, ClickHouse
+  # 25%, Kafka 15%, Zeek 15%, JobManager 10% (at most one core).
+  local jm_cpu=$(( usable * 10 ))
+  [ "$jm_cpu" -gt 100 ] && jm_cpu=100
 
   # Parallelism by core count; two jobs share the TaskManager's slots.
   local parallelism=1
@@ -72,19 +86,20 @@ TUNE_DETECTED_MEM_TOTAL_MIB=${total}
 TUNE_BUDGET_MIB=${budget}
 FLINK_TM_MEMORY_MIB=${tm}
 FLINK_TM_PROCESS_MIB=$(( tm - 64 ))
-FLINK_JM_MEMORY_MIB=${jm}
-FLINK_JM_PROCESS_MIB=$(( jm - 64 ))
+FLINK_JM_MEMORY_MIB=${TUNE_JM_MIB}
+FLINK_JM_PROCESS_MIB=$(( TUNE_JM_MIB - 64 ))
+JOB_SUBMITTER_MEMORY_MIB=${TUNE_SUBMITTER_MIB}
 CLICKHOUSE_MEMORY_MIB=${ch}
 KAFKA_MEMORY_MIB=${kafka}
 KAFKA_HEAP_MIB=$(( kafka / 2 ))
 ZEEK_MEMORY_MIB=${zeek}
 FLINK_PARALLELISM=${parallelism}
 FLINK_TASK_SLOTS=$(( parallelism * 2 ))
-FLINK_TM_CPUS=$(cpus_value $(( usable * 45 )))
+FLINK_TM_CPUS=$(cpus_value $(( usable * 35 )))
 CLICKHOUSE_CPUS=$(cpus_value $(( usable * 25 )))
 KAFKA_CPUS=$(cpus_value $(( usable * 15 )))
 ZEEK_CPUS=$(cpus_value $(( usable * 15 )))
-FLINK_JM_CPUS=1.00
+FLINK_JM_CPUS=$(cpus_value "$jm_cpu")
 EOF
 }
 
@@ -157,6 +172,7 @@ tune_print_table() {
   printf '  %-18s %6s MiB %7s\n' clickhouse "$(_tv CLICKHOUSE_MEMORY_MIB)" "$(_tv CLICKHOUSE_CPUS)"
   printf '  %-18s %6s MiB %7s\n' kafka "$(_tv KAFKA_MEMORY_MIB)" "$(_tv KAFKA_CPUS)"
   printf '  %-18s %6s MiB %7s\n' zeek "$(_tv ZEEK_MEMORY_MIB)" "$(_tv ZEEK_CPUS)"
+  printf '  %-18s %6s MiB %7s\n' job-submitter "$(_tv JOB_SUBMITTER_MEMORY_MIB)" -
   printf '  flink parallelism %s, task slots %s\n' "$(_tv FLINK_PARALLELISM)" "$(_tv FLINK_TASK_SLOTS)"
 }
 

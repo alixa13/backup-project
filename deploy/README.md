@@ -47,10 +47,13 @@ http://localhost:18081.
 ## What to know
 
 - **Sizing.** `tune` reads the CPU count and the RAM free right now (so what
-  other containers use is already excluded), keeps a reserve for the host, and
-  splits the rest: Flink TaskManager 40%, ClickHouse 25%, Kafka 15%, Zeek 10%,
-  JobManager a fixed 1 GiB. It refuses below 4.25 GiB (`--force` overrides);
-  `--memory-budget 12g` and `--cpus 4` set the budget yourself.
+  other containers use is already excluded) and keeps a reserve for the host.
+  From the budget left it takes the JobManager (1 GiB) and the job supervisor
+  (640 MiB), then splits the rest: Flink TaskManager 40%, ClickHouse 25%,
+  Kafka 15%, Zeek 10%. Every limit together stays inside the budget, and the
+  CPU limits inside the cores it leaves you (a quarter of them, at least one,
+  stay with the host). It refuses a budget below 5000 MiB (`--force`
+  overrides); `--memory-budget 12g` and `--cpus 4` set the budget yourself.
 - **State survives restarts.** `down` stops each job with a savepoint; `up`, a
   reboot or a JobManager restart resumes each job from its newest savepoint or
   checkpoint (the `job-submitter` container does this every minute).

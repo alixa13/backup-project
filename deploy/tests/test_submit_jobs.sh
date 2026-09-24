@@ -66,6 +66,50 @@ assert_eq 1 "$(grep -c "move $DATA/savepoints/online-feature-job and $DATA/check
 assert_eq 2 "$(grep -c 'run -d' "$tmp/calls")" "both jobs were still attempted"
 unset -f curl flink
 
+# Final review, Critical 1: runs that fail before their first checkpoint each
+# leave an empty checkpoint folder behind. Three of those in a row must never
+# cost the job its only good restore point -- which the newest run is still
+# restoring from while the supervisor prunes.
+DATA_SAVED="$DATA"
+DATA="$tmp/crit1"
+restore_point "$DATA/checkpoints/archive-job/good/chk-40" "2026-09-20 10:00"
+touch -d "2026-09-20 10:00" "$DATA/checkpoints/archive-job/good"
+runs=0
+# flink: each submission creates the new run's empty checkpoint folder (as the
+# JobManager does while initialising the job) and succeeds.
+flink() {
+  runs=$((runs + 1))
+  case "$*" in
+    *archive-job.jar)
+      mkdir -p "$DATA/checkpoints/archive-job/failed-$runs/shared"
+      touch -d "@$(( $(date +%s) + runs ))" "$DATA/checkpoints/archive-job/failed-$runs" ;;
+  esac
+  return 0
+}
+curl() { printf '{"jobs":[]}'; }
+for _ in 1 2 3 4; do supervise_once >/dev/null 2>&1; done
+assert_eq "$DATA/checkpoints/archive-job/good/chk-40" "$(newest_restore_point archive-job)" \
+  "the only good restore point survives four runs that never checkpointed"
+assert_eq 2 "$(find "$DATA/checkpoints/archive-job" -mindepth 1 -maxdepth 1 -type d | wc -l)" \
+  "failed runs' empty folders are pruned, except the newest run's own"
+
+# Final review, Important 2: a restore that fails on the TaskManager does not
+# make 'flink run' fail, so the supervisor itself must notice being sent back
+# to the same restore point again and again -- and say how to start fresh.
+DATA="$tmp/imp2"
+restore_point "$DATA/savepoints/online-feature-job/savepoint-x" "2026-09-20 10:00"
+flink() { return 0; }
+first="$(supervise_once 2>&1)"
+supervise_once >/dev/null 2>&1
+third="$(supervise_once 2>&1)"
+assert_eq 0 "$(grep -c 'from the same restore point' <<< "$first")" "one resubmission is not yet a pattern"
+assert_eq 1 "$(grep -c 'online-feature-job has been submitted 3 times in a row from the same restore point' <<< "$third")" \
+  "the third resubmission from one restore point says so"
+assert_eq 1 "$(grep -c "move $DATA/savepoints/online-feature-job and $DATA/checkpoints/online-feature-job aside" <<< "$third")" \
+  "and names the way out"
+unset -f flink curl
+DATA="$DATA_SAVED"
+
 # Under the script's own 'set -e -o pipefail', a first start -- no savepoint or
 # checkpoint folder exists yet -- must submit both jobs, not die: run it the
 # way its container does, with stub curl and flink on the PATH.

@@ -272,4 +272,32 @@ class ArchiveJobTopologyTest {
             "modbus-dlq-source", "modbus-invalid-event-row", "modbus-invalid-events-clickhouse-sink")),
             "modbus's six uids must follow the shared prefix pattern, found: " + uids);
     }
+
+    // A fourth protocol's eight-chain list (connDnsModbusAndS7commChains) must
+    // produce twenty-four non-colliding uids: the eighteen of the six-chain
+    // list, plus s7comm's six under the same prefix pattern.
+    @Test
+    void eightChainsProduceTwentyFourDistinctUids() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        ArchiveJob.build(env, "localhost:9092", ArchiveJob.connDnsModbusAndS7commChains(
+            "netsec.conn.feature-vector.v1", "netsec.conn.dlq.v1",
+            "netsec.dns.feature-vector.v1", "netsec.dns.dlq.v1",
+            "netsec.modbus.feature-vector.v1", "netsec.modbus.dlq.v1",
+            "netsec.s7comm.feature-vector.v1", "netsec.s7comm.dlq.v1"),
+            ClickHouseConfig.of("localhost", 8123, "netsec_ml", "default", "test-password"));
+
+        Set<String> uids = new HashSet<>();
+        env.getStreamGraph(false).getStreamNodes().forEach(node -> {
+            if (node.getTransformationUID() != null) {
+                uids.add(node.getTransformationUID());
+            }
+        });
+
+        assertEquals(24, uids.size(), "twenty-four non-colliding uids expected, found: " + uids);
+        assertTrue(uids.containsAll(Set.of(
+            "s7comm-feature-vector-source", "s7comm-feature-vector-row", "s7comm-feature-vectors-clickhouse-sink",
+            "s7comm-dlq-source", "s7comm-invalid-event-row", "s7comm-invalid-events-clickhouse-sink")),
+            "s7comm's six uids must follow the shared prefix pattern, found: " + uids);
+    }
 }

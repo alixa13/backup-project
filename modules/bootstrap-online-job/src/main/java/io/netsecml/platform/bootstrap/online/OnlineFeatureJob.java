@@ -12,6 +12,9 @@ import io.netsecml.platform.adapter.flink.process.ModbusFeatureProcessFunction;
 import io.netsecml.platform.adapter.flink.process.ModbusParseMapValidateFunction;
 import io.netsecml.platform.adapter.flink.process.ParseMapValidateFunction;
 import io.netsecml.platform.adapter.flink.process.RejectedRecord;
+import io.netsecml.platform.adapter.flink.process.S7commConnectionKeySelector;
+import io.netsecml.platform.adapter.flink.process.S7commFeatureProcessFunction;
+import io.netsecml.platform.adapter.flink.process.S7commParseMapValidateFunction;
 import io.netsecml.platform.adapter.flink.process.SnapshotUidKeySelector;
 import io.netsecml.platform.adapter.flink.process.SourceKeySelector;
 import io.netsecml.platform.adapter.flink.source.RawBytesDeserializationSchema;
@@ -190,6 +193,78 @@ public final class OnlineFeatureJob {
                               ProtocolTopics conn, ProtocolTopics dns, ProtocolTopics modbus, SensorId sensor) {
         build(env, bootstrapServers, conn, dns, sensor);
         modbusChain(env, bootstrapServers, modbus, sensor);
+    }
+
+    // The four-protocol topology: the three-protocol build() above plus
+    // s7comm's chain, with S7commFeatureProcessFunction's default one-hour
+    // idle TTL. A fourth overload, for the reason the three-protocol one gives:
+    // every existing caller keeps compiling unchanged. KNOWN SEAM, as recorded
+    // there: a fifth protocol is a fifth overload.
+    public static void build(StreamExecutionEnvironment env, String bootstrapServers, ProtocolTopics conn,
+                              ProtocolTopics dns, ProtocolTopics modbus, ProtocolTopics s7comm, SensorId sensor) {
+        build(env, bootstrapServers, conn, dns, modbus, s7comm, sensor, S7commFeatureProcessFunction.DEFAULT_STATE_TTL);
+    }
+
+    // As above, with the s7comm connection state's idle TTL chosen by the
+    // caller; main() passes S7COMM_STATE_TTL_MINUTES.
+    public static void build(StreamExecutionEnvironment env, String bootstrapServers, ProtocolTopics conn,
+                              ProtocolTopics dns, ProtocolTopics modbus, ProtocolTopics s7comm, SensorId sensor,
+                              Duration s7commStateTtl) {
+        build(env, bootstrapServers, conn, dns, modbus, sensor);
+        s7commChain(env, bootstrapServers, s7comm, sensor, s7commStateTtl);
+    }
+
+    // s7comm's own chain, shaped exactly like modbusChain: source -> parse ->
+    // narrow -> keyed features -> sink, plus its own DLQ. Nothing in it reads
+    // or feeds another protocol's chain.
+    private static void s7commChain(StreamExecutionEnvironment env, String bootstrapServers,
+                                     ProtocolTopics s7comm, SensorId sensor, Duration stateTtl) {
+        DataStream<byte[]> s7commRaw = rawSource(env, bootstrapServers, s7comm.input(), "s7comm-online-job",
+            "s7comm-source");
+
+        SingleOutputStreamOperator<NetworkEvent> s7commParsed = s7commRaw
+            .process(new S7commParseMapValidateFunction(sensor))
+            .name("s7comm-parse")
+            .uid("s7comm-parse");
+
+        // Narrowed once, at the chain's boundary, as modbus does (see
+        // NarrowToModbusEvent's comment): the key selector and the process
+        // function are typed on S7commEvent.
+        DataStream<S7commEvent> s7commEvents = s7commParsed
+            .map(new NarrowToS7commEvent())
+            .name("s7comm-event-narrow")
+            .uid("s7comm-event-narrow");
+
+        DataStream<FeatureVector> s7commFeatureVectors = s7commEvents
+            .keyBy(new S7commConnectionKeySelector())
+            .process(new S7commFeatureProcessFunction(stateTtl))
+            .name("s7comm-features")
+            .uid("s7comm-features");
+        sinkFeatureVectors(s7commFeatureVectors, bootstrapServers, s7comm.featureVector(), "s7comm-sink");
+
+        DataStream<RejectedRecord> s7commRejected =
+            s7commParsed.getSideOutput(ParseMapValidateFunction.REJECTED_TAG);
+        sinkRejected(s7commRejected, bootstrapServers, s7comm.dlq(), "s7comm-dlq-sink");
+    }
+
+    // The s7comm chain's narrowing bridge; see NarrowToModbusEvent. Any other
+    // event type here is a wiring error: s7comm-parse only produces S7commEvent.
+    private static final class NarrowToS7commEvent implements MapFunction<NetworkEvent, S7commEvent> {
+        @Override
+        public S7commEvent map(NetworkEvent event) {
+            return switch (event) {
+                case S7commEvent s7commEvent -> s7commEvent;
+                case ConnEvent ignored -> throw new IllegalStateException(
+                    "s7comm chain received a ConnEvent; s7comm-parse can only ever produce an S7commEvent "
+                    + "and this is a wiring error, not a runtime condition");
+                case DnsEvent ignored -> throw new IllegalStateException(
+                    "s7comm chain received a DnsEvent; s7comm-parse can only ever produce an S7commEvent "
+                    + "and this is a wiring error, not a runtime condition");
+                case ModbusEvent ignored -> throw new IllegalStateException(
+                    "s7comm chain received a ModbusEvent; s7comm-parse can only ever produce an S7commEvent "
+                    + "and this is a wiring error, not a runtime condition");
+            };
+        }
     }
 
     // Modbus's own chain: source -> parse -> narrow -> feature extraction ->
@@ -469,7 +544,17 @@ public final class OnlineFeatureJob {
             System.getenv().getOrDefault("MODBUS_FEATURE_VECTOR_TOPIC", "netsec.modbus.feature-vector.v1"),
             System.getenv().getOrDefault("MODBUS_DLQ_TOPIC", "netsec.modbus.dlq.v1"));
 
-        build(env, bootstrapServers, conn, dns, modbus, new SensorId(sensorId));
+        // S7COMM_RAW_TOPIC follows modbus's netsec.<protocol>.raw.v1 naming.
+        ProtocolTopics s7comm = new ProtocolTopics(
+            System.getenv().getOrDefault("S7COMM_RAW_TOPIC", "netsec.s7comm.raw.v1"),
+            System.getenv().getOrDefault("S7COMM_FEATURE_VECTOR_TOPIC", "netsec.s7comm.feature-vector.v1"),
+            System.getenv().getOrDefault("S7COMM_DLQ_TOPIC", "netsec.s7comm.dlq.v1"));
+        // The s7comm connection state's idle TTL in minutes; see
+        // S7commFeatureProcessFunction.DEFAULT_STATE_TTL for why 60 is safe.
+        Duration s7commStateTtl = Duration.ofMinutes(Long.parseLong(
+            System.getenv().getOrDefault("S7COMM_STATE_TTL_MINUTES", "60")));
+
+        build(env, bootstrapServers, conn, dns, modbus, s7comm, new SensorId(sensorId), s7commStateTtl);
         env.execute("online-feature-job");
     }
 }

@@ -126,7 +126,8 @@ class OnlineFeatureJobTopologyTest {
         // in the other.
         assertAll(
             () -> assertNoUidRepeats("two-protocol", buildJob()),
-            () -> assertNoUidRepeats("three-protocol", buildThreeProtocol()));
+            () -> assertNoUidRepeats("three-protocol", buildThreeProtocol()),
+            () -> assertNoUidRepeats("four-protocol", buildFourProtocol()));
     }
 
     // Walks one built topology's StreamNodes and fails on the first uid seen
@@ -203,6 +204,22 @@ class OnlineFeatureJobTopologyTest {
         return env;
     }
 
+    // The four-protocol topology main() now builds, for the tests that need
+    // s7comm's chain on the graph.
+    private static StreamExecutionEnvironment buildFourProtocol() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        OnlineFeatureJob.build(env, "localhost:9092",
+            new OnlineFeatureJob.ProtocolTopics("conn", "netsec.conn.feature-vector.v1", "netsec.conn.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("dns", "netsec.dns.feature-vector.v1", "netsec.dns.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("netsec.modbus.raw.v1", "netsec.modbus.feature-vector.v1",
+                "netsec.modbus.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("netsec.s7comm.raw.v1", "netsec.s7comm.feature-vector.v1",
+                "netsec.s7comm.dlq.v1"),
+            new SensorId("sensor-eu-1"));
+        return env;
+    }
+
     private static Set<String> uidsOf(StreamExecutionEnvironment env) {
         Set<String> uids = new HashSet<>();
         env.getStreamGraph(false).getStreamNodes().forEach(node -> {
@@ -247,6 +264,22 @@ class OnlineFeatureJobTopologyTest {
             "modbus-source", "modbus-parse", "modbus-event-narrow", "modbus-features", "modbus-sink",
             "modbus-dlq-sink")),
             "expected modbus's six operator uids, found: " + uids);
+        assertTrue(uids.containsAll(CONN_UIDS), "conn's historical uids must be byte-identical, found: " + uids);
+    }
+
+    // s7comm's six uids land on the graph beside the three-protocol
+    // topology's twenty-four, and conn's historical uids survive unchanged.
+    // Thirty-two distinct uids: the twenty-four of
+    // theThreeProtocolTopologyCarriesModbusUidsAndLeavesConnsUntouched, s7commChain's
+    // six, and one derived "Sink Committer: <uid>" for each of its two KafkaSinks.
+    // A collision would leave the count unchanged, which is why
+    // everyOperatorUidIsUniqueAcrossTheTopology walks this topology too.
+    @Test
+    void theFourProtocolTopologyCarriesS7commUidsAndLeavesConnsUntouched() {
+        Set<String> uids = uidsOf(buildFourProtocol());
+        assertEquals(32, uids.size(), "found: " + uids);
+        assertTrue(uids.containsAll(Set.of("s7comm-source", "s7comm-parse", "s7comm-event-narrow",
+            "s7comm-features", "s7comm-sink", "s7comm-dlq-sink")), "expected s7comm's six uids, found: " + uids);
         assertTrue(uids.containsAll(CONN_UIDS), "conn's historical uids must be byte-identical, found: " + uids);
     }
 }

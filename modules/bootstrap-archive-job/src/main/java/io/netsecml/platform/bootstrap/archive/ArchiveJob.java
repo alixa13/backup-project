@@ -153,6 +153,27 @@ public final class ArchiveJob {
             dlqChain(LogType.MODBUS, modbusDlqTopic));
     }
 
+    // The eight-chain list a fourth protocol's main() wires: the six of
+    // connDnsAndModbusChains above, then s7comm's two under the same prefix
+    // pattern. A new method rather than widening that one, for the reason its
+    // own comment gives; a fifth protocol is a fifth method.
+    public static List<LogTypeChain<?>> connDnsModbusAndS7commChains(String connFeatureTopic, String connDlqTopic,
+                                                                      String dnsFeatureTopic, String dnsDlqTopic,
+                                                                      String modbusFeatureTopic,
+                                                                      String modbusDlqTopic,
+                                                                      String s7commFeatureTopic,
+                                                                      String s7commDlqTopic) {
+        return List.of(
+            featureVectorChain(LogType.CONN, connFeatureTopic),
+            dlqChain(LogType.CONN, connDlqTopic),
+            featureVectorChain(LogType.DNS, dnsFeatureTopic),
+            dlqChain(LogType.DNS, dnsDlqTopic),
+            featureVectorChain(LogType.MODBUS, modbusFeatureTopic),
+            dlqChain(LogType.MODBUS, modbusDlqTopic),
+            featureVectorChain(LogType.S7COMM, s7commFeatureTopic),
+            dlqChain(LogType.S7COMM, s7commDlqTopic));
+    }
+
     // One feature-vector chain for a log type. Mirrors dlqChain immediately
     // below -- a factory rather than three literal strings at each call site,
     // because the uids are checkpoint state identity and hand-writing them per
@@ -302,6 +323,9 @@ public final class ArchiveJob {
         String modbusFeatureTopic = System.getenv().getOrDefault("MODBUS_FEATURE_VECTOR_TOPIC",
             "netsec.modbus.feature-vector.v1");
         String modbusDlqTopic = System.getenv().getOrDefault("MODBUS_DLQ_TOPIC", "netsec.modbus.dlq.v1");
+        String s7commFeatureTopic = System.getenv().getOrDefault("S7COMM_FEATURE_VECTOR_TOPIC",
+            "netsec.s7comm.feature-vector.v1");
+        String s7commDlqTopic = System.getenv().getOrDefault("S7COMM_DLQ_TOPIC", "netsec.s7comm.dlq.v1");
 
         ClickHouseConfig clickHouse = ClickHouseConfig.of(
             System.getenv().getOrDefault("CLICKHOUSE_HOST", "localhost"),
@@ -310,20 +334,16 @@ public final class ArchiveJob {
             System.getenv().getOrDefault("CLICKHOUSE_USER", "default"),
             System.getenv().getOrDefault("CLICKHOUSE_PASSWORD", ""));
 
-        // Six chains through connDnsAndModbusChains() and the parameterised,
-        // list-form build(): conn's two (unchanged uids), dns's two (the
-        // prefix pattern), then modbus's two (the same prefix pattern). This
-        // is §6.3 above's "adding a log type is a one-line registration" made
-        // real again, one protocol further -- the pre-DNS 5-argument overload
-        // and the two-protocol connAndDnsChains() both stay available for the
-        // tests that call them directly, but production now registers all
-        // three protocols. ArchiveJobTopologyTest's six-chain case builds
-        // through connDnsAndModbusChains() too, so that test pins the exact
-        // list this method wires rather than a hand-copied duplicate that
-        // could silently drift from it.
+        // Eight chains through connDnsModbusAndS7commChains() and the
+        // parameterised, list-form build(): conn's two (unchanged uids), then
+        // dns's, modbus's and s7comm's two each under the shared prefix
+        // pattern. connDnsAndModbusChains() and connAndDnsChains() stay public
+        // for the tests that call them directly. ArchiveJobTopologyTest's
+        // eight-chain case builds through connDnsModbusAndS7commChains() too,
+        // so it pins the exact list this method wires.
         build(env, bootstrapServers,
-            connDnsAndModbusChains(featureTopic, dlqTopic, dnsFeatureTopic, dnsDlqTopic,
-                modbusFeatureTopic, modbusDlqTopic),
+            connDnsModbusAndS7commChains(featureTopic, dlqTopic, dnsFeatureTopic, dnsDlqTopic,
+                modbusFeatureTopic, modbusDlqTopic, s7commFeatureTopic, s7commDlqTopic),
             clickHouse);
         env.execute("archive-job");
     }

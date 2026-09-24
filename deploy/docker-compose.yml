@@ -1,0 +1,169 @@
+# netsec-ml: the Modbus + S7comm feature pipeline on one server (design:
+# docs/superpowers/specs/2026-09-24-server-deployment-design.md). Driven by
+# deploy/deploy.sh; every value comes from deploy/.env (see .env.template),
+# including the memory/CPU block 'deploy.sh tune' writes. It shares no network,
+# port or volume with any other compose project on the host.
+name: netsec-ml
+
+services:
+  # Kafka, KRaft single node. Containers use kafka:29092. The HOST listener is
+  # Zeek's (host network) and is always bound to loopback (ruling P6): it
+  # advertises 127.0.0.1, so that is the only address it can be reached at.
+  kafka:
+    image: ${KAFKA_IMAGE}
+    restart: unless-stopped
+    environment:
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID}
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:29093,HOST://0.0.0.0:19092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,HOST://127.0.0.1:${KAFKA_HOST_PORT}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      # A mistyped topic must fail loudly, never appear silently.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xms${KAFKA_HEAP_MIB}m -Xmx${KAFKA_HEAP_MIB}m
+    ports:
+      - "127.0.0.1:${KAFKA_HOST_PORT}:19092"
+    volumes:
+      - ${NETSEC_DATA_DIR}/kafka:/var/lib/kafka/data
+    mem_limit: ${KAFKA_MEMORY_MIB}m
+    cpus: ${KAFKA_CPUS}
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:29092 --list >/dev/null"]
+      interval: 15s
+      timeout: 20s
+      retries: 10
+      start_period: 40s
+
+  # ClickHouse: the archive's feature_vectors, invalid_events and predictions.
+  # The image creates the user and database from these variables.
+  clickhouse:
+    image: ${CLICKHOUSE_IMAGE}
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DATABASE}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    ports:
+      - "${BIND_ADDRESS}:${CLICKHOUSE_HTTP_PORT}:8123"
+    volumes:
+      - ${NETSEC_DATA_DIR}/clickhouse:/var/lib/clickhouse
+      - ./clickhouse/config.d/netsec.xml:/etc/clickhouse-server/config.d/netsec.xml:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    mem_limit: ${CLICKHOUSE_MEMORY_MIB}m
+    cpus: ${CLICKHOUSE_CPUS}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8123/ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  # Flink session cluster: the JobManager (web UI, job coordination) ...
+  flink-jobmanager:
+    image: ${FLINK_IMAGE}
+    restart: unless-stopped
+    command: jobmanager
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+      FLINK_PROPERTIES: |
+        jobmanager.memory.process.size: ${FLINK_JM_PROCESS_MIB}m
+        parallelism.default: ${FLINK_PARALLELISM}
+    ports:
+      - "${BIND_ADDRESS}:${FLINK_UI_PORT}:8081"
+    volumes:
+      - ${NETSEC_DATA_DIR}/flink:/flink-data
+    mem_limit: ${FLINK_JM_MEMORY_MIB}m
+    cpus: ${FLINK_JM_CPUS}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/overview >/dev/null"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  # ... and the TaskManager, which runs both jobs. Managed memory is kept small:
+  # the jobs use the heap state backend, which does not use it.
+  flink-taskmanager:
+    image: ${FLINK_IMAGE}
+    restart: unless-stopped
+    command: taskmanager
+    depends_on:
+      - flink-jobmanager
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+      FLINK_PROPERTIES: |
+        taskmanager.memory.process.size: ${FLINK_TM_PROCESS_MIB}m
+        taskmanager.numberOfTaskSlots: ${FLINK_TASK_SLOTS}
+        taskmanager.memory.managed.fraction: 0.05
+    volumes:
+      - ${NETSEC_DATA_DIR}/flink:/flink-data
+    mem_limit: ${FLINK_TM_MEMORY_MIB}m
+    cpus: ${FLINK_TM_CPUS}
+
+  # The job supervisor (design §6, ruling P9): every 60 s it submits each job
+  # that is not running, resuming from its newest savepoint or retained
+  # checkpoint. Both jobs' main() runs here, so this is where their settings live.
+  job-submitter:
+    image: ${FLINK_IMAGE}
+    restart: unless-stopped
+    command: ["bash", "/opt/netsec/submit-jobs.sh"]
+    depends_on:
+      - flink-jobmanager
+    environment:
+      JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
+      FLINK_PROPERTIES: |
+        rest.address: flink-jobmanager
+        rest.port: 8081
+        parallelism.default: ${FLINK_PARALLELISM}
+      JVM_ARGS: -Xmx256m
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      SENSOR_ID: ${SENSOR_ID}
+      CONN_INPUT_TOPIC: ${CONN_INPUT_TOPIC}
+      FEATURE_VECTOR_TOPIC: ${FEATURE_VECTOR_TOPIC}
+      DLQ_TOPIC: ${DLQ_TOPIC}
+      DNS_INPUT_TOPIC: ${DNS_INPUT_TOPIC}
+      DNS_FEATURE_VECTOR_TOPIC: ${DNS_FEATURE_VECTOR_TOPIC}
+      DNS_DLQ_TOPIC: ${DNS_DLQ_TOPIC}
+      MODBUS_RAW_TOPIC: ${MODBUS_RAW_TOPIC}
+      MODBUS_FEATURE_VECTOR_TOPIC: ${MODBUS_FEATURE_VECTOR_TOPIC}
+      MODBUS_DLQ_TOPIC: ${MODBUS_DLQ_TOPIC}
+      S7COMM_RAW_TOPIC: ${S7COMM_RAW_TOPIC}
+      S7COMM_FEATURE_VECTOR_TOPIC: ${S7COMM_FEATURE_VECTOR_TOPIC}
+      S7COMM_DLQ_TOPIC: ${S7COMM_DLQ_TOPIC}
+      S7COMM_STATE_TTL_MINUTES: ${S7COMM_STATE_TTL_MINUTES}
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    volumes:
+      - ./jars:/opt/netsec/jars:ro
+      - ./flink/submit-jobs.sh:/opt/netsec/submit-jobs.sh:ro
+      - ${NETSEC_DATA_DIR}/flink:/flink-data
+    mem_limit: 640m
+
+  # The Zeek sensor (design §4): sniffs ZEEK_INTERFACE on the host network and
+  # sends the two OT logs to Kafka's loopback listener.
+  zeek:
+    image: ${ZEEK_IMAGE}
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      ZEEK_INTERFACE: ${ZEEK_INTERFACE}
+      NETSEC_KAFKA_BROKERS: 127.0.0.1:${KAFKA_HOST_PORT}
+      MODBUS_RAW_TOPIC: ${MODBUS_RAW_TOPIC}
+      S7COMM_RAW_TOPIC: ${S7COMM_RAW_TOPIC}
+    mem_limit: ${ZEEK_MEMORY_MIB}m
+    cpus: ${ZEEK_CPUS}

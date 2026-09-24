@@ -42,7 +42,7 @@ pytest -k test_name              # single test
 
 ## Architecture
 
-**Data flow:** External Kafka (`conn`, `dns` and `netsec.modbus.raw.v1` topics) → Online Flink job (parse → validate → bounded keyed state → per-schema feature vector — conn's own 20 values, dns's 24 (the common tier, whose conn-derived fields come from a non-blocking left join against conn.log snapshots, plus dns's own protocol tier), modbus's 42 (exactly the externally frozen upstream contract, keyed per `(sensor, client, server, unit)`)) → internal Kafka topics (separate feature-vector and DLQ topics per protocol: `netsec.<protocol>.feature-vector.v1` and `netsec.<protocol>.dlq.v1` for `conn`, `dns` and `modbus`) → Archive Flink job → ClickHouse. ONNX inference is not yet wired into either job (see Implementation state).
+**Data flow:** External Kafka (`conn`, `dns`, `netsec.modbus.raw.v1` and `netsec.s7comm.raw.v1` topics) → Online Flink job (parse → validate → bounded keyed state → per-schema feature vector — conn's own 20 values, dns's 24 (the common tier, whose conn-derived fields come from a non-blocking left join against conn.log snapshots, plus dns's own protocol tier), modbus's 42 (exactly the externally frozen upstream contract, keyed per `(sensor, client, server, unit)`), s7comm's 16 (exactly the externally frozen upstream contract, keyed per `(sensor, uid)`)) → internal Kafka topics (separate feature-vector and DLQ topics per protocol: `netsec.<protocol>.feature-vector.v1` and `netsec.<protocol>.dlq.v1` for `conn`, `dns`, `modbus` and `s7comm`) → Archive Flink job → ClickHouse. ONNX inference is not yet wired into either job (see Implementation state).
 
 **Hexagonal, one-way dependency chain:**
 ```
@@ -54,7 +54,7 @@ domain → ports → application → adapters → bootstrap
 - `adapter-kafka/flink/onnx/clickhouse/registry-filesystem/monitoring` — each implements ports and carries framework imports. Adapters do not import each other, with one recorded
   exception: `adapter-flink` depends on `adapter-kafka`, because the operators that
   drive parsing (`ConnParseMapValidateFunction`, `DnsParseMapValidateFunction`,
-  `ModbusParseMapValidateFunction`) construct the kafka-side parser and mapper
+  `ModbusParseMapValidateFunction`, `S7commParseMapValidateFunction`) construct the kafka-side parser and mapper
   themselves. That dependency is one-directional, and no other adapter pair is coupled — every other adapter's pom
   names only itself.
 - `bootstrap-online-job` / `bootstrap-archive-job` — the **only** modules that wire concrete adapters together into a runnable Flink job.
@@ -63,7 +63,7 @@ domain → ports → application → adapters → bootstrap
 **Key invariants:**
 - Java package root: `io.netsecml.platform`
 - Java 21 throughout — use `record` for immutable data carriers, `sealed interface` + records + pattern-matching `switch` for closed hierarchies. Records with array components need defensive copies in compact constructor *and* in the accessor.
-- Feature vector: exactly `schema.featureCount()` `float32` values, frozen per schema. Conn's registered schema reports 20, ordered per `contracts/features/conn-feature-schema-v1.json`; dns's registered schema reports 24, ordered per `contracts/features/dns-feature-schema-v1.json`; modbus's registered schema reports 42, ordered per `contracts/features/modbus-feature-schema-v1.json`. Feature order is frozen once defined — a change creates a new schema version.
+- Feature vector: exactly `schema.featureCount()` `float32` values, frozen per schema. Conn's registered schema reports 20, ordered per `contracts/features/conn-feature-schema-v1.json`; dns's registered schema reports 24, ordered per `contracts/features/dns-feature-schema-v1.json`; modbus's registered schema reports 42, ordered per `contracts/features/modbus-feature-schema-v1.json`; s7comm's registered schema reports 16, ordered per `contracts/features/s7comm-feature-schema-v1.json`. Feature order is frozen once defined — a change creates a new schema version.
 - A platform-designed feature schema is the common tier (12 values, frozen) followed by
   that protocol's own tier. `conn-feature-v1` predates the tier and is frozen without it;
   every platform-designed schema from `dns-feature-v1` onward leads with it. A schema that
@@ -71,12 +71,19 @@ domain → ports → application → adapters → bootstrap
   that contract specifies, no common tier added. `modbus-feature-v1` (42 values, mirroring
   the upstream model team's frozen contract, committed as
   `tests/fixtures/contracts/modbus_feature_contract_v1.json`) is the first of those.
+  `s7comm-feature-v1` (16 values, mirroring upstream's `STAGE1_RAW_FEATURES`, transcribed as
+  `tests/fixtures/contracts/s7comm_stage1_raw_features_v1.json`) is the second; its two
+  categorical features travel as codes (`S7commCategories`) whose decode reproduces
+  upstream's category strings exactly.
 - Event identity is a per-log-type obligation with its own stated argument: `CONN` is
   `sensor:uid`, `DNS` is `sensor:uid:trans_id`, `MODBUS` is
   `sensor:uid:tid:direction:ts_millis`. Modbus folds in direction because a request and its
   response are two records sharing one `tid`, and the millisecond timestamp because `tid` is
   a 16-bit client counter that a 10 Hz poll loop wraps in under two hours (see
-  `ModbusEventMapper`'s eventId derivation). A log type whose uniqueness cannot be
+  `ModbusEventMapper`'s eventId derivation). `S7COMM` is
+  `sensor:uid:pdu_reference:direction:ts_millis`, for the same two reasons: a request and its
+  response share the 16-bit PDU reference, which wraps within hours (see
+  `S7commEventMapper`). A log type whose uniqueness cannot be
   evidenced from its own fields is not ready to be added.
 - Modbus endpoint orientation is the mapper's job. `ModbusEvent.sourceIp`/`destinationIp`
   are the source and destination of THIS record (per-packet), not the connection's
@@ -90,6 +97,12 @@ domain → ports → application → adapters → bootstrap
   and every request and its response silently land in different state buckets, so no
   response ever matches. The mapper's `resolvePerPacketEndpoints` comment is the account to
   trust.
+- S7comm endpoint orientation follows upstream's own adapter (`kafka_source.py`), not modbus's
+  precedence: complete per-packet `source_*`/`destination_*` are used as they are; otherwise
+  the connection-level `id_orig_*`/`id_resp_*` pair (underscored, dotted, nested `id`, or bare)
+  is oriented by `is_orig`, which is then required. A record is a request iff its destination
+  port is 102. `S7commEventMapper` holds the rule; state is keyed by uid, so a request and its
+  response share it whatever their endpoints.
 - CPU-only: no GPU, no CUDA, no deep-learning frameworks. ONNX Runtime Java with intra/inter-op threads pinned to 1 per subtask.
 - Model bundle is pinned in job config and loaded once in `open()`. No live hot reload.
 - ClickHouse is never on the online scoring path. Predictions go to Kafka first; the archive job writes to ClickHouse asynchronously.
@@ -101,11 +114,15 @@ domain → ports → application → adapters → bootstrap
   trailing windows bounded by TIME (the last 1, 10 and 60 seconds, as the frozen contract
   requires) and also by count: at most 100,000 entries each
   (`ModbusEntityState.MAX_WINDOW_ENTRIES`), beyond which a vector carries
-  `MODBUS_WINDOW_SATURATED` (see "Modbus limits and decisions" below, F2) — but not yet in
-  aggregate: none of `ConnFeatureProcessFunction`'s `rolling-counters`, `DnsFeatureProcessFunction`'s
-  `dns-window-state` or `ModbusFeatureProcessFunction`'s `modbus-entity-state` carries a TTL,
-  so the KEY SET keeps every key ever seen, for all three protocols, forever (see
-  `OnlineFeatureJob`'s KNOWN GAP comment, which covers conn and dns).
+  `MODBUS_WINDOW_SATURATED` (see "Modbus limits and decisions" below, F2); s7comm keys per
+  `(sensor, uid)` (`S7commConnectionKey`): nine fixed rings of 16 or 32 entries and an
+  outstanding set bounded by the 16-bit PDU reference space, and -- the only feature state in
+  this codebase with one -- a one-hour processing-time idle TTL (`S7COMM_STATE_TTL_MINUTES`).
+  Not yet in aggregate for the other three: none of `ConnFeatureProcessFunction`'s
+  `rolling-counters`, `DnsFeatureProcessFunction`'s `dns-window-state` or
+  `ModbusFeatureProcessFunction`'s `modbus-entity-state` carries a TTL, so the KEY SET keeps
+  every key ever seen, for conn, dns and modbus, forever (see `OnlineFeatureJob`'s KNOWN GAP
+  comment, which covers conn and dns).
 - `NetworkEvent` is a **sealed interface** over a shared `EventEnvelope`, with one record per log
   type. `permits` lists only log types that have a parser, mapper and feature schema — adding a
   record ahead of its implementation defeats the exhaustiveness checking that sealing buys.
@@ -146,9 +163,9 @@ continuation of `feat/clickhouse-archive-job` and then `feat/common-feature-tier
 - `contracts/source/zeek-dns-source-v1.json`, the dns source contract
 
 The Modbus unit (M1) adds the platform's third protocol, and its first OT one:
-every commit on top of `f15f9f8` on this branch (`feat/modbus-stage1`). No
+every commit on top of `f15f9f8` on `feat/modbus-stage1`. No
 commit count is written here on purpose: an earlier one went stale twice within
-a day as later commits landed. Run `git rev-list --count f15f9f8..HEAD` for the
+a day as later commits landed. Run `git rev-list --count f15f9f8..8770a08` for the
 current number. This branch continues linearly from `feat/dns-protocol` (tip
 `149eff8`) and then `feat/conn-scoring-path` (tip `f15f9f8`). Both are
 ancestors of `HEAD`, and neither is merged to `main`. `feat/conn-scoring-path`
@@ -178,16 +195,41 @@ project turned to the OT protocols. Modbus deliverables:
   restore fails, or, under `allowNonRestoredState`, that operator quietly starts
   empty.
 
-The pipeline is now: external `conn`, `dns` and `netsec.modbus.raw.v1` topics →
+The S7comm unit adds the platform's fourth protocol, and its second OT one:
+every commit after `8770a08` on `feat/s7comm-stage1`, which continues linearly
+from `feat/modbus-stage1` (no commit count, for the reason above). S7comm
+deliverables:
+
+- `s7comm-feature-v1`: 16 values, mirroring the upstream model team's frozen
+  raw contract, which both frozen S7 models (Stage 1 autoencoder, Stage 2
+  COMMAND/FLOODING router) consume; no common tier
+- `LogType.S7COMM` and `S7commEvent` added to the sealed `NetworkEvent` hierarchy
+- the ICSNPP `s7comm.log` parser and mapper (`JsonZeekS7commParser`,
+  `S7commEventMapper`, `S7commFieldValues`) and
+  `contracts/source/zeek-s7comm-source-v1.json`
+- the causal state (`S7commConnectionState`, keyed by `S7commConnectionKey`),
+  `S7commFeatureExtractor`, `S7commBuildFeaturesUseCase`, and the Flink
+  operators (`S7commParseMapValidateFunction`, `S7commConnectionKeySelector`,
+  `S7commFeatureProcessFunction`, with the idle TTL)
+- both jobs wired for four protocols: `OnlineFeatureJob`'s four-protocol
+  `build(env, bootstrapServers, conn, dns, modbus, s7comm, sensor)` (and an
+  overload taking the TTL, which `main()` calls) and
+  `ArchiveJob.connDnsModbusAndS7commChains(...)`, which each job's `main()` now calls
+- the parity oracle: `tests/fixtures/s7comm/upstream_oracle_v1.jsonl`, generated
+  by running upstream's own builders (`tests/fixtures/s7comm/generate_upstream_oracle.py`)
+
+The pipeline is now: external `conn`, `dns`, `netsec.modbus.raw.v1` and
+`netsec.s7comm.raw.v1` topics →
 parse/validate → bounded keyed state → per-schema `FeatureVector` (conn: 20
 values, on `netsec.conn.feature-vector.v1` / `netsec.conn.dlq.v1`; dns: 24
 values, on `netsec.dns.feature-vector.v1` / `netsec.dns.dlq.v1`; modbus: 42
-values, on `netsec.modbus.feature-vector.v1` / `netsec.modbus.dlq.v1`) →
-archive job (six Kafka-to-ClickHouse chains, one feature-vector and one DLQ
-chain per protocol, built by `ArchiveJob.connDnsAndModbusChains(...)`; the
-four-chain `connAndDnsChains(...)` is still public and still tested, but
-`main()` no longer calls it) → ClickHouse `feature_vectors` and
-`invalid_events`, both holding rows for all three log types.
+values, on `netsec.modbus.feature-vector.v1` / `netsec.modbus.dlq.v1`; s7comm:
+16 values, on `netsec.s7comm.feature-vector.v1` / `netsec.s7comm.dlq.v1`) →
+archive job (eight Kafka-to-ClickHouse chains, one feature-vector and one DLQ
+chain per protocol, built by `ArchiveJob.connDnsModbusAndS7commChains(...)`;
+the six- and four-chain methods are still public and still tested, but
+`main()` no longer calls them) → ClickHouse `feature_vectors` and
+`invalid_events`, both holding rows for all four log types.
 
 **`main` cannot currently run the online job at all.** Three serialization defects
 (`SensorId` and both Kafka serializers not `Serializable`; two
@@ -199,7 +241,7 @@ not affected** — it already carries an equivalent fix, inherited from
 defects independently on its own branch off the same `main` commit and is
 confirmed NOT an ancestor of this branch. Neither fix is merged to `main`
 itself, so `main` still cannot run the online job; this branch can —
-`OnlineFeatureJobE2ETest` (3/3 against real containers, see Verification state)
+`OnlineFeatureJobE2ETest` (4/4 against real containers, see Verification state)
 is the proof.
 
 ### Verification state
@@ -210,35 +252,33 @@ skips were hiding real defects — including a deduplication query that was
 syntactically invalid and could never have executed. **Do not read a skipped
 container test as a passing one.**
 
-Verified fresh for the flood fix (F2's repair) and its review fixes, at
-`ca51ff6` (the review-fix commit; the commit after it, this file, changes no
-code). Supersedes the final-fix-wave verification at `a8446d4`, which this
-repeats in full and extends with the parity, flood and saturation tests. Each suite was run on its own, one module
-at a time, `target/surefire-reports/` cleared first — see Commands for why no
-single command proves the whole reactor at once. No containers were involved
-in this table:
+Verified fresh for the S7comm unit, at `bb3bd2d` (its end-to-end test commit;
+the commit after it, this file, changes no code). Supersedes the flood-fix
+verification at `ca51ff6`, which this repeats in full and extends with the
+S7comm tests. Each suite was run on its own, one module at a time,
+`target/surefire-reports/` cleared first — see Commands for why no single
+command proves the whole reactor at once. No containers were involved in this
+table:
 
 | Suite | Result |
 |---|---|
-| `domain` | 172/172, 0 skipped (+16 over the prior 156: `ModbusEntityStateTest` rewritten for the in-place state, plus its window-edge, running-count, snapshot, cap and saturation tests; `QualityFlagsTest` re-pinned for bit 3 with an unchanged count) |
+| `domain` | 209/209, 0 skipped (+37 over the prior 172: `S7commFeatureSchemaV1Test` ×6, `S7commCategoriesTest` ×7, `LongRingTest` ×4, `S7commConnectionKeyTest` ×3, `S7commConnectionStateTest` ×17; `QualityFlagsTest`, `NetworkEventTest`, `NetworkEventSurfaceTest` and `LogTypeTest` updated for the fourth protocol with unchanged counts) |
 | `ports` | no tests exist (no test sources in the module) |
-| `application` | 74/74, 0 skipped (+6 over the prior 68: `ModbusEngineParityTest` ×2, `ModbusFloodTest`, `ModbusWindowSaturationTest`, and two in `ModbusBuildFeaturesUseCaseTest`: the in-place contract and the saturation bit) |
-| `adapter-kafka` | 121/121, 0 skipped |
-| `adapter-flink` | 45/45, 0 skipped (+5 over the prior 40: `ModbusEntityStateSerializerTest` ×4 — Kryo resolution, copy independence, round trip, a capped saturated round trip — and `ModbusFeatureProcessFunctionTest`'s checkpoint/restore equivalence. `ModbusGoldenVectorTest` is byte-for-byte unchanged and green) |
-| `adapter-clickhouse`, `InvalidEventRowMapperTest` only (filtered; the module's container tests were not run here) | 9/9, 0 skipped |
-| `bootstrap-online-job`, `OnlineFeatureJobTopologyTest` only (filtered) | 6/6, 0 skipped |
-| `bootstrap-archive-job`, `ArchiveJobTopologyTest` only (filtered) | 9/9, 0 skipped |
+| `application` | 82/82, 0 skipped (+8: `S7commBuildFeaturesUseCaseTest` ×7 and `S7commFloodTest` — a million events on one connection in ~6.5 s) |
+| `adapter-kafka` | 144/144, 0 skipped (+23: `JsonZeekS7commParserTest` ×5, `S7commFieldValuesTest` ×7, `S7commEventMapperTest` ×11) |
+| `adapter-flink` | 60/60, 0 skipped (+15: `S7commUpstreamOracleTest` ×2 — the S7 parity proof: all 2,121 records of the upstream-generated oracle through the real parser, mapper and use case, every one of the 16 features bit-identical to upstream, zero mismatches, while a planted one-line bug gives 10,842 — `S7commParseMapValidateFunctionTest` ×5, `S7commFeatureProcessFunctionTest` ×5 including the TTL expiry, `S7commConnectionStateSerializerTest` ×3. `ModbusGoldenVectorTest` gained only its required `S7commEvent` switch arm) |
+| `adapter-clickhouse`, `InvalidEventRowMapperTest` and `SourceVersionContractTest` only (filtered; the module's container tests were not run here) | 10/10, 0 skipped |
+| `bootstrap-online-job`, `OnlineFeatureJobTopologyTest` only (filtered) | 7/7, 0 skipped (the four-protocol topology: 32 distinct uids) |
+| `bootstrap-archive-job`, `ArchiveJobTopologyTest` only (filtered) | 10/10, 0 skipped (eight chains: 24 distinct uids) |
 
 Verified fresh at the same point against real containers (Kafka
 `confluentinc/cp-kafka:7.6.1`, ClickHouse 25.8), each suite run alone and
-filtered to its one class, never either bootstrap module unfiltered. The modbus
-vectors below now come from the in-place entity state, through a real Flink
-job's heap state backend:
+filtered to its one class, never either bootstrap module unfiltered:
 
 | Suite | Result | What it actually proves |
 |---|---|---|
-| `OnlineFeatureJobE2ETest` | 3/3, 0 skipped | conn and dns feature vectors both arrive from a real broker; the joined dns record carries `qualityFlags()==NONE`, an orphan dns record carries `CONN_ENRICHMENT_ABSENT`, and a malformed dns record reaches dns's own DLQ (`netsec.dns.dlq.v1`), never conn's. Through the three-protocol `build(...)` that `main()` calls, a modbus request and its response that carry IDENTICAL, unswapped connection-level `id_orig_h`/`id_resp_h` (direction from `request_response` alone) share one entity state: the response's 42-value vector has `outstanding_requests_before_event` 1, `response_without_request` 0, `rtt_valid` 1 and `rtt_s` equal to the published 0.25 s gap. A malformed modbus record reaches `netsec.modbus.dlq.v1`, and conn's and dns's DLQs stay empty. The same modbus method, run against the pre-fix DTO and mapper (from `7d0f685`), fails: the response finds no pending request (`outstanding_requests_before_event` 0). This fixture's timestamps are millisecond-exact, so F1's fix changes nothing about this test's own numbers — the golden vector above, not this suite, is what proves F1 |
-| `ArchiveJobE2ETest` | 3/3, 0 skipped | A 24-value dns feature vector and a dns rejection both reach ClickHouse under `log_type = 'dns'`, and a conn vector/rejection under `log_type = 'conn'`, through `connAndDnsChains(...)`. A 42-value modbus vector (carrying the `MODBUS_OUT_OF_ORDER` bit) and a map-stage modbus rejection both reach ClickHouse under `log_type = 'modbus'`, alongside exactly one conn and one dns row per table, through the exact six chains `ArchiveJob.main()` wires via `connDnsAndModbusChains(...)` |
+| `OnlineFeatureJobE2ETest` | 4/4, 0 skipped | conn and dns feature vectors both arrive from a real broker; the joined dns record carries `qualityFlags()==NONE`, an orphan dns record carries `CONN_ENRICHMENT_ABSENT`, and a malformed dns record reaches dns's own DLQ (`netsec.dns.dlq.v1`), never conn's. Through the three-protocol `build(...)`, a modbus request and its response that carry IDENTICAL, unswapped connection-level `id_orig_h`/`id_resp_h` (direction from `request_response` alone) share one entity state: the response's 42-value vector has `outstanding_requests_before_event` 1, `response_without_request` 0, `rtt_valid` 1 and `rtt_s` equal to the published 0.25 s gap, and a malformed modbus record reaches only `netsec.modbus.dlq.v1`. Through the four-protocol `build(...)` that `main()` calls, an S7 request and its response carrying the SAME connection-level `id_orig_*`/`id_resp_*`, told apart only by `is_orig`, come out with the response matched (`s7_outstanding_requests` 0, `s7_response_match_rate_16` 1), and a malformed S7 record reaches only `netsec.s7comm.dlq.v1` — conn's, dns's and modbus's DLQs stay empty |
+| `ArchiveJobE2ETest` | 4/4, 0 skipped | A 24-value dns feature vector and a dns rejection both reach ClickHouse under `log_type = 'dns'`, and a conn vector/rejection under `log_type = 'conn'`, through `connAndDnsChains(...)`; a 42-value modbus vector (carrying `MODBUS_OUT_OF_ORDER`) and a map-stage modbus rejection under `log_type = 'modbus'` through `connDnsAndModbusChains(...)`; and a 16-value s7comm vector (carrying `S7COMM_OUT_OF_ORDER`) and a map-stage s7comm rejection (`source_version` `zeek-s7comm-source-v1`) under `log_type = 's7comm'`, with conn, dns and modbus still exactly one row each per table, through the exact eight chains `ArchiveJob.main()` wires via `connDnsModbusAndS7commChains(...)` |
 
 Verified earlier against real containers, and not re-run for this update
 (`adapter-clickhouse` was run only filtered, above, so its own container tests
@@ -246,7 +286,7 @@ were not re-run):
 
 | Suite | Result | What it actually proves |
 |---|---|---|
-| `adapter-clickhouse` (full suite, on `feat/clickhouse-archive-job`, before the DNS unit) | 37/37, 0 skipped at the time — now stale | Includes `DdlMigrationTest` — `001_mvp_tables.sql` has now been executed by a real ClickHouse 25.8 server, not merely read. Stale because the DNS unit's commit `22465c4` added a ninth test to `InvalidEventRowMapperTest` (`everyLogTypeHasASourceContractFileOnDisk`); that class alone is 9/9 fresh (row above), so the true full-suite count is at least 38 and has not been re-verified against containers |
+| `adapter-clickhouse` (full suite, on `feat/clickhouse-archive-job`, before the DNS unit) | 37/37, 0 skipped at the time — now stale | Includes `DdlMigrationTest` — `001_mvp_tables.sql` has now been executed by a real ClickHouse 25.8 server, not merely read. Stale because the DNS unit's commit `22465c4` added a ninth test to `InvalidEventRowMapperTest` (`everyLogTypeHasASourceContractFileOnDisk`); that class alone is 9/9 fresh (run with `SourceVersionContractTest` in the filtered row above), so the true full-suite count is at least 38 and has not been re-verified against containers |
 | `FeatureVectorDeduplicationTest` | 3/3 | The committed dedup query runs and resolves duplicates |
 | `ClientV2InserterTest` | 4/4 | An unknown column is rejected, not silently skipped |
 
@@ -265,11 +305,13 @@ container startup (two Flink mini-clusters plus two containers do not fit in
 - `byte_sum_5m` is always 0 for dns: dns.log carries no byte counts, so
   `DnsBuildFeaturesUseCase` folds `bytes = 0` for every record; several other
   common-tier values are near-constant for dns as a result.
-- No keyed feature state has a TTL, for any of the three protocols — see the
+- No keyed feature state has a TTL for conn, dns or modbus — see the
   bounded-state invariant above and `OnlineFeatureJob`'s KNOWN GAP comment.
   `ModbusFeatureProcessFunction`'s state inherits the gap from its conn and dns
   siblings, so its `(sensor, clientIp, serverIp, unitId)` key set grows forever
-  too. That was ruled on, not missed: fixing all three belongs in its own unit.
+  too. That was ruled on, not missed: fixing those three belongs in its own unit.
+  s7comm's state is the exception: keyed per connection, it carries an idle TTL
+  from the start (see "S7comm limits and decisions").
 - `DnsWindowState` itself resolves to Flink's record/POJO serializer, but its two
   components, `RollingCounters` and `RecordTimingState`, have no public no-arg
   constructor, so Flink cannot treat them as nested POJOs: both fall back to
@@ -301,8 +343,10 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   rather than removing them: it arrived as a third `OnlineFeatureJob.build(conn,
   dns, modbus, sensor)` overload and a new
   `ArchiveJob.connDnsAndModbusChains(6 topics)`, each named and shaped for
-  exactly three protocols, beside the two-protocol ones it left in place. A
-  fourth protocol is another overload and another chains method (unlike
+  exactly three protocols, beside the two-protocol ones it left in place. s7comm,
+  the fourth protocol, paid the same way: a fourth `build(...)` overload (plus one
+  taking its TTL) and `ArchiveJob.connDnsModbusAndS7commChains(8 topics)`. A fifth
+  protocol is another overload and another chains method (unlike
   `ArchiveJob.build(List<LogTypeChain<?>>)`, which is already genuinely N). The
   enrichment carrier is per-record-type too (`DnsEvent.withEnrichment`).
 - `RollingCounters.record(...)` resets a bucket slot whenever its stored
@@ -349,14 +393,15 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   `ModbusFeatureSchemaV1.SCHEMA`, while `ModbusBuildFeaturesUseCase` labels it
   (id, hash) from the registry-resolved schema. A constructor fail-fast in the
   use case rejects any divergence at startup; making them one source is deferred.
-- **Two ways to narrow from `NetworkEvent` now exist across three protocols.**
+- **Two ways to narrow from `NetworkEvent` now exist across four protocols.**
   `ParseMapValidateFunction` emits `NetworkEvent` for every protocol. Conn and dns
   narrow inside each consuming operator (each switches over the sealed permits,
   with a throw arm for every event type its chain never receives); modbus
   narrows once, at its chain's boundary, in a dedicated stateless operator
   (`modbus-event-narrow`), so its key selector and process function are typed on
-  `ModbusEvent`. See `OnlineFeatureJob`'s `NarrowToModbusEvent` comment, so the
-  next protocol's author chooses between the two deliberately.
+  `ModbusEvent`. s7comm chose the modbus shape (`s7comm-event-narrow`). See
+  `OnlineFeatureJob`'s `NarrowToModbusEvent` comment, so the next protocol's author
+  chooses between the two deliberately.
 - **Flood cost (F2): fixed, and bounded.** `ModbusEntityState` is mutable and
   updated in place (`advance` returns a `BeforeEvent` snapshot of the values the
   causal features read), with `07b`'s running 10 s counts restored, so each event
@@ -458,11 +503,51 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   asserts all 42 values, exactly, against a hand derivation of `07b`'s
   `process_capture`.
 
+**S7comm limits and decisions** — each ruled on deliberately, not overlooked
+(`docs/superpowers/specs/2026-09-24-s7comm-stage1-design.md`, rulings R1-R9):
+- **Per-uid arrival order is a deployment requirement.** Upstream processes
+  records in stored order, and every history and run depends on order. The
+  sensor's producer must partition the s7comm topic by uid. A record earlier than
+  its connection's last is processed where it arrives and flagged
+  `S7COMM_OUT_OF_ORDER` (bit 4, value 16); nothing is reset, since no
+  s7comm-feature-v1 feature reads time.
+- **Stricter than upstream on input (R1-R3).** uid is required (upstream falls
+  back to an endpoint flow key), the PDU reference is required and 0-65535, and
+  the two codes must be 0 <= n < 2^24 (exact in float32). Such records go to the
+  DLQ where upstream would fall back or format them; Zeek always writes uid and
+  the 16-bit reference.
+- **A code-less unknown `function_name` is the unseen code -2 (R6).** Upstream
+  uses the upper-cased name itself as the category; a float cannot carry it. It
+  decodes to `"__UNSEEN__"`, which both trained encoders treat as unseen -- equal
+  to upstream only if such a name never appeared in training. ICSNPP writes the
+  code whenever it writes a name, so the case is not expected.
+- **Entropy arithmetic cannot change the vector (R7).** Java uses plain summation
+  and `ln(x)/ln(2)`; over every reachable input (all 65,534 ordered count
+  sequences, n = 2..16) its float32 results equal Python's, compensated `sum` or
+  not. A window of one distinct value yields upstream's `-0.0`, sign included,
+  and the vector keeps it.
+- **The idle TTL (R4).** One hour of processing time with no event
+  (`S7COMM_STATE_TTL_MINUTES`); Zeek starts a new uid after its TCP inactivity
+  timeout (5 minutes by default), so an idle hour never cuts a live connection,
+  and a replay compresses event time, so it only ever fires late. A response to a
+  request whose connection sat idle past the TTL counts as unmatched.
+- **s7comm event-id residual collision.** Two records sharing uid, PDU reference
+  and direction inside one millisecond get one id
+  (`sensor:uid:pdu_reference:direction:ts_millis`), and `ReplacingMergeTree`
+  may collapse their archived rows. A map-stage rejection's id is
+  `sensor:uid:pdu_reference` (or `sensor:uid`): a correlation key, not a join key.
+- **`S7commConnectionState` is Kryo (`GenericTypeInfo`)**, like the modbus state;
+  its layout is free to change only until the first savepoint. Its `BitSet` is
+  serialized by Kryo 5.6.2's built-in `BitSetSerializer`.
+- **No conn.log context and no scoring.** A later model wanting conn context needs
+  a `-v2` schema; scoring (and Stage 1's 16-event sequence assembly) is a later
+  unit, which decodes the two codes with `S7commCategories`.
+
 The common feature tier (`contracts/features/common-feature-tier-v1.json`) and
 its `conn.log` enrichment carrier are implemented and now consumed:
 `conn-feature-v1` predates the tier and is frozen without it, but
-`dns-feature-v1` leads with it at indices 0-11. `modbus-feature-v1` carries
-none of it, by the scope clause in Key invariants.
+`dns-feature-v1` leads with it at indices 0-11. `modbus-feature-v1` and
+`s7comm-feature-v1` carry none of it, by the scope clause in Key invariants.
 
 Not yet implemented: ONNX inference in either job (Day 9), predictions on
 `netsec.prediction.v1` (Day 9), and the Python training project. The parked conn
@@ -477,7 +562,8 @@ Design records: `docs/conn-foundation-pipeline.md` (Steps 2-7),
 `docs/clickhouse.md` (Step 8), and
 `docs/superpowers/specs/2026-09-21-modbus-stage1-design.md` (the Modbus unit;
 its §5 and §7 carried a defect-shaped description of the endpoint fields,
-corrected in place 2026-09-23 with dated notes).
+corrected in place 2026-09-23 with dated notes), and
+`docs/superpowers/specs/2026-09-24-s7comm-stage1-design.md` (the S7comm unit).
 
 ## Key reference files
 

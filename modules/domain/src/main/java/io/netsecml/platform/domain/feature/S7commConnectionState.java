@@ -48,11 +48,13 @@ public final class S7commConnectionState {
     // Scalars: the previous request function (both builders keep one; they
     // are updated under the same condition, so one field serves both), the
     // runs, the previous direction and ROSCTR, and the last timestamp (for
-    // the out-of-order flag only).
+    // the out-of-order flag only). The runs are long because upstream's are
+    // unbounded Python ints: a connection polled with one function for months
+    // would wrap an int negative.
     private Integer lastRequestFunction;
-    private int sameFunctionRun;
+    private long sameFunctionRun;
     private Boolean previousWasRequest;
-    private int sameDirectionRun;
+    private long sameDirectionRun;
     private Integer lastRosctr;
     private Double lastTs;
 
@@ -171,12 +173,12 @@ public final class S7commConnectionState {
     }
 
     // s7_same_function_run_length.
-    public int sameFunctionRunLength() {
+    public long sameFunctionRunLength() {
         return sameFunctionRun;
     }
 
     // s7_same_direction_run_length.
-    public int sameDirectionRunLength() {
+    public long sameDirectionRunLength() {
         return sameDirectionRun;
     }
 

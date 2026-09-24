@@ -355,6 +355,12 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   minute's counts for that key. Nothing requires the external `conn`/`dns`
   topics to be partitioned by `id_orig_h`, so the sensor's Kafka producer
   should partition by source IP to keep per-key arrival ordered.
+- **Every topic must exist before either job starts.** A Kafka source on a
+  missing topic fails its split enumerator, and each job's `main()` now
+  subscribes to every protocol's topics unconditionally (online: the four raw
+  topics; archive: all eight feature-vector and DLQ topics). A site that runs
+  no S7 (or Modbus) sensor must still create those topics, empty; otherwise
+  the whole job -- all four protocols -- restarts in a loop.
 - Offset-initialiser asymmetry: the online job always starts at `earliest()`
   while the archive job resumes from `committedOffsets(EARLIEST)`, so an
   online restart without a usable checkpoint replays the whole retention
@@ -526,11 +532,20 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   sequences, n = 2..16) its float32 results equal Python's, compensated `sum` or
   not. A window of one distinct value yields upstream's `-0.0`, sign included,
   and the vector keeps it.
-- **The idle TTL (R4).** One hour of processing time with no event
-  (`S7COMM_STATE_TTL_MINUTES`); Zeek starts a new uid after its TCP inactivity
-  timeout (5 minutes by default), so an idle hour never cuts a live connection,
-  and a replay compresses event time, so it only ever fires late. A response to a
-  request whose connection sat idle past the TTL counts as unmatched.
+- **The idle TTL (R4) cuts connections after an outage.** One hour of
+  processing time with no event (`S7COMM_STATE_TTL_MINUTES`). While the job
+  runs, Zeek starts a new uid after its TCP inactivity timeout (5 minutes by
+  default), so an idle hour normally ends nothing live. But the TTL counts
+  PROCESSING time and each key's last-write time is restored with a
+  checkpoint: after downtime or a stall longer than the TTL, every S7
+  connection is expired on its next record and restarts from empty state
+  (outstanding requests forgotten, so their responses count as unmatched,
+  runs reset), silently -- no quality bit marks those vectors
+  (`S7commFeatureProcessFunctionTest.aRestoreAfterAnOutageLongerThanTheTtlStartsTheConnectionFresh`
+  pins it). The same happens to a connection Zeek keeps open with keepalives
+  but no S7 PDUs for longer than the TTL. Only catch-up after a replay, which
+  compresses event time, makes it fire late. Set the TTL above the longest
+  expected outage.
 - **s7comm event-id residual collision.** Two records sharing uid, PDU reference
   and direction inside one millisecond get one id
   (`sensor:uid:pdu_reference:direction:ts_millis`), and `ReplacingMergeTree`

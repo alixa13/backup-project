@@ -191,10 +191,16 @@ what is missing — a correlation key, not a join key back to `feature_vectors` 
   key is ~10 KB at most and each event costs O(1). No cap and no saturation flag are needed.
 - **TTL (upstream has none):** Flink state TTL on the S7 `ValueState` only — 1 hour of processing
   time (`S7COMM_STATE_TTL_MINUTES`, default 60, read by `main()` and passed to the operator), refreshed on every write (`OnCreateAndWrite`), expired state never returned,
-  cleaned incrementally and on full snapshot. Parity-safe: Zeek assigns a new `uid` after its TCP
-  inactivity timeout (5 minutes by default), so a `uid` idle for an hour never receives another
-  record; and a replay from `earliest()` compresses event time, so processing-time TTL can only
-  fire late, never early. Conn, dns and modbus state keep their recorded TTL gap.
+  cleaned incrementally and on full snapshot. Parity holds while the job runs: Zeek assigns a new
+  `uid` after its TCP inactivity timeout (5 minutes by default), so a `uid` idle for an hour
+  normally never receives another record. It does NOT hold in two cases (corrected 2026-09-24
+  after the final review): (a) downtime or a stall longer than the TTL -- the TTL counts
+  processing time and each key's last-write time is restored with the checkpoint, so every
+  connection is expired on its next record and restarts from empty state, silently; (b) a
+  connection Zeek keeps open with keepalives but no S7 PDUs for longer than the TTL. Only during
+  catch-up after a replay, which compresses event time, does the TTL fire late rather than early.
+  `S7COMM_STATE_TTL_MINUTES` must therefore exceed the longest expected outage. Conn, dns and
+  modbus state keep their recorded TTL gap.
 - **Kryo:** the state resolves to `GenericTypeInfo`, like the Modbus state; its layout is free to
   change only until the first savepoint.
 - **In-place safety:** as for Modbus — heap backend copy-on-write, `value()` on every event, and

@@ -4,10 +4,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 // Pins upstream's field-value rules (two-models-info/S7___/kafka_source.py):
 // _first, _int_or_none, _bool_or_none, int() for ports and float() for ts.
@@ -56,6 +59,19 @@ class S7commFieldValuesTest {
         for (String bad : new String[] {"\"abc\"", "\"0x\"", "\"nan\"", "\"inf\"", "\" \"", "[1]"}) {
             assertThrows(IllegalArgumentException.class, () -> S7commFieldValues.intOrNone(v(bad)), bad);
         }
+    }
+
+    @Test
+    void aLongMalformedNumberIsRejectedInLinearTime() throws Exception {
+        // One malformed record must reach the DLQ, not stall the operator: a
+        // pattern whose digit runs can split two ways backtracks quadratically,
+        // and 100,000 digits then take minutes. Both parse paths that use the
+        // decimal pattern are checked.
+        JsonNode longDigits = v("\"" + "1".repeat(100_000) + "x\"");
+        assertTimeoutPreemptively(Duration.ofSeconds(2), () -> {
+            assertThrows(IllegalArgumentException.class, () -> S7commFieldValues.intOrNone(longDigits));
+            assertThrows(IllegalArgumentException.class, () -> S7commFieldValues.seconds(longDigits));
+        });
     }
 
     @Test

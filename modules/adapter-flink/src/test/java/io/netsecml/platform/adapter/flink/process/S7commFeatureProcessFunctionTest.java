@@ -142,6 +142,29 @@ class S7commFeatureProcessFunctionTest {
     }
 
     @Test
+    void aRestoreAfterAnOutageLongerThanTheTtlStartsTheConnectionFresh() throws Exception {
+        // The TTL counts PROCESSING time and each key's last-write time is
+        // restored with the checkpoint, so if the job is down for longer than
+        // the TTL, every connection is expired the moment it is next read --
+        // even though, in event time, its traffic continues without a gap.
+        var before = harness(Duration.ofHours(1));
+        before.setStateTtlProcessingTime(0L);
+        before.open();
+        before.processElement(new StreamRecord<>(request("CA", 1000.0, 1)));
+        OperatorSubtaskState snapshot = before.snapshot(1L, 1L);
+        before.close();
+
+        var after = harness(Duration.ofHours(1));
+        after.initializeState(snapshot);
+        after.setStateTtlProcessingTime(Duration.ofMinutes(61).toMillis());
+        after.open();
+        after.processElement(new StreamRecord<>(request("CA", 1000.1, 2)));
+        assertEquals(1f, outstanding(after.extractOutputValues().get(0)),
+            "a 61-minute outage expires the connection: it restarts from empty state, with no quality bit");
+        after.close();
+    }
+
+    @Test
     void theDefaultTtlIsOneHourAndMustBePositive() {
         assertEquals(Duration.ofHours(1), S7commFeatureProcessFunction.DEFAULT_STATE_TTL);
         assertThrows(IllegalArgumentException.class, () -> new S7commFeatureProcessFunction(Duration.ZERO));

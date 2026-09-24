@@ -550,7 +550,8 @@ public final class OnlineFeatureJob {
             System.getenv().getOrDefault("S7COMM_FEATURE_VECTOR_TOPIC", "netsec.s7comm.feature-vector.v1"),
             System.getenv().getOrDefault("S7COMM_DLQ_TOPIC", "netsec.s7comm.dlq.v1"));
         // The s7comm connection state's idle TTL in minutes; see
-        // S7commFeatureProcessFunction.DEFAULT_STATE_TTL for why 60 is safe.
+        // S7commFeatureProcessFunction.DEFAULT_STATE_TTL for how to choose it
+        // (above Zeek's TCP inactivity timeout AND the longest expected outage).
         Duration s7commStateTtl = Duration.ofMinutes(Long.parseLong(
             System.getenv().getOrDefault("S7COMM_STATE_TTL_MINUTES", "60")));
 

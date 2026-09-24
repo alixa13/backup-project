@@ -111,6 +111,24 @@ class S7commConnectionStateTest {
     }
 
     @Test
+    void theRunLengthsDoNotOverflowOnALongLivedConnection() throws Exception {
+        // A PLC connection polled with one function lives for months: at 100
+        // requests/s an int run would wrap negative after about 248 days, where
+        // upstream's Python ints never do. Seed both runs at Integer.MAX_VALUE
+        // (two billion events are too many to replay) and take one more step.
+        S7commConnectionState state = S7commConnectionState.empty();
+        request(state, 1, 4);
+        for (String run : new String[] {"sameFunctionRun", "sameDirectionRun"}) {
+            java.lang.reflect.Field field = S7commConnectionState.class.getDeclaredField(run);
+            field.setAccessible(true);
+            field.set(state, Integer.MAX_VALUE);
+        }
+        request(state, 2, 4);
+        assertEquals(Integer.MAX_VALUE + 1L, state.sameFunctionRunLength());
+        assertEquals(Integer.MAX_VALUE + 1L, state.sameDirectionRunLength());
+    }
+
+    @Test
     void theFunctionRunIsZeroBeforeAnyRequestFunction() {
         S7commConnectionState state = S7commConnectionState.empty();
         response(state, 1);

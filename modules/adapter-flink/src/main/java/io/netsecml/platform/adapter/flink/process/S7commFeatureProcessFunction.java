@@ -29,12 +29,18 @@ import java.util.Objects;
 public final class S7commFeatureProcessFunction
         extends KeyedProcessFunction<S7commConnectionKey, S7commEvent, FeatureVector> {
 
-    // One hour of processing time with no write. Parity-safe: Zeek starts a new
-    // uid once a connection has been idle for its TCP inactivity timeout (5
-    // minutes by default), so state idle for an hour can never receive another
-    // record; and a replay compresses event time, so this processing-time TTL
-    // can only fire late, never early. See
-    // docs/superpowers/specs/2026-09-24-s7comm-stage1-design.md section 7.
+    // One hour of processing time with no write. Choose it above two bounds.
+    // First, Zeek's TCP inactivity timeout (5 minutes by default): after it, Zeek
+    // starts a new uid, so a connection with no traffic for the whole TTL
+    // normally never sees another record -- except one Zeek keeps open with
+    // keepalives but no S7 PDUs, whose next PDU then starts from empty state.
+    // Second, the longest outage the job may suffer: the TTL counts PROCESSING
+    // time and every key's last-write time is restored with the checkpoint, so
+    // after downtime (or a stall) longer than the TTL every connection is expired
+    // on its next record and restarts from empty state -- its next responses
+    // count as unmatched -- silently, with no quality bit. Only during catch-up
+    // after a replay, which compresses event time, does it fire late rather than
+    // early. See docs/superpowers/specs/2026-09-24-s7comm-stage1-design.md section 7.
     public static final Duration DEFAULT_STATE_TTL = Duration.ofHours(1);
 
     private final Duration stateTtl;

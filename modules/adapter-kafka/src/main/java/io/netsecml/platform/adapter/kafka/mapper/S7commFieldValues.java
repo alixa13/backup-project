@@ -20,8 +20,13 @@ final class S7commFieldValues {
 
     // Python float(text) for finite decimal forms: digits with an optional
     // fraction and exponent. inf and nan are left out: int() raises on them.
+    // Written so a digit run can match only one way -- the fraction needs its
+    // '.' -- which keeps a failed match linear: a pattern like [0-9]+\\.?[0-9]*
+    // can split one run of digits between its two quantifiers in n ways and
+    // backtracks quadratically, so one malformed record of long digits would
+    // stall the operator instead of reaching the DLQ.
     private static final Pattern DECIMAL =
-        Pattern.compile("[+-]?([0-9]+\\.?[0-9]*|\\.[0-9]+)([eE][+-]?[0-9]+)?");
+        Pattern.compile("[+-]?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+)?");
 
     // Python int(text) for a port: base 10 only.
     private static final Pattern DECIMAL_INTEGER = Pattern.compile("[+-]?[0-9]+");

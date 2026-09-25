@@ -8,7 +8,7 @@ status=0
 
 # The unit tests, one file at a time; a failing file fails the run.
 for test in test_common.sh test_tune.sh test_compose.sh test_submit_jobs.sh \
-            test_install_doctor.sh test_stack.sh test_selftest.sh check-jars.sh test_zeek_policy.sh; do
+            test_install_doctor.sh test_build.sh test_stack.sh test_selftest.sh check-jars.sh test_zeek_policy.sh; do
   bash "${HERE}/${test}" || status=1
 done
 

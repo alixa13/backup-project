@@ -11,6 +11,24 @@ maven() {
     "$(setting MAVEN_IMAGE)" mvn -B -q -Duser.home=/var/maven "$@"
 }
 
+# Run a network-heavy step up to ATTEMPTS times. Downloads get cut off (a real
+# server's build lost a 52 MB Maven Central transfer after 2.7 MB); Maven and
+# Docker keep everything already fetched, so a retry only fetches what failed.
+# usage: with_retries ATTEMPTS DESCRIPTION COMMAND [ARGS...]
+with_retries() {
+  local attempts="$1" what="$2" attempt=1
+  shift 2
+  until "$@"; do
+    if [ "$attempt" -ge "$attempts" ]; then
+      warn "${what} failed ${attempts} times; if it is a download that keeps breaking, check this host's connection to the internet"
+      return 1
+    fi
+    attempt=$((attempt + 1))
+    warn "${what} failed; retrying (attempt ${attempt} of ${attempts}) in ${NETSEC_RETRY_PAUSE:-10}s"
+    sleep "${NETSEC_RETRY_PAUSE:-10}"
+  done
+}
+
 build_run() {
   local with_tests=0 jars_only=0
   while [ $# -gt 0 ]; do
@@ -31,7 +49,8 @@ build_run() {
 
   # The shaded JARs, copied to the names the supervisor submits.
   log "building the job JARs"
-  maven -pl modules/bootstrap-online-job,modules/bootstrap-archive-job -am -DskipTests package
+  with_retries 3 "building the job JARs" \
+    maven -pl modules/bootstrap-online-job,modules/bootstrap-archive-job -am -DskipTests package
   cp "${REPO_ROOT}"/modules/bootstrap-online-job/target/bootstrap-online-job-*-all.jar "${DEPLOY_DIR}/jars/online-feature-job.jar"
   cp "${REPO_ROOT}"/modules/bootstrap-archive-job/target/bootstrap-archive-job-*-all.jar "${DEPLOY_DIR}/jars/archive-job.jar"
   log "jars: $(cd "${DEPLOY_DIR}/jars" && printf '%s ' *.jar)"
@@ -39,7 +58,8 @@ build_run() {
   # The sensor image (compiles two plugins: ~7 minutes the first time).
   if [ "$jars_only" -eq 0 ]; then
     log "building the Zeek sensor image $(setting ZEEK_IMAGE)"
-    docker build --build-arg "ZEEK_BASE_IMAGE=$(setting ZEEK_BASE_IMAGE)" -t "$(setting ZEEK_IMAGE)" "${DEPLOY_DIR}/zeek"
+    with_retries 3 "building the Zeek image" \
+      docker build --build-arg "ZEEK_BASE_IMAGE=$(setting ZEEK_BASE_IMAGE)" -t "$(setting ZEEK_IMAGE)" "${DEPLOY_DIR}/zeek"
   fi
   log "build complete"
 }

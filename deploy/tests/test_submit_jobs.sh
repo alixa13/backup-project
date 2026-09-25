@@ -110,6 +110,88 @@ assert_eq 1 "$(grep -c "move $DATA/savepoints/online-feature-job and $DATA/check
 unset -f flink curl
 DATA="$DATA_SAVED"
 
+# Server test, 2026-09-25: through a ClickHouse outage the archive job failed
+# run after run from one restore point, and the third resubmission's warning
+# sent the operator to move its saved state aside -- which was fine. The warning
+# must quote the newest failed run's actual cause (Flink's exception history,
+# JSON-escaped, read without jq), and offer the state way out only when that
+# cause is a state-restore failure.
+DATA_SAVED="$DATA"
+# Two failed runs of archive-job, the NEWER one listed first: the cause must
+# come from the newest by end-time, not from list order.
+cat > "$tmp/overview.json" <<'EOF'
+{"jobs":[{"jid":"new2","name":"archive-job","start-time":300,"end-time":400,"duration":100,"state":"FAILED","last-modification":400,"tasks":{"running":0,"total":32,"failed":32},"pending-operators":0},{"jid":"old1","name":"archive-job","start-time":100,"end-time":200,"duration":100,"state":"FAILED","last-modification":200,"tasks":{"running":0,"total":32,"failed":32},"pending-operators":0}]}
+EOF
+cat > "$tmp/exc-old.json" <<'EOF'
+{"exceptionHistory":{"entries":[{"exceptionName":"java.lang.RuntimeException","stacktrace":"java.lang.RuntimeException: OLD CAUSE\n\tat x.y(Z.java:1)\n","timestamp":200,"failureLabels":{},"concurrentExceptions":[]}],"truncated":false}}
+EOF
+cat > "$tmp/exc-clickhouse.json" <<'EOF'
+{"exceptionHistory":{"entries":[{"exceptionName":"org.apache.flink.runtime.JobException","stacktrace":"org.apache.flink.runtime.JobException: Recovery is suppressed by ExponentialDelayRestartBackoffTimeStrategy(currentRestartAttempt=11)\n\tat org.apache.flink.runtime.executiongraph.failover.ExecutionFailureHandler.handleFailure(ExecutionFailureHandler.java:219)\nCaused by: java.io.IOException: insert into \"feature_vectors\" failed\n\tat io.netsecml.platform.adapter.clickhouse.writer.ClientV2Inserter.insert(ClientV2Inserter.java:80)\nCaused by: java.net.ConnectException: Connection refused\n\tat java.base/sun.nio.ch.Net.pollConnect(Native Method)\n","timestamp":400,"failureLabels":{},"concurrentExceptions":[]}],"truncated":false}}
+EOF
+cat > "$tmp/exc-restore.json" <<'EOF'
+{"exceptionHistory":{"entries":[{"exceptionName":"org.apache.flink.runtime.JobException","stacktrace":"org.apache.flink.runtime.JobException: Recovery is suppressed by ExponentialDelayRestartBackoffTimeStrategy(currentRestartAttempt=11)\n\tat org.apache.flink.runtime.executiongraph.failover.ExecutionFailureHandler.handleFailure(ExecutionFailureHandler.java:219)\nCaused by: java.lang.Exception: Exception while creating StreamOperatorStateContext.\n\tat org.apache.flink.streaming.api.operators.StreamTaskStateInitializerImpl.streamOperatorStateContext(StreamTaskStateInitializerImpl.java:330)\nCaused by: org.apache.flink.util.FlinkException: Could not restore keyed state backend for KeyedProcessOperator_0a1b(1/4) from any of the 1 provided restore options.\n\tat org.apache.flink.streaming.api.operators.BackendRestorerProcedure.createAndRestore(BackendRestorerProcedure.java:165)\nCaused by: com.esotericsoftware.kryo.KryoException: Encountered unregistered class ID: 13\n\tat com.esotericsoftware.kryo.util.DefaultClassResolver.readClass(DefaultClassResolver.java:137)\n","timestamp":400,"failureLabels":{},"concurrentExceptions":[]}],"truncated":false}}
+EOF
+flink() { return 0; }
+# curl: the overview, and each failed run's exception history; the newest run's
+# history is whichever file exc-new.json currently points at.
+curl() {
+  case "$*" in
+    */jobs/overview) cat "$tmp/overview.json" ;;
+    */jobs/new2/exceptions) cat "$tmp/exc-new.json" ;;
+    */jobs/old1/exceptions) cat "$tmp/exc-old.json" ;;
+  esac
+}
+# Three rounds from one restore point; the third one's output.
+third_round() {
+  DATA="$tmp/$1"
+  restore_point "$DATA/checkpoints/archive-job/run1/chk-212" "2026-09-20 10:00"
+  supervise_once >/dev/null 2>&1
+  supervise_once >/dev/null 2>&1
+  supervise_once 2>&1
+}
+way_out_archive="move $tmp/%s/savepoints/archive-job and $tmp/%s/checkpoints/archive-job aside"
+
+# A ClickHouse outage: the cause is quoted, and the state is left alone.
+cp "$tmp/exc-clickhouse.json" "$tmp/exc-new.json"
+third="$(third_round outage)"
+assert_eq 1 "$(grep -c 'archive-job has been submitted 3 times in a row from the same restore point' <<< "$third")" "outage: the pattern is still reported"
+assert_eq 1 "$(grep -c 'Its last run failed with: java.net.ConnectException: Connection refused' <<< "$third")" "outage: the newest run's root cause is quoted"
+assert_eq 0 "$(grep -c 'OLD CAUSE' <<< "$third")" "outage: an older run's cause is not"
+assert_eq 1 "$(grep -c 'not a state-restore failure' <<< "$third")" "outage: it says this is not a state problem"
+# shellcheck disable=SC2059  # the format is ours
+assert_eq 0 "$(grep -cF "$(printf "$way_out_archive" outage outage)" <<< "$third")" "outage: no advice to move the state aside"
+
+# A restore that no longer fits: the cause is quoted, and the way out given.
+cp "$tmp/exc-restore.json" "$tmp/exc-new.json"
+third="$(third_round restore)"
+assert_eq 1 "$(grep -c 'Its last run failed with: com.esotericsoftware.kryo.KryoException: Encountered unregistered class ID: 13' <<< "$third")" "restore: the root cause is quoted"
+assert_eq 1 "$(grep -c 'state-restore failure: its saved state no longer fits the job' <<< "$third")" "restore: it is named a state problem"
+# shellcheck disable=SC2059  # the format is ours
+assert_eq 1 "$(grep -cF "$(printf "$way_out_archive" restore restore)" <<< "$third")" "restore: the way out is given"
+unset -f flink curl third_round
+
+# The supervisor runs under 'set -e -o pipefail': a failed run with an empty
+# exception history (nothing for grep to match) must fall back to the old
+# warning, never end the supervisor. Run it as its container does.
+printf '{"exceptionHistory":{"entries":[],"truncated":false}}' > "$tmp/exc-new.json"
+restore_point "$tmp/strict/checkpoints/archive-job/run1/chk-212" "2026-09-20 10:00"
+strictbin="$tmp/strictbin"
+mkdir -p "$strictbin"
+printf '#!/bin/sh\nexit 0\n' > "$strictbin/flink"
+cat > "$strictbin/curl" <<EOF
+#!/bin/sh
+case "\$*" in
+  */jobs/overview) cat "$tmp/overview.json" ;;
+  */exceptions) cat "$tmp/exc-new.json" ;;
+esac
+EOF
+chmod +x "$strictbin/curl" "$strictbin/flink"
+out="$(PATH="$strictbin:$PATH" NETSEC_FLINK_DATA="$tmp/strict" bash -c '. "$1"; supervise_once; supervise_once; supervise_once' _ "$HERE/../flink/submit-jobs.sh" 2>&1)"; status=$?
+assert_eq 0 "$status" "an empty exception history does not end the supervisor"
+assert_eq 1 "$(grep -c "If its saved state no longer fits the job: 'deploy.sh down', move $tmp/strict/savepoints/archive-job" <<< "$out")" \
+  "and falls back to the warning without a cause"
+DATA="$DATA_SAVED"
+
 # Under the script's own 'set -e -o pipefail', a first start -- no savepoint or
 # checkpoint folder exists yet -- must submit both jobs, not die: run it the
 # way its container does, with stub curl and flink on the PATH.

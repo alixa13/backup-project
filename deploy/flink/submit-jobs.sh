@@ -107,6 +107,37 @@ way_out() {
     "${DATA}/savepoints/$1" "${DATA}/checkpoints/$1"
 }
 
+# The jid of NAME's newest FAILED run (by end-time), from a /jobs/overview
+# document on stdin. Prints nothing if it has none. This container has no jq,
+# so the JSON is split per object, like active_job_names does.
+newest_failed_run() {
+  tr '{' '\n' \
+    | sed -n 's/.*"jid":"\([^"]*\)","name":"'"$1"'".*"end-time":\([0-9]*\).*"state":"FAILED".*/\2 \1/p' \
+    | sort -n | tail -n 1 | cut -d' ' -f2
+}
+
+# The newest entry's stack trace, with real newlines, from a
+# /jobs/<jid>/exceptions document on stdin. Escaped quotes inside messages
+# become single quotes first, so they cannot end the JSON string early.
+failure_trace() {
+  sed "s/\\\\\"/'/g" \
+    | grep -o '"stacktrace":"[^"]*"' | head -n 1 \
+    | sed 's/^"stacktrace":"//; s/"$//; s/\\n/\n/g; s/\\t/\t/g'
+}
+
+# The root cause of a stack trace on stdin: its last 'Caused by:' line, or its
+# first line when it has none; cut short for a log line.
+root_cause() {
+  awk '/^Caused by: / { cause = substr($0, 12) } NR == 1 { first = $0 }
+       END { print (cause != "" ? cause : first) }' | cut -c1-300
+}
+
+# True when a stack trace on stdin is a failure to restore saved state into the
+# job: state that no longer fits the code, not an outage around it.
+is_restore_failure() {
+  grep -qE 'StreamOperatorStateContext|Could not restore (keyed|operator) state backend|StateMigrationException|Cannot map checkpoint/savepoint state|Failed to rollback to checkpoint/savepoint'
+}
+
 # One pass: submit every job that is not active. A failed submission is
 # logged with the way out, and the next job is still tried (Review Focus 1).
 supervise_once() {
@@ -123,7 +154,21 @@ supervise_once() {
       # signal that its state no longer fits (final review, Important 2).
       same="$(count_same_restore "$name" "$restore")"
       if [ -n "$restore" ] && [ "$same" -ge 3 ]; then
-        log "${name} has been submitted ${same} times in a row from the same restore point (${restore}) without completing a new checkpoint. Check 'deploy.sh logs flink-taskmanager'. If its saved state no longer fits the job: $(way_out "$name")"
+        # The newest failed run's own stack trace says whether the state is at
+        # fault. An outage (ClickHouse or Kafka unreachable) fails a job the
+        # same way over and over, and moving its state aside would not help.
+        local failed trace=""
+        failed="$(curl -fsS "${REST}/jobs/overview" 2>/dev/null | newest_failed_run "$name")" || true
+        if [ -n "$failed" ]; then
+          trace="$(curl -fsS "${REST}/jobs/${failed}/exceptions" 2>/dev/null | failure_trace)" || true
+        fi
+        if [ -z "$trace" ]; then
+          log "${name} has been submitted ${same} times in a row from the same restore point (${restore}) without completing a new checkpoint. Check 'deploy.sh logs flink-taskmanager'. If its saved state no longer fits the job: $(way_out "$name")"
+        elif is_restore_failure <<< "$trace"; then
+          log "${name} has been submitted ${same} times in a row from the same restore point (${restore}) without completing a new checkpoint. Its last run failed with: $(root_cause <<< "$trace"). That is a state-restore failure: its saved state no longer fits the job. $(way_out "$name")"
+        else
+          log "${name} has been submitted ${same} times in a row from the same restore point (${restore}) without completing a new checkpoint. Its last run failed with: $(root_cause <<< "$trace"). That is not a state-restore failure, so leave its saved state alone: fix that cause (ClickHouse or Kafka unreachable, for example) and the job resumes from this restore point by itself."
+        fi
       fi
     else
       log "submitting ${name} failed; retrying in 60 s. If it keeps failing while restoring, its saved state no longer fits the job: $(way_out "$name")"

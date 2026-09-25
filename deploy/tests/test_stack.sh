@@ -65,4 +65,24 @@ assert_eq 1 "$(grep -c "job JARs missing: run 'deploy.sh build' first" <<< "$out
 DEPLOY_DIR="$DEPLOY_DIR_SAVED"
 unset -f docker list_interfaces
 
+# status on a job that has not completed its first checkpoint yet (right after
+# 'up') says so in words, never "last checkpoint nones ago" (server test,
+# 2026-09-25); a job with one reports its age.
+load_env() { :; }
+compose() { :; }
+ch_query() { :; }
+flink_rest() {
+  case "$1" in
+    /overview) printf '{}' ;;
+    /jobs/overview) printf '{"jobs":[{"jid":"a1","name":"online-feature-job","state":"RUNNING"},{"jid":"b2","name":"archive-job","state":"RUNNING"}]}' ;;
+    /jobs/a1/checkpoints) printf '{"latest":{"completed":null}}' ;;
+    /jobs/b2/checkpoints) printf '{"latest":{"completed":{"latest_ack_timestamp":%s}}}' "$(( $(now_millis) - 7500 ))" ;;
+  esac
+}
+out="$(stack_status 2>&1)"
+assert_eq 1 "$(grep -cE 'online-feature-job +RUNNING +no checkpoint yet$' <<< "$out")" "status: no checkpoint yet, in words"
+assert_eq 1 "$(grep -cE 'archive-job +RUNNING +last checkpoint 7s ago$' <<< "$out")" "status: a checkpoint's age in seconds"
+assert_eq 0 "$(grep -c 'nones' <<< "$out")" "status never prints 'nones ago'"
+unset -f load_env compose ch_query flink_rest
+
 finish

@@ -135,11 +135,18 @@ stack_status() {
   # Jobs, and how old each running job's newest checkpoint is.
   if flink_rest /overview >/dev/null 2>&1; then
     log "Flink jobs:"
-    local now jid name
+    local now jid name age
     now="$(now_millis)"
     while read -r jid name; do
       [ -n "$jid" ] || continue
-      printf '  %-20s RUNNING   last checkpoint %ss ago\n' "$name" "$(flink_rest "/jobs/${jid}/checkpoints" | checkpoint_age "$now")"
+      # Right after 'up' a job has no completed checkpoint yet: say so in words.
+      age="$(flink_rest "/jobs/${jid}/checkpoints" | checkpoint_age "$now")"
+      if [ "$age" = none ]; then
+        age="no checkpoint yet"
+      else
+        age="last checkpoint ${age}s ago"
+      fi
+      printf '  %-20s RUNNING   %s\n' "$name" "$age"
     done < <(flink_rest /jobs/overview | running_jobs)
     flink_rest /jobs/overview | jq -r '.jobs[] | select(.state != "RUNNING") | "  \(.name)  \(.state)"' | sort -u || true
   else

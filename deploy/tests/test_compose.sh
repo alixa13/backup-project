@@ -53,6 +53,16 @@ assert_eq kafka:29092 "$(q '.services["job-submitter"].environment.KAFKA_BOOTSTR
 assert_eq clickhouse "$(q '.services["job-submitter"].environment.CLICKHOUSE_HOST')" "archive job reaches ClickHouse by name"
 assert_eq sensor-test "$(q '.services["job-submitter"].environment.SENSOR_ID')" "sensor id reaches the jobs"
 assert_eq netsec.s7comm.raw.v1 "$(q '.services["job-submitter"].environment.S7COMM_RAW_TOPIC')" "topics reach the jobs"
+# Each OT feature state's idle TTL reaches the online job's main(), which reads
+# both; the template's defaults are an hour each.
+assert_eq 60 "$(q '.services["job-submitter"].environment.MODBUS_STATE_TTL_MINUTES')" "modbus state TTL reaches the jobs"
+assert_eq 60 "$(q '.services["job-submitter"].environment.S7COMM_STATE_TTL_MINUTES')" "s7comm state TTL reaches the jobs"
+# A deploy/.env written before MODBUS_STATE_TTL_MINUTES existed (install never
+# rewrites an existing one) must still hand main() a number: an empty value
+# would fail the online job's Long.parseLong at startup.
+sed -i '/^MODBUS_STATE_TTL_MINUTES=/d' "$tmp/env"
+assert_eq 60 "$(config | jq -r '.services["job-submitter"].environment.MODBUS_STATE_TTL_MINUTES')" \
+  "an older deploy/.env without the modbus TTL still gets the one-hour default"
 
 # P6: widening BIND_ADDRESS moves the UI and ClickHouse, never Kafka.
 make_env 0.0.0.0

@@ -126,13 +126,13 @@ domain → ports → application → adapters → bootstrap
   (`ModbusEntityState.MAX_WINDOW_ENTRIES`), beyond which a vector carries
   `MODBUS_WINDOW_SATURATED` (see "Modbus limits and decisions" below, F2); s7comm keys per
   `(sensor, uid)` (`S7commConnectionKey`): nine fixed rings of 16 or 32 entries and an
-  outstanding set bounded by the 16-bit PDU reference space, and -- the only feature state in
-  this codebase with one -- a one-hour processing-time idle TTL (`S7COMM_STATE_TTL_MINUTES`).
-  Not yet in aggregate for the other three: none of `ConnFeatureProcessFunction`'s
-  `rolling-counters`, `DnsFeatureProcessFunction`'s `dns-window-state` or
-  `ModbusFeatureProcessFunction`'s `modbus-entity-state` carries a TTL, so the KEY SET keeps
-  every key ever seen, for conn, dns and modbus, forever (see `OnlineFeatureJob`'s KNOWN GAP
-  comment, which covers conn and dns).
+  outstanding set bounded by the 16-bit PDU reference space. The two OT feature states also
+  carry a one-hour processing-time idle TTL, so their KEY SETS are bounded too: s7comm's from
+  the start (`S7COMM_STATE_TTL_MINUTES`), modbus's since 2026-09-25
+  (`MODBUS_STATE_TTL_MINUTES`; see "Modbus limits and decisions", the idle TTL). Not yet in
+  aggregate for conn and dns: neither `ConnFeatureProcessFunction`'s `rolling-counters` nor
+  `DnsFeatureProcessFunction`'s `dns-window-state` carries a TTL, so their KEY SETS keep every
+  key ever seen, forever (see `OnlineFeatureJob`'s KNOWN GAP comment).
 - `NetworkEvent` is a **sealed interface** over a shared `EventEnvelope`, with one record per log
   type. `permits` lists only log types that have a parser, mapper and feature schema — adding a
   record ahead of its implementation defeats the exhaustiveness checking that sealing buys.
@@ -338,13 +338,12 @@ container startup (two Flink mini-clusters plus two containers do not fit in
 - `byte_sum_5m` is always 0 for dns: dns.log carries no byte counts, so
   `DnsBuildFeaturesUseCase` folds `bytes = 0` for every record; several other
   common-tier values are near-constant for dns as a result.
-- No keyed feature state has a TTL for conn, dns or modbus — see the
-  bounded-state invariant above and `OnlineFeatureJob`'s KNOWN GAP comment.
-  `ModbusFeatureProcessFunction`'s state inherits the gap from its conn and dns
-  siblings, so its `(sensor, clientIp, serverIp, unitId)` key set grows forever
-  too. That was ruled on, not missed: fixing those three belongs in its own unit.
-  s7comm's state is the exception: keyed per connection, it carries an idle TTL
-  from the start (see "S7comm limits and decisions").
+- No keyed feature state has a TTL for conn or dns — see the bounded-state
+  invariant above and `OnlineFeatureJob`'s KNOWN GAP comment; their key sets
+  grow forever. That was ruled on, not missed: fixing them belongs in its own
+  unit. The OT states are the exception: s7comm's carries an idle TTL from the
+  start (see "S7comm limits and decisions"), and modbus's gained one on
+  2026-09-25 (see "Modbus limits and decisions").
 - `DnsWindowState` itself resolves to Flink's record/POJO serializer, but its two
   components, `RollingCounters` and `RecordTimingState`, have no public no-arg
   constructor, so Flink cannot treat them as nested POJOs: both fall back to
@@ -481,16 +480,33 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   `update()`). The copy-on-write argument also assumes Kryo copies these
   collections deeply, which the default serialization config does
   (`ModbusEntityStateSerializerTest`) and the online job does not override.
-  **Memory is still not bounded in aggregate.** A fully saturated key holds
+  **Memory is bounded in aggregate only by the idle TTL.** A fully saturated key holds
   ~300,000 window entries — on the order of 10 MB of heap, and of checkpoint — and
   the key includes the unit id, so one client/server pair flooding across all 256
-  unit ids is 256 keys, ~2.5 GB. With no TTL on the key set (see the
-  bounded-state invariant), none of it is ever released, and an idle key keeps
-  whatever its windows held at its last event, since nothing purges without an
-  event. `ArrayDeque`/`HashMap` never shrink, so a key whose windows once grew
-  keeps that capacity until its segment ends; `reset()` allocates fresh
-  collections so a new segment does not inherit it. Bounding the aggregate needs
-  the TTL unit, or a cap on keys.
+  unit ids is 256 keys, ~2.5 GB. The idle TTL (below) releases a key an hour
+  after its last event, so the aggregate is bounded by the keys active within
+  the TTL -- still large under a many-key flood, but no longer growing forever.
+  Until it expires, an idle key keeps whatever its windows held at its last
+  event, since nothing purges a window without an event. `ArrayDeque`/`HashMap`
+  never shrink, so a key whose windows once grew keeps that capacity until its
+  segment ends; `reset()` allocates fresh collections so a new segment does not
+  inherit it. A cap on keys would bound it further.
+- **The idle TTL (2026-09-25).** `modbus-entity-state` expires after one hour of
+  processing time with no event for that key (`MODBUS_STATE_TTL_MINUTES`,
+  `ModbusFeatureProcessFunction.DEFAULT_STATE_TTL`); it was added on the
+  deployed stack because the key set otherwise kept every key ever seen. It
+  changes no feature for live traffic: an event more than 15 s after its key's
+  previous one already starts a new segment and resets the whole state, and an
+  expired key reads as empty, which starts the same new segment. Two cases
+  differ. After an outage or stall longer than the TTL, a key restarts from
+  empty state even when its event time has no gap -- pending requests are
+  forgotten, so their responses count as unmatched, with no quality bit (as
+  S7comm's R4); and the first event after an expiry is never flagged
+  `MODBUS_OUT_OF_ORDER`. The state kept its name: Flink 2.2.1 restores a
+  savepoint written without TTL into it, which
+  `ModbusFeatureProcessFunctionTest` pins, so the deployed savepoints carried
+  over. `docker-compose.yml` defaults the setting to 60 for a `deploy/.env`
+  written before it existed (`test_compose.sh`).
 - **`ModbusEntityState` falls back to Kryo (`GenericTypeInfo`)**, like
   `DnsWindowState`'s two components (`RollingCounters`, `RecordTimingState`):
   Flink's POJO analysis requires a public no-arg constructor and bean-style

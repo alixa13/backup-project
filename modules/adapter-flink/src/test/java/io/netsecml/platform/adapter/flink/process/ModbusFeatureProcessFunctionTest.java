@@ -1,26 +1,36 @@
 package io.netsecml.platform.adapter.flink.process;
 
+import io.netsecml.platform.application.usecase.ModbusBuildFeaturesUseCase;
 import io.netsecml.platform.domain.event.EventEnvelope;
 import io.netsecml.platform.domain.event.EventId;
 import io.netsecml.platform.domain.event.LogType;
-import io.netsecml.platform.domain.event.ModbusEvent;
 import io.netsecml.platform.domain.event.ModbusEvent.ModbusDirection;
+import io.netsecml.platform.domain.event.ModbusEvent;
 import io.netsecml.platform.domain.event.SensorId;
+import io.netsecml.platform.domain.feature.FeatureBuildResult;
 import io.netsecml.platform.domain.feature.FeatureVector;
 import io.netsecml.platform.domain.feature.ModbusEntityKey;
+import io.netsecml.platform.domain.feature.ModbusEntityState;
+import org.apache.flink.api.common.functions.OpenContext;
+import org.apache.flink.api.common.state.ValueState;
+import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
+import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.streaming.api.operators.KeyedProcessOperator;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness;
 import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
+import org.apache.flink.util.Collector;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 // Windows modbus events into modbus-feature-v1 vectors, mirroring
 // DnsFeatureProcessFunctionTest's harness shape: a keyed operator built
@@ -86,6 +96,45 @@ class ModbusFeatureProcessFunctionTest {
         return new KeyedOneInputStreamOperatorTestHarness<>(
             new KeyedProcessOperator<>(new ModbusFeatureProcessFunction()),
             new ModbusEntityKeySelector(), TypeInformation.of(ModbusEntityKey.class));
+    }
+
+    // As harness(), with the idle TTL chosen by the test.
+    private OneInputStreamOperatorTestHarness<ModbusEvent, FeatureVector> harness(Duration ttl) throws Exception {
+        return new KeyedOneInputStreamOperatorTestHarness<>(
+            new KeyedProcessOperator<>(new ModbusFeatureProcessFunction(ttl)),
+            new ModbusEntityKeySelector(), TypeInformation.of(ModbusEntityKey.class));
+    }
+
+    // The response to request(ts, functionCode, tid): per-packet endpoints, so
+    // server to client; ModbusEntityKey.of swaps it back into the request's key.
+    private ModbusEvent response(double ts, int functionCode, String tid) {
+        return new ModbusEvent(envelope(ts, tid + "-r"), ts, ModbusDirection.RESPONSE, "10.0.0.9", "10.0.0.5",
+            functionCode, tid, "1", null, null, false, new double[0], new double[0]);
+    }
+
+    // The operator as deployed before its state had a TTL (up to 2026-09-25):
+    // the same "modbus-entity-state" name and type, with no TTL. Only here to
+    // write the kind of savepoint the server already holds.
+    private static final class PreTtlModbusFeatureProcessFunction
+            extends KeyedProcessFunction<ModbusEntityKey, ModbusEvent, FeatureVector> {
+        private transient ValueState<ModbusEntityState> entityState;
+        private transient ModbusBuildFeaturesUseCase useCase;
+
+        @Override
+        public void open(OpenContext openContext) {
+            entityState = getRuntimeContext().getState(new ValueStateDescriptor<>(
+                "modbus-entity-state", TypeInformation.of(ModbusEntityState.class)));
+            useCase = new ModbusBuildFeaturesUseCase();
+        }
+
+        @Override
+        public void processElement(ModbusEvent event, Context ctx, Collector<FeatureVector> out) throws Exception {
+            ModbusEntityState state = entityState.value();
+            FeatureBuildResult<ModbusEntityState> result =
+                useCase.build(event, state == null ? ModbusEntityState.empty() : state);
+            entityState.update(result.newState());
+            out.collect(result.vector());
+        }
     }
 
     @Test
@@ -177,5 +226,96 @@ class ModbusFeatureProcessFunctionTest {
             assertArrayEquals(expected.get(checkpointAfter + i).values(), actual.get(i).values(),
                 "vector for event " + (checkpointAfter + i) + " after the restore");
         }
+    }
+
+    // Idle TTL (OnCreateAndWrite): every event writes the state, so the clock
+    // restarts at each event and only a key with NO event for the whole TTL
+    // expires. Event time moves 1 s per event, well inside the 15 s segment
+    // gap, so any fresh start here is the TTL's doing, not the segment rule's.
+    // outstanding_requests_before_event (index 30) counts this key's pending
+    // requests: it grows while the state lives and is 0 once it has expired.
+    @Test
+    void idleStateExpiresAfterTheTtlButSurvivesJustBeforeIt() throws Exception {
+        OneInputStreamOperatorTestHarness<ModbusEvent, FeatureVector> harness = harness(Duration.ofHours(1));
+        harness.setStateTtlProcessingTime(0L);
+        harness.open();
+        harness.processElement(new StreamRecord<>(request(1000.0, 3, "1")));
+
+        harness.setStateTtlProcessingTime(Duration.ofMinutes(59).toMillis());
+        harness.processElement(new StreamRecord<>(request(1001.0, 3, "2")));
+
+        harness.setStateTtlProcessingTime(Duration.ofMinutes(59 + 59).toMillis());
+        harness.processElement(new StreamRecord<>(request(1002.0, 3, "3")));
+
+        harness.setStateTtlProcessingTime(Duration.ofMinutes(59 + 59 + 61).toMillis());
+        harness.processElement(new StreamRecord<>(request(1003.0, 3, "4")));
+
+        List<FeatureVector> out = harness.extractOutputValues();
+        assertEquals(1f, out.get(1).values()[30], "59 minutes idle: alive, one request pending");
+        assertEquals(2f, out.get(2).values()[30], "59 minutes after the last write: alive, two pending");
+        assertEquals(0f, out.get(3).values()[30], "61 minutes idle: expired, a fresh state");
+        harness.close();
+    }
+
+    // The TTL counts PROCESSING time, and each key's last-write time is
+    // restored with the checkpoint: after an outage longer than the TTL a key
+    // restarts from empty state even though, in event time, its traffic has no
+    // gap -- the request below is forgotten, so its response is unmatched
+    // (response_without_request, index 31; rtt_valid, index 33). S7comm's
+    // ruling R4 accepts the same.
+    @Test
+    void aRestoreAfterAnOutageLongerThanTheTtlStartsTheKeyFresh() throws Exception {
+        OneInputStreamOperatorTestHarness<ModbusEvent, FeatureVector> before = harness(Duration.ofHours(1));
+        before.setStateTtlProcessingTime(0L);
+        before.open();
+        before.processElement(new StreamRecord<>(request(1000.0, 3, "7")));
+        OperatorSubtaskState snapshot = before.snapshot(1L, 1L);
+        before.close();
+
+        OneInputStreamOperatorTestHarness<ModbusEvent, FeatureVector> after = harness(Duration.ofHours(1));
+        after.initializeState(snapshot);
+        after.setStateTtlProcessingTime(Duration.ofMinutes(61).toMillis());
+        after.open();
+        after.processElement(new StreamRecord<>(response(1000.25, 3, "7")));
+
+        float[] responseVector = after.extractOutputValues().get(0).values();
+        assertEquals(1f, responseVector[31], "response_without_request: the request was forgotten");
+        assertEquals(0f, responseVector[33], "rtt_valid");
+        after.close();
+    }
+
+    // The deploy guarantee: a savepoint written before this state had a TTL
+    // (what the server holds) restores into the TTL state under the same name,
+    // so a request pending at the savepoint still matches its response after
+    // it -- outstanding_requests_before_event (30) 1, response_without_request
+    // (31) 0, rtt_valid (33) 1.
+    @Test
+    void aSavepointWrittenBeforeTheStateHadATtlRestoresIntoIt() throws Exception {
+        OneInputStreamOperatorTestHarness<ModbusEvent, FeatureVector> before =
+            new KeyedOneInputStreamOperatorTestHarness<>(
+                new KeyedProcessOperator<>(new PreTtlModbusFeatureProcessFunction()),
+                new ModbusEntityKeySelector(), TypeInformation.of(ModbusEntityKey.class));
+        before.open();
+        before.processElement(new StreamRecord<>(request(1000.0, 3, "7")));
+        OperatorSubtaskState snapshot = before.snapshot(1L, 1L);
+        before.close();
+
+        OneInputStreamOperatorTestHarness<ModbusEvent, FeatureVector> after = harness();
+        after.initializeState(snapshot);
+        after.open();
+        after.processElement(new StreamRecord<>(response(1000.25, 3, "7")));
+
+        float[] responseVector = after.extractOutputValues().get(0).values();
+        assertEquals(1f, responseVector[30], "outstanding_requests_before_event");
+        assertEquals(0f, responseVector[31], "response_without_request");
+        assertEquals(1f, responseVector[33], "rtt_valid");
+        after.close();
+    }
+
+    @Test
+    void aTtlThatIsNotPositiveIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> new ModbusFeatureProcessFunction(Duration.ZERO));
+        assertThrows(IllegalArgumentException.class, () -> new ModbusFeatureProcessFunction(Duration.ofMinutes(-1)));
+        assertThrows(NullPointerException.class, () -> new ModbusFeatureProcessFunction(null));
     }
 }

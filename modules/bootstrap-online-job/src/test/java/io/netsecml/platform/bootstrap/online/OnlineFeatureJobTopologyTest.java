@@ -1,5 +1,6 @@
 package io.netsecml.platform.bootstrap.online;
 
+import io.netsecml.platform.adapter.flink.process.ModbusFeatureProcessFunction;
 import io.netsecml.platform.adapter.flink.process.S7commFeatureProcessFunction;
 import io.netsecml.platform.domain.event.SensorId;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -289,15 +290,16 @@ class OnlineFeatureJobTopologyTest {
         assertTrue(uids.containsAll(CONN_UIDS), "conn's historical uids must be byte-identical, found: " + uids);
     }
 
-    // main() calls the build(...) overload that takes the s7comm state TTL. The
-    // default-TTL overload the tests above use delegates to it, so its wiring
-    // is already covered; what those tests cannot see is whether the Duration
-    // it is given actually reaches s7comm-features. This builds with a
-    // non-default TTL and reads it back off that operator's function -- and
+    // main() calls the build(...) overload that takes the modbus and s7comm
+    // state TTLs. The default-TTL overloads the tests above use delegate to
+    // it, so its wiring is already covered; what those tests cannot see is
+    // whether each Duration it is given reaches its own operator. This builds
+    // with two different non-default TTLs -- so passing them to the wrong
+    // operators fails too -- reads each back off its operator's function, and
     // checks the uids are unchanged, since a TTL is a runtime setting, never
     // checkpoint identity.
     @Test
-    void theTtlTakingOverloadThatMainCallsPassesItsTtlToTheS7commOperator() throws Exception {
+    void theTtlTakingOverloadThatMainCallsPassesEachTtlToItsOwnOperator() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
         OnlineFeatureJob.build(env, "localhost:9092",
@@ -307,18 +309,26 @@ class OnlineFeatureJobTopologyTest {
                 "netsec.modbus.dlq.v1"),
             new OnlineFeatureJob.ProtocolTopics("netsec.s7comm.raw.v1", "netsec.s7comm.feature-vector.v1",
                 "netsec.s7comm.dlq.v1"),
-            new SensorId("sensor-eu-1"), Duration.ofMinutes(90));
+            new SensorId("sensor-eu-1"), Duration.ofMinutes(45), Duration.ofMinutes(90));
         assertEquals(uidsOf(buildFourProtocol()), uidsOf(env));
 
-        // The s7comm-features node's operator is a KeyedProcessOperator whose
-        // user function is the S7commFeatureProcessFunction the chain built.
+        assertEquals(Duration.ofMinutes(45),
+            stateTtlOf(env, "modbus-features", ModbusFeatureProcessFunction.class));
+        assertEquals(Duration.ofMinutes(90),
+            stateTtlOf(env, "s7comm-features", S7commFeatureProcessFunction.class));
+    }
+
+    // The stateTtl a feature operator was built with: the node with this uid is
+    // a KeyedProcessOperator whose user function is that operator's function.
+    private static Object stateTtlOf(StreamExecutionEnvironment env, String uid, Class<?> functionClass)
+            throws ReflectiveOperationException {
         StreamNode features = env.getStreamGraph(false).getStreamNodes().stream()
-            .filter(node -> "s7comm-features".equals(node.getTransformationUID()))
+            .filter(node -> uid.equals(node.getTransformationUID()))
             .findFirst().orElseThrow();
         Object function = ((AbstractUdfStreamOperator<?, ?>)
             ((SimpleOperatorFactory<?>) features.getOperatorFactory()).getOperator()).getUserFunction();
-        Field stateTtl = S7commFeatureProcessFunction.class.getDeclaredField("stateTtl");
+        Field stateTtl = functionClass.getDeclaredField("stateTtl");
         stateTtl.setAccessible(true);
-        assertEquals(Duration.ofMinutes(90), stateTtl.get(function));
+        return stateTtl.get(function);
     }
 }

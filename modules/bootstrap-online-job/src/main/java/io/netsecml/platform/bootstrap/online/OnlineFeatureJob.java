@@ -103,7 +103,8 @@ public final class OnlineFeatureJob {
     // per-(sensor, sourceIp) state only" invariant, which this satisfies
     // per-value but not in aggregate. Adding a TTL to these two is a separate
     // design decision with its own trade-offs and is deliberately not made
-    // here.
+    // here. (Modbus's and s7comm's feature states do carry idle TTLs: see
+    // ModbusFeatureProcessFunction and S7commFeatureProcessFunction.)
     //
     // KNOWN SEAM: this method's own signature -- build(conn, dns, sensor) --
     // is shaped and named for exactly two protocols, not for the general N.
@@ -192,25 +193,30 @@ public final class OnlineFeatureJob {
     public static void build(StreamExecutionEnvironment env, String bootstrapServers,
                               ProtocolTopics conn, ProtocolTopics dns, ProtocolTopics modbus, SensorId sensor) {
         build(env, bootstrapServers, conn, dns, sensor);
-        modbusChain(env, bootstrapServers, modbus, sensor);
+        modbusChain(env, bootstrapServers, modbus, sensor, ModbusFeatureProcessFunction.DEFAULT_STATE_TTL);
     }
 
     // The four-protocol topology: the three-protocol build() above plus
-    // s7comm's chain, with S7commFeatureProcessFunction's default one-hour
-    // idle TTL. A fourth overload, for the reason the three-protocol one gives:
+    // s7comm's chain, with ModbusFeatureProcessFunction's and
+    // S7commFeatureProcessFunction's default one-hour idle TTLs. A fourth overload, for the reason the three-protocol one gives:
     // every existing caller keeps compiling unchanged. KNOWN SEAM, as recorded
     // there: a fifth protocol is a fifth overload.
     public static void build(StreamExecutionEnvironment env, String bootstrapServers, ProtocolTopics conn,
                               ProtocolTopics dns, ProtocolTopics modbus, ProtocolTopics s7comm, SensorId sensor) {
-        build(env, bootstrapServers, conn, dns, modbus, s7comm, sensor, S7commFeatureProcessFunction.DEFAULT_STATE_TTL);
+        build(env, bootstrapServers, conn, dns, modbus, s7comm, sensor,
+            ModbusFeatureProcessFunction.DEFAULT_STATE_TTL, S7commFeatureProcessFunction.DEFAULT_STATE_TTL);
     }
 
-    // As above, with the s7comm connection state's idle TTL chosen by the
-    // caller; main() passes S7COMM_STATE_TTL_MINUTES.
+    // As above, with the modbus entity state's and the s7comm connection
+    // state's idle TTLs chosen by the caller; main() passes
+    // MODBUS_STATE_TTL_MINUTES and S7COMM_STATE_TTL_MINUTES. Two adjacent
+    // Durations, so OnlineFeatureJobTopologyTest builds with two different
+    // ones to catch a swap.
     public static void build(StreamExecutionEnvironment env, String bootstrapServers, ProtocolTopics conn,
                               ProtocolTopics dns, ProtocolTopics modbus, ProtocolTopics s7comm, SensorId sensor,
-                              Duration s7commStateTtl) {
-        build(env, bootstrapServers, conn, dns, modbus, sensor);
+                              Duration modbusStateTtl, Duration s7commStateTtl) {
+        build(env, bootstrapServers, conn, dns, sensor);
+        modbusChain(env, bootstrapServers, modbus, sensor, modbusStateTtl);
         s7commChain(env, bootstrapServers, s7comm, sensor, s7commStateTtl);
     }
 
@@ -278,7 +284,7 @@ public final class OnlineFeatureJob {
     // those two classes' own comments for why. That typing difference is what
     // the narrow stage below exists to bridge.
     private static void modbusChain(StreamExecutionEnvironment env, String bootstrapServers,
-                                     ProtocolTopics modbus, SensorId sensor) {
+                                     ProtocolTopics modbus, SensorId sensor, Duration stateTtl) {
         DataStream<byte[]> modbusRaw = rawSource(env, bootstrapServers, modbus.input(), "modbus-online-job",
             "modbus-source");
 
@@ -304,7 +310,7 @@ public final class OnlineFeatureJob {
 
         DataStream<FeatureVector> modbusFeatureVectors = modbusEvents
             .keyBy(new ModbusEntityKeySelector())
-            .process(new ModbusFeatureProcessFunction())
+            .process(new ModbusFeatureProcessFunction(stateTtl))
             .name("modbus-features")
             .uid("modbus-features");
         sinkFeatureVectors(modbusFeatureVectors, bootstrapServers, modbus.featureVector(), "modbus-sink");
@@ -571,8 +577,14 @@ public final class OnlineFeatureJob {
         // (above Zeek's TCP inactivity timeout AND the longest expected outage).
         Duration s7commStateTtl = Duration.ofMinutes(Long.parseLong(
             System.getenv().getOrDefault("S7COMM_STATE_TTL_MINUTES", "60")));
+        // The modbus entity state's idle TTL in minutes; see
+        // ModbusFeatureProcessFunction.DEFAULT_STATE_TTL for how to choose it
+        // (above the longest expected outage).
+        Duration modbusStateTtl = Duration.ofMinutes(Long.parseLong(
+            System.getenv().getOrDefault("MODBUS_STATE_TTL_MINUTES", "60")));
 
-        build(env, bootstrapServers, conn, dns, modbus, s7comm, new SensorId(sensorId), s7commStateTtl);
+        build(env, bootstrapServers, conn, dns, modbus, s7comm, new SensorId(sensorId), modbusStateTtl,
+            s7commStateTtl);
         env.execute("online-feature-job");
     }
 }

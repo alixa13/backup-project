@@ -43,7 +43,7 @@ class OnlineFeatureJobRestartStrategyTest {
             new ProtocolTopics("dns", "netsec.dns.feature-vector.v1", "netsec.dns.dlq.v1"),
             new ProtocolTopics("netsec.modbus.raw.v1", "netsec.modbus.feature-vector.v1", "netsec.modbus.dlq.v1"),
             new ProtocolTopics("netsec.s7comm.raw.v1", "netsec.s7comm.feature-vector.v1", "netsec.s7comm.dlq.v1"),
-            new SensorId("sensor-test"), Duration.ofMinutes(60));
+            new SensorId("sensor-test"), Duration.ofMinutes(60), Duration.ofMinutes(60));
         return env.getStreamGraph().getJobGraph();
     }
 

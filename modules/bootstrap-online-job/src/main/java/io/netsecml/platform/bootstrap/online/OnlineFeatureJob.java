@@ -488,21 +488,38 @@ public final class OnlineFeatureJob {
         rejected.sinkTo(sink).name(uid).uid(uid);
     }
 
+    // Flink 2.x removed StreamExecutionEnvironment.setRestartStrategy, so the restart
+    // strategy is configuration-only now. exponential-delay, because a TaskManager
+    // that dies takes all three of this job's independent pipelines (conn+dns,
+    // modbus, s7comm) down at once and each reports its own failure: exponential-
+    // delay merges the failures that arrive while a restart is pending into that one
+    // attempt, where failure-rate (3 per 10 minutes, until the 2026-09-25 server
+    // test) spent its whole allowance on one TaskManager restart, leaving the job
+    // to fail on anything in the next 10 minutes (OnlineFeatureJobRestartStrategyTest).
+    // Restarts pause 10 s, doubling to 2 min. A job that keeps failing is given up
+    // on after 10 attempts -- about a quarter of an hour; Flink's own default with
+    // checkpointing on would retry forever -- so it turns FAILED and the
+    // supervisor's check for saved state that no longer fits
+    // (deploy/flink/submit-jobs.sh) gets to run; 10 minutes without a failure
+    // start the count afresh.
+    static Configuration restartStrategy() {
+        Configuration restartConfig = new Configuration();
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY,
+            RestartStrategyOptions.RestartStrategyType.EXPONENTIAL_DELAY.getMainValue());
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_EXPONENTIAL_DELAY_INITIAL_BACKOFF, Duration.ofSeconds(10));
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_EXPONENTIAL_DELAY_MAX_BACKOFF, Duration.ofMinutes(2));
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_EXPONENTIAL_DELAY_BACKOFF_MULTIPLIER, 2.0);
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_EXPONENTIAL_DELAY_RESET_BACKOFF_THRESHOLD, Duration.ofMinutes(10));
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_EXPONENTIAL_DELAY_ATTEMPTS, 10);
+        return restartConfig;
+    }
+
     public static void main(String[] args) throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
-        // Flink 2.x removed StreamExecutionEnvironment.setRestartStrategy, so the restart
-        // strategy is configuration-only now. Applied before enableCheckpointing below so
-        // the explicit checkpoint settings are the last word regardless of what configure()
-        // reads out of this Configuration. Without this the default with checkpointing on
-        // would restart forever; failure-rate stops hot-looping a broken deployment.
-        Configuration restartConfig = new Configuration();
-        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY,
-            RestartStrategyOptions.RestartStrategyType.FAILURE_RATE.getMainValue());
-        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_MAX_FAILURES_PER_INTERVAL, 3);
-        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_FAILURE_RATE_INTERVAL, Duration.ofMinutes(10));
-        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_DELAY, Duration.ofSeconds(10));
-        env.configure(restartConfig);
+        // Applied before enableCheckpointing below so the explicit checkpoint settings
+        // are the last word regardless of what configure() reads out of this Configuration.
+        env.configure(restartStrategy());
 
         // This job is stateful -- the keyed rolling windows in
         // ConnFeatureProcessFunction and DnsFeatureProcessFunction, and the

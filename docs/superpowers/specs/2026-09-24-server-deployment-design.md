@@ -123,7 +123,10 @@ loading. `META-INF/services` files are merged. No job code changes.
 **Cluster config** (via `FLINK_PROPERTIES`): checkpoint storage on the host volume,
 checkpoints **retained on cancellation**, savepoint directory on the host volume, memory
 and slots from §7. Both jobs already enable 30 s checkpoints, a failure-rate restart
-strategy and at-least-once Kafka sinks in their own `main()`.
+strategy and at-least-once Kafka sinks in their own `main()`. *(Corrected 2026-09-25:
+both jobs now use an exponential-delay restart strategy. On the server, one TaskManager
+restart failed the archive job, whose eight chains each reported a failure that
+failure-rate counted separately; see `ArchiveJobRestartStrategyTest`.)*
 
 **Configuration reaches the jobs through the submitter.** Both jobs read every setting
 (`KAFKA_BOOTSTRAP_SERVERS`, topic names, `SENSOR_ID`, `S7COMM_STATE_TTL_MINUTES`,

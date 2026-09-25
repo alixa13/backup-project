@@ -214,8 +214,9 @@ side output.
 The practical effect: one undeserializable message on `featureVectorTopic` or
 `dlqTopic` fails the map, which fails the checkpoint, so the offset in front of
 it never advances. The job retries the same message on restart. Under the
-failure-rate restart strategy (3 failures / 10 min) that eventually trips the
-limit and the job terminates rather than looping forever — and it stays down,
+exponential-delay restart strategy (given up after 10 attempts, about a
+quarter of an hour) that eventually trips the limit and the job terminates
+rather than looping forever — and it stays down,
 since nothing removes the poison message from the front of the topic.
 
 The exposure is narrower than it sounds: only the online job ever produces to

@@ -171,11 +171,12 @@ public final class ModbusEventMapper {
         // above.
         String unitId = (dto.unitId() == null || dto.unitId().isBlank()) ? ABSENT_UNIT_ID : dto.unitId();
 
-        // matched is meaningful only on a response record and null on most
-        // requests; ModbusEvent.matched is a primitive boolean, so an absent
-        // wire value defaults to false rather than being rejected -- it is
-        // not one of the fields whose absence corrupts a required feature.
-        boolean matched = dto.matched() != null && dto.matched();
+        // matched is meaningful only on a response record, and icsnpp-modbus
+        // v1.0.0 never writes it. Passed through as it is: an absent value
+        // stays null (never false, never a rejection), so
+        // ModbusFeatureExtractor can derive response_matched from its own
+        // causal pairing where the record gives none.
+        Boolean matched = dto.matched();
 
         // dto.ts() -- the wire value exactly, never re-derived from eventTime
         // above -- is the causal engine's clock. Validated finite and

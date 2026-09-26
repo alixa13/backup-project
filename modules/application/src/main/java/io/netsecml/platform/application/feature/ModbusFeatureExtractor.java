@@ -175,11 +175,17 @@ public final class ModbusFeatureExtractor {
         vector[QUANTITY_PRESENT] = quantityPresent ? 1f : 0f;
         vector[QUANTITY_VALUE] = quantityPresent ? quantity.floatValue() : 0f;
 
-        // response_matched reads the record's own `matched` field (already
-        // resolved by the upstream mapper), never recomputed causally here;
-        // a request is unconditionally 0, matching process_capture's own
-        // `d == "response" and truthy(matched_raw[i])`.
-        vector[RESPONSE_MATCHED] = (isResponse && event.matched()) ? 1f : 0f;
+        // response_matched reads the record's own `matched` when it carries
+        // one, as process_capture does (`d == "response" and
+        // truthy(matched_raw[i])`); a request is unconditionally 0. When the
+        // record carries none -- every icsnpp-modbus v1.0.0 record -- it is
+        // this engine's causal pairing, the match rtt_valid reads: upstream's
+        // training data took `matched` from its own capture adapter, which
+        // paired each response with its request (1 on 99.99% of training
+        // responses, against rtt_valid's 99.98%), so leaving it 0 would feed
+        // the frozen model a value it almost never saw on a response.
+        boolean matched = event.matched() != null ? event.matched() : before.tidWasPending();
+        vector[RESPONSE_MATCHED] = (isResponse && matched) ? 1f : 0f;
 
         // Group B: numeric value summaries (process_capture lines 381-403).
         // The five request/response summary features are written ONLY under

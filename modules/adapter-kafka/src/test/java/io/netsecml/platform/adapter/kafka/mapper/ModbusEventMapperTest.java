@@ -395,15 +395,27 @@ class ModbusEventMapperTest {
         assertEquals("NA", asModbusEvent(result.value()).unitId());
     }
 
-    // matched is meaningful only on a response record; a null wire value
-    // must default to false rather than being rejected.
+    // matched is meaningful only on a response record. icsnpp-modbus v1.0.0
+    // never writes it, and an absent value must stay absent -- null, not
+    // false, and never a rejection -- so the engine can derive it from its own
+    // causal pairing (ModbusFeatureExtractor, response_matched).
     @Test
-    void aNullMatchedDefaultsToFalse() {
+    void aMissingMatchedStaysAbsent() {
         ZeekModbusRecord dto = new ZeekModbusRecord(1758000000.5, "CXY1", "10.0.0.5", "10.0.0.9", null, null,
             true, null, 17, "1", "READ_HOLDING_REGISTERS", null, null, null, List.of(), List.of());
         MappingResult<NetworkEvent> result = map(dto);
         assertTrue(result.isValid());
-        assertFalse(asModbusEvent(result.value()).matched());
+        assertNull(asModbusEvent(result.value()).matched());
+    }
+
+    // A record that does carry matched keeps it exactly, false included.
+    @Test
+    void anExplicitFalseMatchedIsKept() {
+        ZeekModbusRecord dto = new ZeekModbusRecord(1758000000.5, "CXY1", "10.0.0.5", "10.0.0.9", null, null,
+            true, null, 17, "1", "READ_HOLDING_REGISTERS", null, null, false, List.of(), List.of());
+        MappingResult<NetworkEvent> result = map(dto);
+        assertTrue(result.isValid());
+        assertEquals(Boolean.FALSE, asModbusEvent(result.value()).matched());
     }
 
     // A null element inside request_values/response_values (a valid JSON

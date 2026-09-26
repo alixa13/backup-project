@@ -542,6 +542,19 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   `ENCAP_INTERFACE_TRANSPORT` while upstream's `FUNCTION_NAME_TO_CODE` spells it
   `ENCAPSULATED_INTERFACE_TRANSPORT`, so upstream's engine rejects real FC-43
   records too.
+- **`response_matched` (index 12) is derived when the record has no `matched`
+  (2026-09-26).** icsnpp-modbus v1.0.0 never writes `matched`, and until this
+  date the feature was therefore 0 on every response -- while upstream's
+  training table, built by its own capture adapter rather than Zeek
+  (`two-models-info/modbus_/0761_...py`'s `FIELD_ALIASES`: `matched`,
+  `pcap_adapter_matched_rtt_ms`, `tcp_reassembled`), had it 1 on 99.990% of
+  responses. A record that carries `matched` is used as given, as `07b` does;
+  one that carries none (`ModbusEvent.matched` null) gets this engine's causal
+  pairing, the match `rtt_valid` reads (99.981% in training). The frozen
+  detector (`models/modbus/`) scores whole windows by reconstruction error, so
+  the old constant 0 would have inflated every window containing a response.
+  Parity with `07b` is unchanged for explicit input (`ModbusEngineParityTest`
+  feeds explicit values); `ModbusFeatureExtractorTest` pins the derivation.
 - **The sensor must run icsnpp-modbus v1.0.0.** v2.0.0 (2025-09-03) writes
   `modbus_detailed` as one record per request/response pair (`matched`,
   `request_values`, `response_values`; no `is_orig`, no `request_response`, one

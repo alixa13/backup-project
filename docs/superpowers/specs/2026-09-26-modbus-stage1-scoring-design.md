@@ -2,9 +2,10 @@
 
 **Status:** agreed in conversation 2026-09-26, section by section; written here for review.
 **Branch:** `feat/modbus-scoring`, cut from `feat/deploy-mvp` at `b8d3979`.
-**Scope in one line:** the online job scores every Modbus feature vector with the delivered,
-frozen Stage 1 anomaly detector and publishes one prediction per event to
-`netsec.modbus.prediction.v1`; the archive job writes them to ClickHouse.
+**Scope in one line:** first make two Modbus inputs match the detector's training data (section
+2.1); then the online job scores every Modbus feature vector with the delivered, frozen Stage 1
+anomaly detector and publishes one prediction per event to `netsec.modbus.prediction.v1`; the
+archive job writes them to ClickHouse.
 
 ## 1. The upstream authority
 
@@ -41,6 +42,37 @@ needs a 252-feature sequence summarizer); conn scoring (the parked `feat/conn-sc
 alerting, dashboards and any UI; retraining, recalibration or any change to the delivered model,
 thresholds, preprocessing or sequence semantics — upstream's own rule makes any of those a v2
 detector.
+
+## 2.1 Prerequisite: the detector's input must match its training data
+
+Added 2026-09-26, found while planning. The detector's training table was built by upstream's own
+capture adapter, not by Zeek (`0761`'s `FIELD_ALIASES`: `request_values`, `matched`,
+`pcap_adapter_matched_rtt_ms`, `tcp_reassembled`), and two of its inputs differ systematically from
+what icsnpp-modbus v1.0.0 writes. Unfixed, most windows would score as unlike training whatever the
+scoring code does — and code-parity tests cannot see it: they compare code with code, not Zeek's data
+with upstream's.
+
+| Features | Training (`TRAIN_TRANSFORM_VERIFICATION_V1.csv`) | Zeek v1.0.0 through the pipeline (ICSNPP sample, 44 vectors) | Cause |
+|---|---|---|---|
+| Value summaries (13–22) | `response_values_present` on 50.00% of rows: every response | 0 of 44 | Zeek writes a comma-separated `values` string (`"170,171"`, `"T,F,F"`); the mapper reads only `request_values`/`response_values` arrays |
+| `address_present` (9), `quantity_present` (11) | 100% of rows | address on 5 of 22 responses, 14 of 22 requests | Zeek leaves them off most responses; upstream's adapter evidently carried the request's |
+
+The rules (decided 2026-09-26; to be confirmed with the model team, like `response_matched`):
+
+- **F1 — values.** When a record carries no `request_values`/`response_values` array, its `values`
+  string is parsed — comma-separated decimals as numbers, `T`/`F` (coils, discrete inputs) as 1/0 —
+  into `request_values` on a request and `response_values` on a response. A `values` that is not
+  wholly numeric (`\x00\x00`, `see modbus_mask_write_register.log`, an exception name, empty) is
+  absent, never a rejection: upstream's own `parse_numeric_vector` cannot parse such strings either,
+  so its training data never held them. An array, when present, wins.
+- **F2 — address and quantity.** A response that carries no address (or quantity) takes its pending
+  request's, through the causal pairing `response_matched` already uses. A response whose request is
+  not pending (unanswered, evicted by the 4096 cap, or across a segment start) and a request without
+  them stay absent — the latter (diagnostics, for example) is an input the detector never saw.
+- **State.** F2 keeps each pending request's address and quantity, so `ModbusEntityState`'s layout
+  changes; it is Kryo-serialized, so the state is renamed `modbus-entity-state-v2`, and the deployed
+  `modbus-entity-state` (test data only) is left unread in the savepoint: every Modbus stream starts
+  fresh once, on this upgrade.
 
 ## 3. What the detector needs
 
@@ -219,12 +251,16 @@ emptied, so vectors preprocessed for one model are never fed to another.
 - **S9 — `qualityFlags` is the OR over this vector and the window,** so an `ANOMALY` scored on a window containing,
   for example, `MODBUS_WINDOW_SATURATED` vectors says so.
 - **S10 — An empty bundle pin disables scoring;** a missing pinned bundle fails at `up`.
+- **S11 — The inputs match training before anything is scored** (section 2.1): F1 and F2 land first,
+  and the one-time reset of the Modbus state is accepted because the deployed state is test data.
 
 ## 10. How correctness is proven
 
 1. **An upstream oracle**, as `S7commUpstreamOracleTest` does for S7:
    `tests/fixtures/modbus/generate_detector_oracle.py` runs a deterministic synthetic polling stream
-   (several streams, some over 20 events in one segment, at least one segment break) through
+   (several streams, some over 20 events in one segment, at least one segment break; raw records in
+   Zeek v1.0.0's own shape — `values` strings, responses without address — so F1 and F2 are
+   exercised end to end) through
    upstream's own `07b` engine, applies the preprocessing contract and runs the delivered ONNX model
    in Python ONNX Runtime, writing raw events, 42-value vectors, preprocessed values and both scores
    to `tests/fixtures/modbus/detector_oracle_v1.jsonl`. The Java test drives the same raw events
@@ -252,12 +288,16 @@ On `feat/modbus-scoring`, commit by commit, each verified as CLAUDE.md prescribe
 `-am`, the actual test counts read). Then: package the bundle on the workstation; copy it to the
 server's `models/`; push; on the server `git pull`, `deploy.sh build --jars-only`, `deploy.sh restart`
 (which creates the new topic and applies DDL `003` through `up`); then the live check of section 10.
-The online job's existing state restores unchanged — the new operator's state is new — and the
-archive job gains a chain whose source starts from the new topic's earliest offset.
+The online job's conn, dns and s7comm state restores unchanged and the new operator's state is new;
+the Modbus feature state starts fresh once (section 2.1's rename). The archive job gains a chain whose
+source starts from the new topic's earliest offset. The live check also replays the ICSNPP v1.0.0
+sample and confirms value and address presence now match section 2.1's rules.
 
 ## 12. Records
 
 - This unit depends on `b8d3979` (`response_matched` derived when a record carries no `matched`).
+- F1 and F2 (section 2.1) are this platform's reading of upstream's adapter from its code and
+  training statistics, as `response_matched` was; the model team should confirm them.
 - The model files never enter Git; their identity is `bundle.json`'s hashes and section 1's table.
 - The first 19 events of every stream segment are never scored; that is the detector's design (no
   padding), made visible as `WARMUP`, not a platform choice.

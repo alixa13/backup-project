@@ -25,7 +25,7 @@ Usage: ./deploy/deploy.sh <command> [options]
                                 build the job JARs (in a container) and the Zeek image
   up                            start everything; the jobs resume their saved state
   down                          stop the jobs with a savepoint, then stop everything
-  restart                       down + up (after 'build', this is an upgrade)
+  restart                       up's checks, then down + up (after 'build', an upgrade)
   status                        health, jobs, traffic, recent ClickHouse rows
   logs [SERVICE]                follow logs: kafka clickhouse flink-jobmanager
                                 flink-taskmanager job-submitter zeek
@@ -46,7 +46,7 @@ main() {
     build) build_run "$@" ;;
     up) stack_up ;;
     down) stack_down ;;
-    restart) stack_down; stack_up ;;
+    restart) stack_restart ;;
     status) stack_status ;;
     logs) load_env; compose logs -f --tail 200 "$@" ;;
     sql) load_env; ch_query "${1:?sql needs a query}" ;;

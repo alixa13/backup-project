@@ -135,6 +135,16 @@ stack_up() {
 
 # --- down ---
 
+# restart: everything 'up' will insist on is checked first, so a missing
+# bundle, JAR or interface refuses the restart instead of stopping the stack
+# and then refusing to start it again (capture included).
+stack_restart() {
+  load_env
+  stack_preflight
+  stack_down
+  stack_up
+}
+
 stack_down() {
   load_env
   # The sensor and the supervisor first: no new input, and nobody to resubmit

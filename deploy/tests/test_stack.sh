@@ -118,4 +118,28 @@ out="$( (check_detector_bundle) 2>&1; echo "exit=$?")"
 assert_eq 1 "$(grep -cx 'exit=0' <<< "$out")" "a present bundle passes"
 REPO_ROOT="$REPO_ROOT_SAVED"; ENV_FILE="$ENV_FILE_SAVED"
 
+
+# Review finding I6: restart runs the preflight BEFORE it stops anything, so a
+# missing bundle (or JAR, or interface) never leaves the whole stack down.
+DEPLOY_DIR_SAVED="$DEPLOY_DIR"; DEPLOY_DIR="$tmp/deploy"; touch "$DEPLOY_DIR/jars/online-feature-job.jar" "$DEPLOY_DIR/jars/archive-job.jar"
+REPO_ROOT_SAVED="$REPO_ROOT"; REPO_ROOT="$tmp/restart-repo"; mkdir -p "$REPO_ROOT/models"
+ENV_FILE_SAVED="$ENV_FILE"; ENV_FILE="$tmp/restart.env"; printf 'MODBUS_DETECTOR_BUNDLE=modbus-stage1-detector/v1\n' > "$ENV_FILE"
+load_env() { :; }
+docker() { return 0; }
+list_interfaces() { printf 'lo\neth0\n'; }
+tune_check_drift() { :; }
+stack_down() { echo "stack_down called"; }
+stack_up() { echo "stack_up called"; }
+# shellcheck disable=SC2034  # stack_preflight reads ZEEK_INTERFACE
+out="$( (ZEEK_INTERFACE=eth0; stack_restart) 2>&1; echo "exit=$?")"
+assert_eq 0 "$(grep -c 'stack_down called' <<< "$out")" "restart stops nothing when up would refuse to start"
+assert_eq 1 "$(grep -c 'models/modbus-stage1-detector/v1 is missing' <<< "$out")" "and says why"
+assert_eq 1 "$(grep -cx 'exit=1' <<< "$out")" "and fails"
+mkdir -p "$REPO_ROOT/models/modbus-stage1-detector/v1"; touch "$REPO_ROOT/models/modbus-stage1-detector/v1/bundle.json"
+# shellcheck disable=SC2034  # stack_preflight reads ZEEK_INTERFACE
+out="$( (ZEEK_INTERFACE=eth0; stack_restart) 2>&1; echo "exit=$?")"
+assert_eq "stack_down called|stack_up called|exit=0" "$(grep -E 'called|exit=' <<< "$out" | paste -sd'|' -)" "with everything in place it stops, then starts"
+DEPLOY_DIR="$DEPLOY_DIR_SAVED"; REPO_ROOT="$REPO_ROOT_SAVED"; ENV_FILE="$ENV_FILE_SAVED"
+unset -f load_env docker list_interfaces tune_check_drift stack_down stack_up
+
 finish

@@ -26,20 +26,26 @@ selftest_cleanup() {
     || warn "could not delete the selftest's feature rows"
   ch_query "ALTER TABLE invalid_events DELETE WHERE event_id LIKE '%$1%'" mutations_sync=1 >/dev/null \
     || warn "could not delete the selftest's DLQ rows"
+  ch_query "ALTER TABLE modbus_detector_predictions DELETE WHERE connection_uid = '$2'" mutations_sync=1 >/dev/null \
+    || warn "could not delete the selftest's prediction rows"
 }
 
 # One Modbus and one S7comm request/response pair, in exactly the JSON Zeek
 # writes, through Kafka, both jobs and ClickHouse. Documentation-only
-# addresses and SELFTEST- uids keep it apart from real devices; its rows are
+# addresses and SELFTEST- uids keep it apart from real devices; its rows --
+# the Modbus pair's two predictions included, when scoring is on -- are
 # deleted afterwards.
 selftest_run() {
   load_env
-  local run uid_m uid_s ts_req ts_resp work got dlq deadline
+  local run uid_m uid_s ts_req ts_resp work got dlq deadline scoring preds
   run="SELFTEST-$(date -u +%Y%m%d%H%M%S)"
   uid_m="${run}-M"
   uid_s="${run}-S"
   ts_req="$(now_epoch)"
   ts_resp="$(plus_ms "$ts_req" 4)"
+  # With a detector bundle pinned, the Modbus pair must also be scored: two
+  # predictions (both WARMUP), archived by their own chain.
+  scoring="$(detector_bundle_setting)"
 
   # Render and publish the two pairs to the raw topics.
   work="$(mktemp -d)"
@@ -55,11 +61,15 @@ selftest_run() {
   while :; do
     got="$(ch_query "SELECT countIf(log_type = 'modbus'), countIf(log_type = 's7comm') FROM feature_vectors WHERE connection_uid IN ('${uid_m}', '${uid_s}')" || true)"
     dlq="$(ch_query "SELECT count() FROM invalid_events WHERE event_id LIKE '%${run}%'" || true)"
-    if [ "$got" = "$(printf '2\t2')" ] && [ "$dlq" = 0 ]; then
+    preds=""
+    if [ -n "$scoring" ]; then
+      preds="$(ch_query "SELECT count() FROM modbus_detector_predictions WHERE connection_uid = '${uid_m}'" || true)"
+    fi
+    if [ "$got" = "$(printf '2\t2')" ] && [ "$dlq" = 0 ] && { [ -z "$scoring" ] || [ "$preds" = 2 ]; }; then
       break
     fi
     if [ "${dlq:-0}" != 0 ] || [ "$(date +%s)" -ge "$deadline" ]; then
-      warn "selftest FAILED: feature vectors (modbus, s7comm) = '${got}', want 2 and 2; DLQ rows = '${dlq}', want 0"
+      warn "selftest FAILED: feature vectors (modbus, s7comm) = '${got}', want 2 and 2; DLQ rows = '${dlq}', want 0${scoring:+; Modbus predictions = '${preds}', want 2}"
       ch_query "SELECT log_type, reason_code, detail FROM invalid_events WHERE event_id LIKE '%${run}%' FORMAT PrettyCompactMonoBlock" >&2 || true
       selftest_cleanup "$run" "$uid_m" "$uid_s"
       return 1
@@ -67,7 +77,11 @@ selftest_run() {
     sleep 5
   done
   selftest_cleanup "$run" "$uid_m" "$uid_s"
-  log "selftest PASSED: 2 Modbus and 2 S7comm feature vectors reached ClickHouse, no DLQ rows (test rows removed)"
+  if [ -n "$scoring" ]; then
+    log "selftest PASSED: 2 Modbus and 2 S7comm feature vectors and 2 Modbus predictions reached ClickHouse, no DLQ rows (test rows removed)"
+  else
+    log "selftest PASSED: 2 Modbus and 2 S7comm feature vectors reached ClickHouse, no DLQ rows, Modbus scoring off (test rows removed)"
+  fi
 }
 
 # --- zeek-check ---

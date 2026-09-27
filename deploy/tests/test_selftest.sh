@@ -38,4 +38,37 @@ mkdir -p "$tmp/traces"; printf 'not a pcap' > "$tmp/traces/modbus_example.pcap"
 out="$( (fetch_traces "$tmp/traces") 2>&1; echo "exit=$?")"
 assert_eq 1 "$(grep -c 'does not match its pinned SHA-256' <<< "$out")" "tampered trace refused"
 
+
+# Review finding (selftest leftover): with scoring on, the selftest waits for
+# its Modbus pair's two predictions -- which arrive through their own archive
+# chain, possibly a checkpoint later than the vectors -- then deletes them with
+# its other rows. With scoring off it waits for none.
+ENV_FILE_SAVED="$ENV_FILE"; ENV_FILE="$tmp/selftest.env"
+printf 'MODBUS_DETECTOR_BUNDLE=modbus-stage1-detector/v1\n' > "$ENV_FILE"
+export MODBUS_RAW_TOPIC=netsec.modbus.raw.v1 S7COMM_RAW_TOPIC=netsec.s7comm.raw.v1
+load_env() { :; }
+sleep() { :; }
+compose() { cat > /dev/null; }
+ch_query() {
+  printf '%s\n' "$1" >> "$tmp/queries"
+  case "$1" in
+    *"FROM modbus_detector_predictions"*)
+      # None on the first poll, both on the next.
+      if [ -f "$tmp/pred-ready" ]; then printf '2\n'; else touch "$tmp/pred-ready"; printf '0\n'; fi ;;
+    *"FROM feature_vectors"*) printf '2\t2\n' ;;
+    *"FROM invalid_events"*) printf '0\n' ;;
+  esac
+}
+: > "$tmp/queries"
+out="$(selftest_run 2>&1)"
+assert_eq 1 "$(grep -c 'selftest PASSED: 2 Modbus and 2 S7comm feature vectors and 2 Modbus predictions reached ClickHouse' <<< "$out")" "scoring on: the predictions are waited for and reported"
+assert_eq 2 "$(grep -c 'SELECT count() FROM modbus_detector_predictions' "$tmp/queries")" "polling until they arrive"
+assert_eq 1 "$(grep -c "ALTER TABLE modbus_detector_predictions DELETE WHERE connection_uid = 'SELFTEST-[0-9]*-M'" "$tmp/queries")" "and deleted with the other test rows"
+printf 'MODBUS_DETECTOR_BUNDLE=\n' > "$ENV_FILE"; rm -f "$tmp/pred-ready"; : > "$tmp/queries"
+out="$(selftest_run 2>&1)"
+assert_eq 1 "$(grep -c 'selftest PASSED: 2 Modbus and 2 S7comm feature vectors reached ClickHouse, no DLQ rows, Modbus scoring off' <<< "$out")" "scoring off: passes without predictions"
+assert_eq 0 "$(grep -c 'SELECT count() FROM modbus_detector_predictions' "$tmp/queries")" "and never waits for them"
+ENV_FILE="$ENV_FILE_SAVED"
+unset -f load_env sleep compose ch_query
+
 finish

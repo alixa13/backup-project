@@ -1,0 +1,31 @@
+{
+  "id": "modbus-detector-prediction-v1",
+  "semanticVersion": "1.0.0",
+  "topic": "netsec.modbus.prediction.v1",
+  "encoding": "application/json",
+  "fields": [
+    {"name": "predictionId", "type": "string", "required": true, "description": "Prediction.deriveId(eventId, modelName, modelVersion): 64 lowercase hex, stable on replay"},
+    {"name": "eventId", "type": "string", "required": true, "description": "The scored feature vector's eventId: the join back to it"},
+    {"name": "eventTime", "type": "string", "format": "date-time", "required": true, "description": "The event's time, copied from the feature vector, ISO-8601 UTC"},
+    {"name": "sensor", "type": "string", "required": true, "description": "The sensor that captured the event"},
+    {"name": "connectionUid", "type": "string", "required": true, "description": "Zeek's connection uid, copied from the feature vector"},
+    {"name": "clientIp", "type": "string", "required": true, "description": "The stream's client: the device polling"},
+    {"name": "serverIp", "type": "string", "required": true, "description": "The stream's server: the device polled"},
+    {"name": "unitId", "type": "string", "required": true, "description": "The stream's Modbus unit id"},
+    {"name": "modelName", "type": "string", "required": true, "description": "The detector bundle's name"},
+    {"name": "modelVersion", "type": "string", "required": true, "description": "The detector bundle's version"},
+    {"name": "modelSha", "type": "string", "required": true, "description": "SHA-256 of the detector's model.onnx"},
+    {"name": "schemaId", "type": "string", "required": true, "description": "The feature schema scored, modbus-feature-v1"},
+    {"name": "schemaHash", "type": "string", "required": true, "description": "That schema's content hash"},
+    {"name": "verdict", "type": "string", "required": true, "description": "WARMUP (fewer than a full window in the stream's segment), NORMAL, ANOMALY, or UNSCORABLE (non-finite preprocessed input)"},
+    {"name": "denseScore", "type": "number", "required": true, "nullable": true, "description": "Dense head reconstruction MAE; null unless NORMAL or ANOMALY"},
+    {"name": "temporalScore", "type": "number", "required": true, "nullable": true, "description": "Temporal head endpoint MAE; null unless NORMAL or ANOMALY"},
+    {"name": "denseThreshold", "type": "number", "required": true, "description": "The bundle's dense threshold"},
+    {"name": "temporalThreshold", "type": "number", "required": true, "description": "The bundle's temporal threshold"},
+    {"name": "trigger", "type": "string", "required": true, "description": "NONE, DENSE, TEMPORAL or BOTH: which head exceeded its threshold"},
+    {"name": "windowEvents", "type": "integer", "required": true, "description": "The window's size after this event, 0-20; unchanged by an UNSCORABLE event"},
+    {"name": "qualityFlags", "type": "integer", "required": true, "description": "OR of this vector's quality flags and those of every vector in the window"},
+    {"name": "inferenceMicros", "type": "integer", "required": true, "description": "Inference time in microseconds; 0 unless scored"},
+    {"name": "producedAt", "type": "string", "format": "date-time", "required": true, "description": "When the prediction was emitted, ISO-8601 UTC"}
+  ]
+}

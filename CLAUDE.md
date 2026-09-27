@@ -52,7 +52,7 @@ here. `deploy/README.md` is the operator guide.
 
 ## Architecture
 
-**Data flow:** External Kafka (`conn`, `dns`, `netsec.modbus.raw.v1` and `netsec.s7comm.raw.v1` topics) → Online Flink job (parse → validate → bounded keyed state → per-schema feature vector — conn's own 20 values, dns's 24 (the common tier, whose conn-derived fields come from a non-blocking left join against conn.log snapshots, plus dns's own protocol tier), modbus's 42 (exactly the externally frozen upstream contract, keyed per `(sensor, client, server, unit)`), s7comm's 16 (exactly the externally frozen upstream contract, keyed per `(sensor, uid)`)) → internal Kafka topics (separate feature-vector and DLQ topics per protocol: `netsec.<protocol>.feature-vector.v1` and `netsec.<protocol>.dlq.v1` for `conn`, `dns`, `modbus` and `s7comm`) → Archive Flink job → ClickHouse. ONNX inference is not yet wired into either job (see Implementation state).
+**Data flow:** External Kafka (`conn`, `dns`, `netsec.modbus.raw.v1` and `netsec.s7comm.raw.v1` topics) → Online Flink job (parse → validate → bounded keyed state → per-schema feature vector — conn's own 20 values, dns's 24 (the common tier, whose conn-derived fields come from a non-blocking left join against conn.log snapshots, plus dns's own protocol tier), modbus's 42 (exactly the externally frozen upstream contract, keyed per `(sensor, client, server, unit)`), s7comm's 16 (exactly the externally frozen upstream contract, keyed per `(sensor, uid)`)) → internal Kafka topics (separate feature-vector and DLQ topics per protocol: `netsec.<protocol>.feature-vector.v1` and `netsec.<protocol>.dlq.v1` for `conn`, `dns`, `modbus` and `s7comm`) → Archive Flink job → ClickHouse. Modbus is also scored: `modbus-features` hands every vector, with its stream key, to a side output → `modbus-score` (the model team's Modbus Stage 1 dual-head detector in ONNX Runtime, one prediction per Modbus event) → `netsec.modbus.prediction.v1` → the archive job's ninth chain → ClickHouse `modbus_detector_predictions`. ONNX inference is wired for Modbus Stage 1 only (see Implementation state).
 
 **Hexagonal, one-way dependency chain:**
 ```
@@ -133,6 +133,11 @@ domain → ports → application → adapters → bootstrap
   aggregate for conn and dns: neither `ConnFeatureProcessFunction`'s `rolling-counters` nor
   `DnsFeatureProcessFunction`'s `dns-window-state` carries a TTL, so their KEY SETS keep every
   key ever seen, forever (see `OnlineFeatureJob`'s KNOWN GAP comment).
+- The Modbus feature state is `modbus-entity-state-v2` (renamed from `modbus-entity-state` when
+  its layout changed for the scoring inputs; see "Modbus limits and decisions"), and the scorer's
+  is `modbus-score-window`: each stream's last 20 preprocessed vectors, keyed like
+  `modbus-features` and expiring under the same idle TTL (`MODBUS_STATE_TTL_MINUTES`). A state
+  name is checkpoint identity, like a uid: renaming one starts every key fresh.
 - `NetworkEvent` is a **sealed interface** over a shared `EventEnvelope`, with one record per log
   type. `permits` lists only log types that have a parser, mapper and feature schema — adding a
   record ahead of its implementation defeats the exhaustiveness checking that sealing buys.
@@ -239,18 +244,53 @@ runs real Zeek output through the production parsers; its test is pinned to
 `tests/fixtures/zeek/`, real ICSNPP output. Design:
 `docs/superpowers/specs/2026-09-24-server-deployment-design.md`.
 
+The Modbus scoring unit (`feat/modbus-scoring`, from `feat/deploy-mvp`) scores
+Modbus with the model team's Stage 1 dual-head detector. Spec:
+`docs/superpowers/specs/2026-09-26-modbus-stage1-scoring-design.md`; plan:
+`docs/superpowers/plans/2026-09-26-modbus-stage1-scoring.md`. Deliverables:
+
+- the detector's inputs made to match its training data first (spec §2.1): Zeek's
+  `values` string parsed into numeric arrays (`ZeekModbusValues`, F1), and a
+  response's address and quantity taken from its pending request
+  (`PendingRequest`, F2), which renamed the feature state `modbus-entity-state-v2`
+- the frozen preprocessing contract as domain code (`ModbusPreprocessing`, seven
+  policies), the bundle and prediction value types, the `SequenceScorer` port and
+  `ScoreModbusSequenceUseCase`: `WARMUP` until a stream holds 20 vectors, strict
+  thresholds from the bundle, `UNSCORABLE` for non-finite input
+- the bundle: `contracts/model/sequence-detector-bundle-v1.json`,
+  `deploy/models/package-modbus-detector.sh`, `SequenceDetectorBundleLoader`
+  (adapter-registry-filesystem, SHA-verified) and `OnnxSequenceScorer`
+  (adapter-onnx); a fixture bundle in `tests/fixtures/models/modbus-stage1-detector/v1/`
+- `contracts/stream/modbus-detector-prediction-v1.json` and its serializer, and the
+  ClickHouse table `modbus_detector_predictions` (`003_modbus_detector_predictions.sql`)
+- the online job's `modbus-score` (`ModbusScoringProcessFunction`, fed by
+  `ModbusFeatureProcessFunction.SCORING_TAG`) and `modbus-prediction-sink`, built
+  only when `MODBUS_DETECTOR_BUNDLE` is non-empty (the ten-argument `build(...)`
+  that `main()` calls; `main()` verifies the bundle before submitting); the archive
+  job's ninth chain, `ArchiveJob.connDnsModbusS7commAndModbusPredictionChains(...)`,
+  which its `main()` now calls
+- deployment: the topic `netsec.modbus.prediction.v1`, the `MODBUS_DETECTOR_BUNDLE`
+  pin, `models/` mounted read-only on the job submitter and the TaskManager, and a
+  preflight that refuses to start with a pinned bundle missing
+- the scoring oracle: `tests/fixtures/modbus/detector_oracle_v1.jsonl`, 86 events
+  generated by upstream's own 07b engine, the frozen preprocessing and Python ONNX
+  Runtime (`tests/fixtures/modbus/generate_detector_oracle.py`)
+
 The pipeline is now: external `conn`, `dns`, `netsec.modbus.raw.v1` and
 `netsec.s7comm.raw.v1` topics →
 parse/validate → bounded keyed state → per-schema `FeatureVector` (conn: 20
 values, on `netsec.conn.feature-vector.v1` / `netsec.conn.dlq.v1`; dns: 24
 values, on `netsec.dns.feature-vector.v1` / `netsec.dns.dlq.v1`; modbus: 42
 values, on `netsec.modbus.feature-vector.v1` / `netsec.modbus.dlq.v1`; s7comm:
-16 values, on `netsec.s7comm.feature-vector.v1` / `netsec.s7comm.dlq.v1`) →
-archive job (eight Kafka-to-ClickHouse chains, one feature-vector and one DLQ
-chain per protocol, built by `ArchiveJob.connDnsModbusAndS7commChains(...)`;
-the six- and four-chain methods are still public and still tested, but
-`main()` no longer calls them) → ClickHouse `feature_vectors` and
-`invalid_events`, both holding rows for all four log types.
+16 values, on `netsec.s7comm.feature-vector.v1` / `netsec.s7comm.dlq.v1`), and
+for modbus one `modbus-detector-prediction-v1` message per event on
+`netsec.modbus.prediction.v1` →
+archive job (nine Kafka-to-ClickHouse chains: one feature-vector and one DLQ
+chain per protocol, plus Modbus predictions, built by
+`ArchiveJob.connDnsModbusS7commAndModbusPredictionChains(...)`; the eight-, six-
+and four-chain methods are still public and still tested, but `main()` no longer
+calls them) → ClickHouse `feature_vectors` and `invalid_events`, both holding
+rows for all four log types, and `modbus_detector_predictions`.
 
 **`main` cannot currently run the online job at all.** Three serialization defects
 (`SensorId` and both Kafka serializers not `Serializable`; two
@@ -272,6 +312,31 @@ Testcontainers test SKIPPED and read as neutral. When Docker became available th
 skips were hiding real defects — including a deduplication query that was
 syntactically invalid and could never have executed. **Do not read a skipped
 container test as a passing one.**
+
+Verified fresh for the Modbus scoring unit at `8b8cc15` (Task 15 of its plan;
+the commit after it changes only documentation). One reactor run with every
+Testcontainers class excluded by name (`ArchiveJobE2ETest`, `ClickHouseOutageTest`,
+`ClientV2InserterTest`, `DdlMigrationTest`, `FeatureVectorDeduplicationTest`,
+`OnlineFeatureJobE2ETest`, and the `ClickHouseTestSupport` helper) -- so those were
+compiled, not run -- with `target/surefire-reports/` cleared first. No containers
+were involved; BUILD SUCCESS:
+
+| Suite | Result |
+|---|---|
+| `domain` | 225/225, 0 skipped |
+| `ports` | no tests exist |
+| `application` | 99/99, 0 skipped |
+| `adapter-kafka` | 160/160, 0 skipped |
+| `adapter-flink` | 69/69, 0 skipped |
+| `adapter-onnx` | 16/16, 0 skipped (`OnnxSequenceScorerTest` ×7: both scores equal Python ONNX Runtime's to 1e-5) |
+| `adapter-clickhouse` (container classes excluded) | 38/38, 0 skipped |
+| `adapter-registry-filesystem` | 20/20, 0 skipped (`SequenceDetectorBundleLoaderTest` ×8, including the preprocessing against Python) |
+| `bootstrap-online-job` (container classes excluded) | 22/22, 0 skipped (`OnlineFeatureJobTopologyTest` 9, `ZeekRecordCheckTest` 8, `ModbusDetectorScorerFactoryTest` 2, `OnlineFeatureJobRestartStrategyTest` 2, and `ModbusDetectorOracleTest` 1 -- the scoring proof: all 86 events of the upstream-generated oracle through the real parser, mapper, feature engine, preprocessing and Java ONNX scorer, every vector value equal to upstream's and all 19 scored events' scores within 1e-5, while a planted `T -> 0.0` bug fails it at the first READ_COILS response) |
+| `bootstrap-archive-job` (container classes excluded) | 13/13, 0 skipped (`ArchiveJobTopologyTest` 11: nine chains, 27 distinct uids) |
+| `deploy/tests/run-all.sh` | every file 0 failed, shellcheck clean |
+
+The container tables below predate the scoring unit and were not re-run for it:
+neither E2E class exercises scoring.
 
 Verified fresh for the S7comm unit and its final-review fixes, at `698487b`
 (the review-fix commit; the commit after it, this file, changes no code).
@@ -502,11 +567,37 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   empty state even when its event time has no gap -- pending requests are
   forgotten, so their responses count as unmatched, with no quality bit (as
   S7comm's R4); and the first event after an expiry is never flagged
-  `MODBUS_OUT_OF_ORDER`. The state kept its name: Flink 2.2.1 restores a
-  savepoint written without TTL into it, which
-  `ModbusFeatureProcessFunctionTest` pins, so the deployed savepoints carried
-  over. `docker-compose.yml` defaults the setting to 60 for a `deploy/.env`
+  `MODBUS_OUT_OF_ORDER`. The state kept its name then: Flink 2.2.1 restores a
+  savepoint written without TTL into it, so the deployed savepoints carried
+  over. The scoring unit renamed it later (the scoring inputs, below). `docker-compose.yml` defaults the setting to 60 for a `deploy/.env`
   written before it existed (`test_compose.sh`).
+- **The scoring inputs (F1, F2; 2026-09-26, scoring spec §2.1).** The detector was
+  trained on rows built by upstream's own capture adapter, not by Zeek, and
+  icsnpp-modbus v1.0.0 differs from it twice. F1: Zeek writes register and coil
+  values as one `values` string (`"170,171"`, `"T,F,F"`); `ZeekModbusValues` parses
+  it into `request_values` on a request and `response_values` on a response (T/F
+  as 1/0), an array present in the record wins, and a string that is not wholly
+  numeric is absent, never a rejection. F2: Zeek leaves address and quantity off
+  most responses; a response takes its pending request's, through the same causal
+  pairing `response_matched` uses; one whose request is not pending keeps them
+  absent. Training statistics motivate both (every response carried values; every
+  row carried address and quantity), and neither is confirmed by the model team
+  yet, like `response_matched`. They change the vectors on
+  `netsec.modbus.feature-vector.v1` too, not only what is scored.
+- **The state rename (one-time).** F2 keeps each pending request's address and
+  quantity, so `ModbusEntityState`'s Kryo layout changed and the state was renamed
+  `modbus-entity-state-v2`. The operator uid is unchanged, so a savepoint restores
+  without `allowNonRestoredState`; the old `modbus-entity-state` is simply never
+  read, and every Modbus stream started fresh once, on that upgrade
+  (`ModbusFeatureProcessFunctionTest.aSavepointOfTheRenamedStateRestoresAndTheKeyStartsFresh`).
+- **Every stream segment starts with 19 `WARMUP` predictions.** The detector reads
+  20 consecutive vectors of one stream, so the first 19 events of a segment carry
+  no scores. A segment starts at a stream's first event and again after a gap over
+  15 s, an out-of-order event, or the idle TTL -- the scorer resets on the vector's
+  `prev_event_available == 0`, never on its own clock. A client that polls slower
+  than every 15 s is therefore never scored. On the ICSNPP sample
+  (`tests/fixtures/zeek/`) no stream reaches 20 events, so every prediction there
+  is `WARMUP`.
 - **`ModbusEntityState` falls back to Kryo (`GenericTypeInfo`)**, like
   `DnsWindowState`'s two components (`RollingCounters`, `RecordTimingState`):
   Flink's POJO analysis requires a public no-arg constructor and bean-style
@@ -636,13 +727,15 @@ its `conn.log` enrichment carrier are implemented and now consumed:
 `dns-feature-v1` leads with it at indices 0-11. `modbus-feature-v1` and
 `s7comm-feature-v1` carry none of it, by the scope clause in Key invariants.
 
-Not yet implemented: ONNX inference in either job (Day 9), predictions on
-`netsec.prediction.v1` (Day 9), and the Python training project. The parked conn
-scoring unit (`feat/conn-scoring-path`, an ancestor of this branch) built some
-of the pieces — the `ModelScorer` port and `ScoreFeaturesUseCase`,
-`FilesystemModelRegistry`, `OnnxModelScorer` and `PredictionSerializer` — but
-neither job calls any of them, so nothing scores a vector or publishes a
-prediction yet.
+Scored today: Modbus, by the Stage 1 detector only (the scoring unit above). Not
+yet implemented: scoring for conn, dns and S7comm, both Stage 2 models (Modbus and
+S7), predictions on `netsec.prediction.v1` (Day 9), and the Python training
+project. The parked conn scoring unit (`feat/conn-scoring-path`, an ancestor of
+this branch) built some of the pieces — the `ModelScorer` port and
+`ScoreFeaturesUseCase`, `FilesystemModelRegistry`, `OnnxModelScorer` and
+`PredictionSerializer` — but neither job calls any of them. Modbus scoring has its
+own `SequenceScorer` port, because its detector reads a sequence of 20 vectors,
+not one.
 
 Design records: `docs/conn-foundation-pipeline.md` (Steps 2-7),
 `docs/superpowers/specs/2026-08-27-clickhouse-archive-job-design.md` and
@@ -650,7 +743,8 @@ Design records: `docs/conn-foundation-pipeline.md` (Steps 2-7),
 `docs/superpowers/specs/2026-09-21-modbus-stage1-design.md` (the Modbus unit;
 its §5 and §7 carried a defect-shaped description of the endpoint fields,
 corrected in place 2026-09-23 with dated notes), and
-`docs/superpowers/specs/2026-09-24-s7comm-stage1-design.md` (the S7comm unit).
+`docs/superpowers/specs/2026-09-24-s7comm-stage1-design.md` (the S7comm unit), and
+`docs/superpowers/specs/2026-09-26-modbus-stage1-scoring-design.md` (Modbus scoring).
 
 ## Key reference files
 

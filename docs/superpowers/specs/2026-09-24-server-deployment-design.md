@@ -5,6 +5,14 @@
 **Status:** design approved in conversation (sections 1-3 and the resource-tuning
 addition); this document is the written record.
 
+> **Note (2026-09-27): Modbus scoring added.** The online job now also scores Modbus
+> (`modbus-score` → `netsec.modbus.prediction.v1`, a thirteenth topic: 1 partition, 7
+> days) and the archive job stores the predictions in `modbus_detector_predictions`. The
+> detector bundle lives under `models/`, mounted read-only on the job submitter and the
+> TaskManager and pinned by `MODBUS_DETECTOR_BUNDLE`; `up` refuses a missing pinned
+> bundle. See `docs/superpowers/specs/2026-09-26-modbus-stage1-scoring-design.md` and
+> `deploy/README.md`'s Scoring section; the sections below are unchanged.
+
 ## 1. Goal
 
 Take the platform off the developer's machine and onto the user's real server, as one

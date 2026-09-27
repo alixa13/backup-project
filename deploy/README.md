@@ -2,13 +2,13 @@
 
 One script runs the whole Modbus + S7comm pipeline on one Linux server:
 Zeek sniffs the OT interface → Kafka → the online Flink job (42-value Modbus and
-16-value S7comm feature vectors, bad records to a DLQ) → the archive job →
-ClickHouse. It is its own Docker Compose project (`netsec-ml`) and never touches
+16-value S7comm feature vectors, bad records to a DLQ, and a Modbus anomaly
+score per event) → the archive job → ClickHouse. It is its own Docker Compose project (`netsec-ml`) and never touches
 any other container on the host. Design:
 `docs/superpowers/specs/2026-09-24-server-deployment-design.md`.
 
-No attack scoring yet: the Modbus and S7 models are not delivered. The
-`predictions` table exists and stays empty until they are.
+Modbus is scored by the model team's Stage 1 detector (see Scoring below). S7
+is not scored yet, and the older `predictions` table stays empty.
 
 ## First install
 
@@ -27,6 +27,38 @@ sensor's own newest records against the parsers, and `status` shows rows per
 protocol. `RESULT: PASS` may list "known upstream parity" Modbus rejections —
 function names the frozen model's own code cannot resolve (exception PDUs and
 Zeek's `ENCAP_INTERFACE_TRANSPORT`); anything `UNEXPECTED` is a finding to report.
+
+## Scoring
+
+The online job scores every Modbus event with the Stage 1 dual-head detector
+and writes one prediction to `netsec.modbus.prediction.v1`, which the archive
+job stores in ClickHouse `modbus_detector_predictions`. Design:
+`docs/superpowers/specs/2026-09-26-modbus-stage1-scoring-design.md`.
+
+The detector is a bundle under `models/` (not in Git), pinned by
+`MODBUS_DETECTOR_BUNDLE` in `deploy/.env` (default `modbus-stage1-detector/v1`).
+Package it once from the model team's delivery, before `up`:
+
+```sh
+./deploy/models/package-modbus-detector.sh models/modbus/stage1_anomaly_detector
+```
+
+It checks the model file against the delivery's own manifest and writes
+`models/modbus-stage1-detector/v1/`. `up` refuses to start while the pinned
+bundle is missing; set `MODBUS_DETECTOR_BUNDLE=` (empty) to run features only.
+A new model version is a new folder and a new pin, then `restart`.
+
+Each prediction's `verdict`:
+
+| Verdict | Meaning |
+|---|---|
+| `WARMUP` | Fewer than 20 events in this stream (client, server, unit) since it started, or since a gap over 15 s -- no scores. Every stream begins with 19 of these |
+| `NORMAL` / `ANOMALY` | Scored: `ANOMALY` when either score is above its threshold; `trigger` says which (`DENSE`, `TEMPORAL`, `BOTH`) |
+| `UNSCORABLE` | The vector could not be preprocessed (not expected; counted by the `unscorable` metric) |
+
+`./deploy/deploy.sh sql "SELECT verdict, count() FROM modbus_detector_predictions GROUP BY verdict"`
+shows the split. Upgrading from a deployment without scoring restarts every
+Modbus stream's state once (its layout changed); nothing else is lost.
 
 ## Day to day
 
@@ -64,8 +96,9 @@ http://localhost:18081.
 - **Zeek packages are pinned.** icsnpp-modbus stays at v1.0.0: v2.0.0 changed
   `modbus_detailed` to one record per request/response pair, which the frozen
   Modbus model cannot read.
-- **Every topic must exist**; `up` creates all twelve, including the empty conn
-  and dns ones both jobs subscribe to.
+- **Every topic must exist**; `up` creates all thirteen, including the empty conn
+  and dns ones both jobs subscribe to, and `netsec.modbus.prediction.v1` even when
+  scoring is off (the archive job reads it).
 - **Single node, no HA.** One Kafka broker, one ClickHouse, one TaskManager.
 - Data lives in `deploy/data/`; settings and the generated ClickHouse password
   in `deploy/.env` (mode 600, never committed).

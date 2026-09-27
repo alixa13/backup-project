@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -356,5 +357,34 @@ class OnlineFeatureJobTopologyTest {
         assertTrue(withScoring.containsAll(Set.of("modbus-score", "modbus-prediction-sink",
             "Sink Committer: modbus-prediction-sink")));
         assertTrue(withScoring.containsAll(without), "no existing uid changes");
+    }
+
+    // An empty MODBUS_DETECTOR_BUNDLE keeps modbus-score and its sink in the
+    // job (disabled), so switching scoring off after it has run never leaves
+    // savepoint state without an operator to restore into.
+    @Test
+    void scoringOffKeepsTheScoringOperatorsSoNoStateIsOrphaned() {
+        OnlineFeatureJob.ModbusScoring off = OnlineFeatureJob.modbusScoring(
+            Map.of("MODBUS_DETECTOR_BUNDLE", "", "NETSEC_MODELS_DIR", "/opt/netsec/models"));
+        OnlineFeatureJob.ModbusScoring on = OnlineFeatureJob.modbusScoring(
+            Map.of("MODBUS_DETECTOR_BUNDLE", "modbus-stage1-detector/v1", "NETSEC_MODELS_DIR", "/opt/netsec/models"));
+        assertNull(off.bundleDir(), "an empty pin scores nothing");
+        assertEquals("/opt/netsec/models/modbus-stage1-detector/v1", on.bundleDir());
+        assertEquals("netsec.modbus.prediction.v1", off.predictionTopic());
+        assertEquals(uidsOf(buildWith(on)), uidsOf(buildWith(off)));
+    }
+
+    private static StreamExecutionEnvironment buildWith(OnlineFeatureJob.ModbusScoring scoring) {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        OnlineFeatureJob.build(env, "localhost:9092",
+            new OnlineFeatureJob.ProtocolTopics("conn", "netsec.conn.feature-vector.v1", "netsec.conn.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("dns", "netsec.dns.feature-vector.v1", "netsec.dns.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("netsec.modbus.raw.v1", "netsec.modbus.feature-vector.v1",
+                "netsec.modbus.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("netsec.s7comm.raw.v1", "netsec.s7comm.feature-vector.v1",
+                "netsec.s7comm.dlq.v1"),
+            new SensorId("sensor-eu-1"), Duration.ofMinutes(60), Duration.ofMinutes(60), scoring);
+        return env;
     }
 }

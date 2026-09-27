@@ -264,9 +264,11 @@ Modbus with the model team's Stage 1 dual-head detector. Spec:
 - `contracts/stream/modbus-detector-prediction-v1.json` and its serializer, and the
   ClickHouse table `modbus_detector_predictions` (`003_modbus_detector_predictions.sql`)
 - the online job's `modbus-score` (`ModbusScoringProcessFunction`, fed by
-  `ModbusFeatureProcessFunction.SCORING_TAG`) and `modbus-prediction-sink`, built
-  only when `MODBUS_DETECTOR_BUNDLE` is non-empty (the ten-argument `build(...)`
-  that `main()` calls; `main()` verifies the bundle before submitting); the archive
+  `ModbusFeatureProcessFunction.SCORING_TAG`) and `modbus-prediction-sink`, which
+  `main()` always builds (the ten-argument `build(...)`): with an empty
+  `MODBUS_DETECTOR_BUNDLE` the operator runs disabled -- no model, no output, each
+  stream's window cleared -- so switching scoring off or on never orphans savepoint
+  state; with a pin, `main()` verifies the bundle before submitting; the archive
   job's ninth chain, `ArchiveJob.connDnsModbusS7commAndModbusPredictionChains(...)`,
   which its `main()` now calls
 - deployment: the topic `netsec.modbus.prediction.v1`, the `MODBUS_DETECTOR_BUNDLE`

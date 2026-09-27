@@ -50,6 +50,7 @@ import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Map;
 
 public final class OnlineFeatureJob {
 
@@ -76,8 +77,23 @@ public final class OnlineFeatureJob {
     }
 
     // Modbus scoring's settings (spec section 7): the bundle directory the
-    // TaskManagers load and the prediction topic. null means scoring is off.
+    // TaskManagers load and the prediction topic. A null bundleDir keeps
+    // modbus-score and its sink in the job but disabled (nothing scored), so
+    // switching scoring off never orphans their savepoint state; a null
+    // ModbusScoring builds neither operator (the overloads that predate scoring).
     public record ModbusScoring(String bundleDir, String predictionTopic) {
+    }
+
+    // main()'s scoring settings from its environment: the pinned bundle under
+    // NETSEC_MODELS_DIR, or a null bundleDir when MODBUS_DETECTOR_BUNDLE is
+    // empty. Never null, so main() always builds the two scoring operators.
+    static ModbusScoring modbusScoring(Map<String, String> env) {
+        String bundle = env.getOrDefault("MODBUS_DETECTOR_BUNDLE", "");
+        String bundleDir = bundle.isBlank()
+            ? null
+            : Path.of(env.getOrDefault("NETSEC_MODELS_DIR", "/opt/netsec/models"), bundle).toString();
+        return new ModbusScoring(bundleDir,
+            env.getOrDefault("MODBUS_PREDICTION_TOPIC", "netsec.modbus.prediction.v1"));
     }
 
     // The two-protocol topology: conn and dns each get their own source ->
@@ -229,8 +245,8 @@ public final class OnlineFeatureJob {
         build(env, bootstrapServers, conn, dns, modbus, s7comm, sensor, modbusStateTtl, s7commStateTtl, null);
     }
 
-    // As above, with Modbus scoring; main() passes the pinned bundle, or null
-    // when MODBUS_DETECTOR_BUNDLE is empty (spec S10).
+    // As above, with Modbus scoring; main() passes modbusScoring(env), whose
+    // bundleDir is null when MODBUS_DETECTOR_BUNDLE is empty (spec S10).
     public static void build(StreamExecutionEnvironment env, String bootstrapServers, ProtocolTopics conn,
                               ProtocolTopics dns, ProtocolTopics modbus, ProtocolTopics s7comm, SensorId sensor,
                               Duration modbusStateTtl, Duration s7commStateTtl, ModbusScoring scoring) {
@@ -342,11 +358,14 @@ public final class OnlineFeatureJob {
         // Scoring (spec section 4): the side output, keyed by the same stream
         // key, into modbus-score, then to the prediction topic. Off when null.
         if (scoring != null) {
+            // A null bundleDir: the same operator, disabled (see ModbusScoring).
+            ModbusScoringProcessFunction scorer = scoring.bundleDir() == null
+                ? ModbusScoringProcessFunction.disabled(stateTtl)
+                : new ModbusScoringProcessFunction(new ModbusDetectorScorerFactory(scoring.bundleDir()), stateTtl);
             DataStream<ModbusDetectorPrediction> predictions = modbusFeatureVectors
                 .getSideOutput(ModbusFeatureProcessFunction.SCORING_TAG)
                 .keyBy(new KeyedModbusVectorKeySelector())
-                .process(new ModbusScoringProcessFunction(new ModbusDetectorScorerFactory(scoring.bundleDir()),
-                    stateTtl))
+                .process(scorer)
                 .name("modbus-score")
                 .uid("modbus-score");
             sinkModbusPredictions(predictions, bootstrapServers, scoring.predictionTopic(), "modbus-prediction-sink");
@@ -639,16 +658,12 @@ public final class OnlineFeatureJob {
 
         // Modbus scoring (spec section 7): the pinned bundle under the models
         // mount, verified here -- before submission -- so a missing or corrupt
-        // bundle fails `up` with a clear message instead of a crash loop. An
-        // empty MODBUS_DETECTOR_BUNDLE runs features only.
-        String modelsDir = System.getenv().getOrDefault("NETSEC_MODELS_DIR", "/opt/netsec/models");
-        String detectorBundle = System.getenv().getOrDefault("MODBUS_DETECTOR_BUNDLE", "");
-        ModbusScoring scoring = null;
-        if (!detectorBundle.isBlank()) {
-            Path bundleDir = Path.of(modelsDir, detectorBundle);
-            SequenceDetectorBundleLoader.load(bundleDir);
-            scoring = new ModbusScoring(bundleDir.toString(),
-                System.getenv().getOrDefault("MODBUS_PREDICTION_TOPIC", "netsec.modbus.prediction.v1"));
+        // bundle fails the submission with the loader's own message instead of
+        // failing every TaskManager's open(). An empty MODBUS_DETECTOR_BUNDLE
+        // scores nothing, but still builds the (disabled) scoring operators.
+        ModbusScoring scoring = modbusScoring(System.getenv());
+        if (scoring.bundleDir() != null) {
+            SequenceDetectorBundleLoader.load(Path.of(scoring.bundleDir()));
         }
 
         build(env, bootstrapServers, conn, dns, modbus, s7comm, new SensorId(sensorId), modbusStateTtl,

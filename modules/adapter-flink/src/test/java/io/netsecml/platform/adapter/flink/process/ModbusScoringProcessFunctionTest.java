@@ -146,4 +146,60 @@ class ModbusScoringProcessFunctionTest {
             assertEquals(e.denseScore(), actual.get(i).denseScore(), "event " + (12 + i));
         }
     }
+
+    private static OneInputStreamOperatorTestHarness<KeyedModbusVector, ModbusDetectorPrediction> disabledHarness()
+            throws Exception {
+        return new KeyedOneInputStreamOperatorTestHarness<>(
+            new KeyedProcessOperator<>(ModbusScoringProcessFunction.disabled(Duration.ofHours(1))),
+            new KeyedModbusVectorKeySelector(), TypeInformation.of(ModbusEntityKey.class));
+    }
+
+    // Scoring off (an empty MODBUS_DETECTOR_BUNDLE): the operator stays in the
+    // job, so no savepoint state is orphaned, but it emits nothing.
+    @Test
+    void aDisabledOperatorEmitsNothing() throws Exception {
+        var harness = disabledHarness();
+        harness.open();
+        for (int i = 0; i < 25; i++) {
+            harness.processElement(new StreamRecord<>(event(i)));
+        }
+        assertEquals(0, harness.extractOutputValues().size());
+        harness.close();
+    }
+
+    // On -> off -> on through savepoints: each restore succeeds, and the
+    // window a stream held before scoring was switched off is gone, so the
+    // detector never reads vectors from either side of the gap as consecutive.
+    @Test
+    void scoringSwitchedOffAndOnAgainRestoresAndRewarms() throws Exception {
+        var on = harness();
+        on.open();
+        for (int i = 0; i < 12; i++) {
+            on.processElement(new StreamRecord<>(event(i)));
+        }
+        OperatorSubtaskState whileOn = on.snapshot(1L, 1L);
+        on.close();
+
+        var off = disabledHarness();
+        off.initializeState(whileOn);
+        off.open();
+        for (int i = 12; i < 18; i++) {
+            off.processElement(new StreamRecord<>(event(i)));
+        }
+        assertEquals(0, off.extractOutputValues().size());
+        OperatorSubtaskState whileOff = off.snapshot(2L, 2L);
+        off.close();
+
+        var again = harness();
+        again.initializeState(whileOff);
+        again.open();
+        for (int i = 18; i < 38; i++) {
+            again.processElement(new StreamRecord<>(event(i)));
+        }
+        List<ModbusDetectorPrediction> out = again.extractOutputValues();
+        assertEquals(1, out.get(0).windowEvents(), "the window held before scoring was off is gone");
+        assertEquals(DetectorVerdict.WARMUP, out.get(18).verdict());
+        assertEquals(DetectorVerdict.NORMAL, out.get(19).verdict());
+        again.close();
+    }
 }

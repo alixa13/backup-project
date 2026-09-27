@@ -610,6 +610,20 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   than every 15 s is therefore never scored. On the ICSNPP sample
   (`tests/fixtures/zeek/`) no stream reaches 20 events, so every prediction there
   is `WARMUP`.
+- **Scoring throughput: about 2,000 events/s per subtask, and it back-pressures
+  the features.** The detector runs once per event, batch 1: ~460 us per window
+  on the 4-core development machine (~2,200 windows/s, measured 2026-09-27 on the
+  fixture bundle, one thread) -- ONNX Runtime's batch-1 inference plus building
+  its input tensor. `keyBy` sends a stream key to one subtask, so that is the
+  ceiling per stream. `modbus-score` reads a side output of `modbus-features`, so
+  when it falls behind it slows `modbus-features` as well: in a Modbus flood above
+  that rate on one stream, predictions AND feature vectors fall behind real time
+  while Kafka buffers the backlog. Nothing is lost, and the job catches up when
+  the flood ends. The feature path alone runs at 250,000-350,000 events/s (Flood
+  cost, above). Not done, in rising cost: reuse one input buffer (~30%),
+  micro-batch windows across keys (the batch dimension is dynamic; ~80 us per
+  window at batch 32), or score in a separate job that reads the feature-vector
+  topic (spec S2's escape hatch), which decouples features from scoring entirely.
 - **`ModbusEntityState` falls back to Kryo (`GenericTypeInfo`)**, like
   `DnsWindowState`'s two components (`RollingCounters`, `RecordTimingState`):
   Flink's POJO analysis requires a public no-arg constructor and bean-style

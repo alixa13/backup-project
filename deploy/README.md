@@ -102,6 +102,10 @@ http://localhost:18081.
 - **Every topic must exist**; `up` creates all thirteen, including the empty conn
   and dns ones both jobs subscribe to, and `netsec.modbus.prediction.v1` even when
   scoring is off (the archive job reads it).
+- **Scoring keeps up with about 2,000 Modbus events per second per stream**
+  (client, server, unit). Above that -- a flood -- both the Modbus feature vectors
+  and the predictions fall behind real time and catch up afterwards; nothing is
+  lost. Normal polling is far below it.
 - **Single node, no HA.** One Kafka broker, one ClickHouse, one TaskManager.
 - Data lives in `deploy/data/`; settings and the generated ClickHouse password
   in `deploy/.env` (mode 600, never committed).

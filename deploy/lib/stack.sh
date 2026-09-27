@@ -82,6 +82,16 @@ check_detector_bundle() {
   [ -z "$bundle" ] && return 0
   [ -f "${REPO_ROOT}/models/${bundle}/bundle.json" ] \
     || die "the Modbus detector bundle models/${bundle} is missing: package it with deploy/models/package-modbus-detector.sh <delivery-dir> and copy it to models/${bundle}/, or set MODBUS_DETECTOR_BUNDLE= (empty) in deploy/.env to run without scoring"
+  # Each file must be the one bundle.json records -- the check the online job
+  # makes before it submits, done here so a corrupt copy stops 'up' at once.
+  local file key expected actual
+  for file in model.onnx:modelSha preprocessing.json:preprocessingSha thresholds.json:thresholdsSha; do
+    key="${file#*:}"; file="${file%%:*}"
+    expected="$(jq -r ".${key} // empty" "${REPO_ROOT}/models/${bundle}/bundle.json" 2>/dev/null || true)"
+    actual="$(sha256sum "${REPO_ROOT}/models/${bundle}/${file}" 2>/dev/null | cut -c1-64 || true)"
+    [ -n "$expected" ] && [ "$expected" = "$actual" ] \
+      || die "the Modbus detector bundle is corrupt: models/${bundle}/${file} does not match its SHA-256 in bundle.json (expected ${expected:-none}, got ${actual:-no file}); package it again with deploy/models/package-modbus-detector.sh, or set MODBUS_DETECTOR_BUNDLE= (empty) in deploy/.env to run without scoring"
+  done
 }
 
 # Every topic both jobs subscribe to, created before they start: a missing

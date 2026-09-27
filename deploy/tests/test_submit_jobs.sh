@@ -64,6 +64,30 @@ out="$(supervise_once 2>&1)"
 assert_eq 1 "$(grep -c "submitting online-feature-job failed" <<< "$out")" "failure is logged"
 assert_eq 1 "$(grep -c "move $DATA/savepoints/online-feature-job and $DATA/checkpoints/online-feature-job aside" <<< "$out")" "the way out is named"
 assert_eq 2 "$(grep -c 'run -d' "$tmp/calls")" "both jobs were still attempted"
+
+# Review finding I5: a submission that fails in the Modbus detector bundle's
+# loader names the bundle, quotes the loader, and never offers to discard the
+# job's saved state -- which is not at fault.
+: > "$tmp/calls"
+flink() {
+  printf '%s\n' "$*" >> "$tmp/calls"
+  case "$*" in
+    *online-feature-job.jar*)
+      printf '%s\n' '------------------------------------------------------------' \
+        ' The program finished with the following exception:' '' \
+        "org.apache.flink.client.program.ProgramInvocationException: The main method caused an error: /opt/netsec/models/modbus-stage1-detector/v1/model.onnx does not match bundle.json's recorded SHA-256: expected b5f2, got 0000" \
+        '	at org.apache.flink.client.program.PackagedProgram.callMainMethod(PackagedProgram.java:373)' \
+        "Caused by: java.lang.IllegalStateException: /opt/netsec/models/modbus-stage1-detector/v1/model.onnx does not match bundle.json's recorded SHA-256: expected b5f2, got 0000" \
+        '	at io.netsecml.platform.adapter.registry.SequenceDetectorBundleLoader.verify(SequenceDetectorBundleLoader.java:90)'
+      return 1 ;;
+  esac
+  return 0
+}
+out="$(supervise_once 2>&1)"
+assert_eq 1 "$(grep -c 'submitting online-feature-job failed on the Modbus detector bundle' <<< "$out")" "a bundle failure is named as one"
+assert_eq 1 "$(grep -c "failed on the Modbus detector bundle.*model.onnx does not match bundle.json's recorded SHA-256" <<< "$out")" "quoting the loader's own message"
+assert_eq 0 "$(grep -c 'online-feature-job.*aside' <<< "$out")" "and never offers to move its saved state aside"
+unset -f flink
 unset -f curl flink
 
 # Final review, Critical 1: runs that fail before their first checkpoint each

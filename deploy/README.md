@@ -44,8 +44,9 @@ Package it once from the model team's delivery, before `up`:
 ```
 
 It checks the model file against the delivery's own manifest and writes
-`models/modbus-stage1-detector/v1/`. `up` refuses to start while the pinned
-bundle is missing; set `MODBUS_DETECTOR_BUNDLE=` (empty) to run features only.
+`models/modbus-stage1-detector/v1/`. `up` and `restart` refuse to start while
+the pinned bundle is missing or any of its files no longer matches the SHA-256
+in its `bundle.json`; set `MODBUS_DETECTOR_BUNDLE=` (empty) to run features only.
 Switching scoring off or back on is a `restart` either way: the scoring operator
 stays in the job while off, so the saved state still fits. A new model version
 is a new folder and a new pin, then `restart`.

@@ -331,4 +331,30 @@ class OnlineFeatureJobTopologyTest {
         stateTtl.setAccessible(true);
         return stateTtl.get(function);
     }
+
+    // Scoring adds exactly three uids -- modbus-score, modbus-prediction-sink
+    // and the committer node Flink's Sink V2 derives from the sink's uid, as
+    // it does for every other sink here -- and a null ModbusScoring adds none
+    // (spec S10).
+    @Test
+    void scoringAddsItsTwoOperatorsAndOnlyWhenEnabled() {
+        StreamExecutionEnvironment on = StreamExecutionEnvironment.getExecutionEnvironment();
+        on.setParallelism(1);
+        OnlineFeatureJob.build(on, "localhost:9092",
+            new OnlineFeatureJob.ProtocolTopics("conn", "netsec.conn.feature-vector.v1", "netsec.conn.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("dns", "netsec.dns.feature-vector.v1", "netsec.dns.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("netsec.modbus.raw.v1", "netsec.modbus.feature-vector.v1",
+                "netsec.modbus.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("netsec.s7comm.raw.v1", "netsec.s7comm.feature-vector.v1",
+                "netsec.s7comm.dlq.v1"),
+            new SensorId("sensor-eu-1"), Duration.ofMinutes(60), Duration.ofMinutes(60),
+            new OnlineFeatureJob.ModbusScoring("/opt/netsec/models/modbus-stage1-detector/v1",
+                "netsec.modbus.prediction.v1"));
+        Set<String> withScoring = uidsOf(on);
+        Set<String> without = uidsOf(buildFourProtocol());
+        assertEquals(without.size() + 3, withScoring.size(), "found: " + withScoring);
+        assertTrue(withScoring.containsAll(Set.of("modbus-score", "modbus-prediction-sink",
+            "Sink Committer: modbus-prediction-sink")));
+        assertTrue(withScoring.containsAll(without), "no existing uid changes");
+    }
 }

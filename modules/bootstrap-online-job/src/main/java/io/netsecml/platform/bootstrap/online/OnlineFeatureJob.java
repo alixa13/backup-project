@@ -7,9 +7,11 @@ import io.netsecml.platform.adapter.flink.process.ConnSnapshotJoinFunction;
 import io.netsecml.platform.adapter.flink.process.DnsFeatureProcessFunction;
 import io.netsecml.platform.adapter.flink.process.DnsParseMapValidateFunction;
 import io.netsecml.platform.adapter.flink.process.EventUidKeySelector;
+import io.netsecml.platform.adapter.flink.process.KeyedModbusVectorKeySelector;
 import io.netsecml.platform.adapter.flink.process.ModbusEntityKeySelector;
 import io.netsecml.platform.adapter.flink.process.ModbusFeatureProcessFunction;
 import io.netsecml.platform.adapter.flink.process.ModbusParseMapValidateFunction;
+import io.netsecml.platform.adapter.flink.process.ModbusScoringProcessFunction;
 import io.netsecml.platform.adapter.flink.process.ParseMapValidateFunction;
 import io.netsecml.platform.adapter.flink.process.RejectedRecord;
 import io.netsecml.platform.adapter.flink.process.S7commConnectionKeySelector;
@@ -19,8 +21,10 @@ import io.netsecml.platform.adapter.flink.process.SnapshotUidKeySelector;
 import io.netsecml.platform.adapter.flink.process.SourceKeySelector;
 import io.netsecml.platform.adapter.flink.source.RawBytesDeserializationSchema;
 import io.netsecml.platform.adapter.kafka.sink.FeatureVectorSerializer;
+import io.netsecml.platform.adapter.kafka.sink.ModbusDetectorPredictionSerializer;
 import io.netsecml.platform.adapter.kafka.sink.RejectedRecordPayload;
 import io.netsecml.platform.adapter.kafka.sink.RejectedRecordSerializer;
+import io.netsecml.platform.adapter.registry.SequenceDetectorBundleLoader;
 import io.netsecml.platform.domain.event.ConnEvent;
 import io.netsecml.platform.domain.event.DnsEvent;
 import io.netsecml.platform.domain.event.ModbusEvent;
@@ -29,6 +33,7 @@ import io.netsecml.platform.domain.event.S7commEvent;
 import io.netsecml.platform.domain.event.SensorId;
 import io.netsecml.platform.domain.feature.ConnSnapshot;
 import io.netsecml.platform.domain.feature.FeatureVector;
+import io.netsecml.platform.domain.inference.ModbusDetectorPrediction;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.serialization.SerializationSchema;
@@ -43,6 +48,7 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import java.nio.file.Path;
 import java.time.Duration;
 
 public final class OnlineFeatureJob {
@@ -67,6 +73,11 @@ public final class OnlineFeatureJob {
     // Nested here (rather than top-level) because it has no meaning outside
     // this job's own wiring.
     public record ProtocolTopics(String input, String featureVector, String dlq) {
+    }
+
+    // Modbus scoring's settings (spec section 7): the bundle directory the
+    // TaskManagers load and the prediction topic. null means scoring is off.
+    public record ModbusScoring(String bundleDir, String predictionTopic) {
     }
 
     // The two-protocol topology: conn and dns each get their own source ->
@@ -193,7 +204,7 @@ public final class OnlineFeatureJob {
     public static void build(StreamExecutionEnvironment env, String bootstrapServers,
                               ProtocolTopics conn, ProtocolTopics dns, ProtocolTopics modbus, SensorId sensor) {
         build(env, bootstrapServers, conn, dns, sensor);
-        modbusChain(env, bootstrapServers, modbus, sensor, ModbusFeatureProcessFunction.DEFAULT_STATE_TTL);
+        modbusChain(env, bootstrapServers, modbus, sensor, ModbusFeatureProcessFunction.DEFAULT_STATE_TTL, null);
     }
 
     // The four-protocol topology: the three-protocol build() above plus
@@ -215,8 +226,16 @@ public final class OnlineFeatureJob {
     public static void build(StreamExecutionEnvironment env, String bootstrapServers, ProtocolTopics conn,
                               ProtocolTopics dns, ProtocolTopics modbus, ProtocolTopics s7comm, SensorId sensor,
                               Duration modbusStateTtl, Duration s7commStateTtl) {
+        build(env, bootstrapServers, conn, dns, modbus, s7comm, sensor, modbusStateTtl, s7commStateTtl, null);
+    }
+
+    // As above, with Modbus scoring; main() passes the pinned bundle, or null
+    // when MODBUS_DETECTOR_BUNDLE is empty (spec S10).
+    public static void build(StreamExecutionEnvironment env, String bootstrapServers, ProtocolTopics conn,
+                              ProtocolTopics dns, ProtocolTopics modbus, ProtocolTopics s7comm, SensorId sensor,
+                              Duration modbusStateTtl, Duration s7commStateTtl, ModbusScoring scoring) {
         build(env, bootstrapServers, conn, dns, sensor);
-        modbusChain(env, bootstrapServers, modbus, sensor, modbusStateTtl);
+        modbusChain(env, bootstrapServers, modbus, sensor, modbusStateTtl, scoring);
         s7commChain(env, bootstrapServers, s7comm, sensor, s7commStateTtl);
     }
 
@@ -284,7 +303,8 @@ public final class OnlineFeatureJob {
     // those two classes' own comments for why. That typing difference is what
     // the narrow stage below exists to bridge.
     private static void modbusChain(StreamExecutionEnvironment env, String bootstrapServers,
-                                     ProtocolTopics modbus, SensorId sensor, Duration stateTtl) {
+                                     ProtocolTopics modbus, SensorId sensor, Duration stateTtl,
+                                     ModbusScoring scoring) {
         DataStream<byte[]> modbusRaw = rawSource(env, bootstrapServers, modbus.input(), "modbus-online-job",
             "modbus-source");
 
@@ -308,7 +328,7 @@ public final class OnlineFeatureJob {
             .name("modbus-event-narrow")
             .uid("modbus-event-narrow");
 
-        DataStream<FeatureVector> modbusFeatureVectors = modbusEvents
+        SingleOutputStreamOperator<FeatureVector> modbusFeatureVectors = modbusEvents
             .keyBy(new ModbusEntityKeySelector())
             .process(new ModbusFeatureProcessFunction(stateTtl))
             .name("modbus-features")
@@ -318,6 +338,19 @@ public final class OnlineFeatureJob {
         DataStream<RejectedRecord> modbusRejected =
             modbusParsed.getSideOutput(ParseMapValidateFunction.REJECTED_TAG);
         sinkRejected(modbusRejected, bootstrapServers, modbus.dlq(), "modbus-dlq-sink");
+
+        // Scoring (spec section 4): the side output, keyed by the same stream
+        // key, into modbus-score, then to the prediction topic. Off when null.
+        if (scoring != null) {
+            DataStream<ModbusDetectorPrediction> predictions = modbusFeatureVectors
+                .getSideOutput(ModbusFeatureProcessFunction.SCORING_TAG)
+                .keyBy(new KeyedModbusVectorKeySelector())
+                .process(new ModbusScoringProcessFunction(new ModbusDetectorScorerFactory(scoring.bundleDir()),
+                    stateTtl))
+                .name("modbus-score")
+                .uid("modbus-score");
+            sinkModbusPredictions(predictions, bootstrapServers, scoring.predictionTopic(), "modbus-prediction-sink");
+        }
     }
 
     // The narrowing bridge modbusChain's own comment above describes. A named
@@ -435,6 +468,27 @@ public final class OnlineFeatureJob {
             .setValueOnlyDeserializer(new RawBytesDeserializationSchema())
             .build();
         return env.fromSource(source, WatermarkStrategy.noWatermarks(), uid).uid(uid);
+    }
+
+    // The prediction topic: modbus-detector-prediction-v1, one message per Modbus event.
+    private static void sinkModbusPredictions(DataStream<ModbusDetectorPrediction> predictions,
+                                              String bootstrapServers, String topic, String uid) {
+        ModbusDetectorPredictionSerializer serializer = new ModbusDetectorPredictionSerializer();
+        KafkaSink<ModbusDetectorPrediction> sink = KafkaSink.<ModbusDetectorPrediction>builder()
+            .setBootstrapServers(bootstrapServers)
+            .setRecordSerializer(KafkaRecordSerializationSchema.<ModbusDetectorPrediction>builder()
+                .setTopic(topic)
+                // An anonymous class, not a lambda, so Flink keeps the generic type.
+                .setValueSerializationSchema(new SerializationSchema<ModbusDetectorPrediction>() {
+                    @Override
+                    public byte[] serialize(ModbusDetectorPrediction prediction) {
+                        return serializer.serialize(topic, prediction);
+                    }
+                })
+                .build())
+            .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+            .build();
+        predictions.sinkTo(sink).name(uid).uid(uid);
     }
 
     // Shared shape 2 of 3: publish a FeatureVector to its protocol's
@@ -583,8 +637,22 @@ public final class OnlineFeatureJob {
         Duration modbusStateTtl = Duration.ofMinutes(Long.parseLong(
             System.getenv().getOrDefault("MODBUS_STATE_TTL_MINUTES", "60")));
 
+        // Modbus scoring (spec section 7): the pinned bundle under the models
+        // mount, verified here -- before submission -- so a missing or corrupt
+        // bundle fails `up` with a clear message instead of a crash loop. An
+        // empty MODBUS_DETECTOR_BUNDLE runs features only.
+        String modelsDir = System.getenv().getOrDefault("NETSEC_MODELS_DIR", "/opt/netsec/models");
+        String detectorBundle = System.getenv().getOrDefault("MODBUS_DETECTOR_BUNDLE", "");
+        ModbusScoring scoring = null;
+        if (!detectorBundle.isBlank()) {
+            Path bundleDir = Path.of(modelsDir, detectorBundle);
+            SequenceDetectorBundleLoader.load(bundleDir);
+            scoring = new ModbusScoring(bundleDir.toString(),
+                System.getenv().getOrDefault("MODBUS_PREDICTION_TOPIC", "netsec.modbus.prediction.v1"));
+        }
+
         build(env, bootstrapServers, conn, dns, modbus, s7comm, new SensorId(sensorId), modbusStateTtl,
-            s7commStateTtl);
+            s7commStateTtl, scoring);
         env.execute("online-feature-job");
     }
 }

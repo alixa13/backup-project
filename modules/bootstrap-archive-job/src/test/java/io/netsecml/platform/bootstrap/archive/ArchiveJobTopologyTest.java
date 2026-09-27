@@ -300,4 +300,26 @@ class ArchiveJobTopologyTest {
             "s7comm-dlq-source", "s7comm-invalid-event-row", "s7comm-invalid-events-clickhouse-sink")),
             "s7comm's six uids must follow the shared prefix pattern, found: " + uids);
     }
+
+    // The nine chains main() wires: the eight of connDnsModbusAndS7commChains
+    // plus Modbus predictions, whose three uids are new and distinct.
+    @Test
+    void nineChainsProduceTwentySevenDistinctUids() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        ArchiveJob.build(env, "localhost:9092", ArchiveJob.connDnsModbusS7commAndModbusPredictionChains(
+            "netsec.conn.feature-vector.v1", "netsec.conn.dlq.v1",
+            "netsec.dns.feature-vector.v1", "netsec.dns.dlq.v1",
+            "netsec.modbus.feature-vector.v1", "netsec.modbus.dlq.v1",
+            "netsec.s7comm.feature-vector.v1", "netsec.s7comm.dlq.v1",
+            "netsec.modbus.prediction.v1"),
+            ClickHouseConfig.of("localhost", 8123, "netsec_ml", "default", "test-password"));
+        Set<String> uids = new HashSet<>();
+        for (StreamNode node : env.getStreamGraph(false).getStreamNodes()) {
+            assertTrue(uids.add(node.getTransformationUID()), "duplicate uid " + node.getTransformationUID());
+        }
+        assertEquals(27, uids.size());
+        assertTrue(uids.containsAll(Set.of("modbus-prediction-source", "modbus-prediction-row",
+            "modbus-predictions-clickhouse-sink")), "found: " + uids);
+    }
 }

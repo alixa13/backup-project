@@ -67,14 +67,19 @@ public final class ModbusFeatureProcessFunction
 
     @Override
     public void open(OpenContext openContext) {
-        // Named "modbus-entity-state" and nothing else: a state name IS
-        // checkpoint identity (keyed state is addressed by (operator uid,
-        // state name) together), so a later rename would silently orphan
-        // every key's restored state on the next restore -- the job would
-        // start, find nothing under the new name, and every key would begin
-        // from empty with no error anywhere. Its siblings are
-        // "rolling-counters" (ConnFeatureProcessFunction) and
-        // "dns-window-state" (DnsFeatureProcessFunction).
+        // Named "modbus-entity-state-v2": a state name IS checkpoint identity
+        // (keyed state is addressed by operator uid and state name together).
+        // It was "modbus-entity-state" until 2026-09-26, when F2
+        // (docs/superpowers/specs/2026-09-26-modbus-stage1-scoring-design.md
+        // section 2.1) changed ModbusEntityState's layout -- pending requests
+        // now keep their address and quantity -- and the state is
+        // Kryo-serialized, so the old bytes cannot be read as the new layout.
+        // The rename makes a restore of an older savepoint start every Modbus
+        // key fresh instead of failing; the old state stays unread in the
+        // savepoint (it held test data only). Never rename it again without the
+        // same deliberate step. Its siblings are "rolling-counters"
+        // (ConnFeatureProcessFunction) and "dns-window-state"
+        // (DnsFeatureProcessFunction).
         //
         // OnCreateAndWrite: every event writes the state (update() below), so
         // each event restarts the clock and only a key idle for the whole TTL
@@ -90,7 +95,7 @@ public final class ModbusFeatureProcessFunction
             .cleanupFullSnapshot()
             .build();
         ValueStateDescriptor<ModbusEntityState> descriptor = new ValueStateDescriptor<>(
-            "modbus-entity-state", TypeInformation.of(ModbusEntityState.class));
+            "modbus-entity-state-v2", TypeInformation.of(ModbusEntityState.class));
         descriptor.enableTimeToLive(ttl);
         entityState = getRuntimeContext().getState(descriptor);
         useCase = new ModbusBuildFeaturesUseCase();

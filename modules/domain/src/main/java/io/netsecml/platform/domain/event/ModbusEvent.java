@@ -149,4 +149,12 @@ public record ModbusEvent(EventEnvelope envelope, double tsSeconds, ModbusDirect
     public double[] responseValues() {
         return responseValues.clone();
     }
+
+    // This event with the given address and quantity, everything else equal:
+    // how ModbusBuildFeaturesUseCase hands a response its request's (F2). The
+    // canonical constructor copies both arrays, so the two events share none.
+    public ModbusEvent withAddressAndQuantity(Double newAddress, Double newQuantity) {
+        return new ModbusEvent(envelope, tsSeconds, direction, sourceIp, destinationIp, functionCode,
+            transactionId, unitId, newAddress, newQuantity, matched, requestValues, responseValues);
+    }
 }

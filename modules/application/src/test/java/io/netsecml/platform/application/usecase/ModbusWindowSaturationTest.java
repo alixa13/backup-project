@@ -61,8 +61,10 @@ class ModbusWindowSaturationTest {
                     String where = "cap " + cap + ", seed " + seed + ", event " + i;
                     int key = stream.get(i).key();
                     ModbusEvent event = stream.get(i).event();
+                    // The reference gets the adapter-resolved event (ModbusEventStreams.adapterResolved).
+                    ModbusEvent adapted = ModbusEventStreams.adapterResolved(event, states[key]);
                     FeatureBuildResult<ModbusEntityState> actual = useCase.build(event, states[key]);
-                    ReferenceModbusEngine.Step expected = reference.step(event, referenceStates[key]);
+                    ReferenceModbusEngine.Step expected = reference.step(adapted, referenceStates[key]);
                     float[] actualValues = actual.vector().values();
                     float[] expectedValues = expected.values();
                     boolean flagged = (actual.vector().qualityFlags() & QualityFlags.MODBUS_WINDOW_SATURATED) != 0;

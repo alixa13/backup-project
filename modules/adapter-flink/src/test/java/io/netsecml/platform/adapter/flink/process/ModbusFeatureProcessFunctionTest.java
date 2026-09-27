@@ -112,9 +112,9 @@ class ModbusFeatureProcessFunctionTest {
             functionCode, tid, "1", null, null, false, new double[0], new double[0]);
     }
 
-    // The operator as deployed before its state had a TTL (up to 2026-09-25):
-    // the same "modbus-entity-state" name and type, with no TTL. Only here to
-    // write the kind of savepoint the server already holds.
+    // The operator as deployed before 2026-09-26: the state name
+    // "modbus-entity-state", no TTL. Only here to write the kind of savepoint
+    // the server held before the F2 rename (spec section 2.1).
     private static final class PreTtlModbusFeatureProcessFunction
             extends KeyedProcessFunction<ModbusEntityKey, ModbusEvent, FeatureVector> {
         private transient ValueState<ModbusEntityState> entityState;
@@ -284,13 +284,11 @@ class ModbusFeatureProcessFunctionTest {
         after.close();
     }
 
-    // The deploy guarantee: a savepoint written before this state had a TTL
-    // (what the server holds) restores into the TTL state under the same name,
-    // so a request pending at the savepoint still matches its response after
-    // it -- outstanding_requests_before_event (30) 1, response_without_request
-    // (31) 0, rtt_valid (33) 1.
+    // Spec section 2.1: a savepoint holding the pre-2026-09-26 state (named
+    // "modbus-entity-state") restores without failing, and the key starts
+    // fresh -- the pending request is not read, so its response is unmatched.
     @Test
-    void aSavepointWrittenBeforeTheStateHadATtlRestoresIntoIt() throws Exception {
+    void aSavepointOfTheRenamedStateRestoresAndTheKeyStartsFresh() throws Exception {
         OneInputStreamOperatorTestHarness<ModbusEvent, FeatureVector> before =
             new KeyedOneInputStreamOperatorTestHarness<>(
                 new KeyedProcessOperator<>(new PreTtlModbusFeatureProcessFunction()),
@@ -306,9 +304,8 @@ class ModbusFeatureProcessFunctionTest {
         after.processElement(new StreamRecord<>(response(1000.25, 3, "7")));
 
         float[] responseVector = after.extractOutputValues().get(0).values();
-        assertEquals(1f, responseVector[30], "outstanding_requests_before_event");
-        assertEquals(0f, responseVector[31], "response_without_request");
-        assertEquals(1f, responseVector[33], "rtt_valid");
+        assertEquals(0f, responseVector[30], "outstanding_requests_before_event: nothing restored");
+        assertEquals(1f, responseVector[31], "response_without_request");
         after.close();
     }
 

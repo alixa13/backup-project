@@ -6,6 +6,7 @@ import io.netsecml.platform.domain.event.LogType;
 import io.netsecml.platform.domain.event.ModbusEvent;
 import io.netsecml.platform.domain.event.ModbusEvent.ModbusDirection;
 import io.netsecml.platform.domain.event.SensorId;
+import io.netsecml.platform.domain.feature.ModbusEntityState;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -200,5 +201,19 @@ final class ModbusEventStreams {
         }
         return new EventEnvelope(EventId.derive(SENSOR, uid), Instant.ofEpochSecond(seconds, nanos), SENSOR,
             LogType.MODBUS, uid);
+    }
+
+    // What upstream's capture adapter handed its engine for this event, given
+    // the key's state just before it: the reference models upstream's ENGINE,
+    // which only ever saw adapter output, while F2 (a response borrowing its
+    // pending request's address and quantity,
+    // docs/superpowers/specs/2026-09-26-modbus-stage1-scoring-design.md
+    // section 2.1) is the ADAPTER's step, done in production by
+    // ModbusBuildFeaturesUseCase. A segment start forgets every pending
+    // request, so it borrows nothing. Call it before build(), which advances
+    // the state in place.
+    static ModbusEvent adapterResolved(ModbusEvent event, ModbusEntityState state) {
+        return state.startsNewSegment(event.tsSeconds()) ? event
+            : ModbusBuildFeaturesUseCase.withPendingRequestFields(event, state);
     }
 }

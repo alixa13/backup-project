@@ -70,8 +70,10 @@ class ModbusEngineParityTest {
             for (int i = 0; i < stream.size(); i++) {
                 int key = stream.get(i).key();
                 ModbusEvent event = stream.get(i).event();
+                // The reference gets the adapter-resolved event (see adapterResolved).
+                ModbusEvent adapted = ModbusEventStreams.adapterResolved(event, states[key]);
                 FeatureBuildResult<ModbusEntityState> actual = useCase.build(event, states[key]);
-                ReferenceModbusEngine.Step expected = reference.step(event, referenceStates[key]);
+                ReferenceModbusEngine.Step expected = reference.step(adapted, referenceStates[key]);
                 assertSameVector("seed " + seed + ", event " + i, expected, actual);
 
                 float[] v = expected.values();
@@ -115,8 +117,9 @@ class ModbusEngineParityTest {
         ModbusEntityState state = ModbusEntityState.empty();
         ReferenceModbusEntityState referenceState = ReferenceModbusEntityState.empty();
         for (int i = 0; i < stream.size(); i++) {
+            ModbusEvent adapted = ModbusEventStreams.adapterResolved(stream.get(i), state);
             FeatureBuildResult<ModbusEntityState> actual = useCase.build(stream.get(i), state);
-            ReferenceModbusEngine.Step expected = reference.step(stream.get(i), referenceState);
+            ReferenceModbusEngine.Step expected = reference.step(adapted, referenceState);
             assertSameVector("flood event " + i, expected, actual);
             state = actual.newState();
             referenceState = expected.newState();

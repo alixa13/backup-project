@@ -9,6 +9,7 @@ import io.netsecml.platform.domain.feature.FeatureSchemaRegistry;
 import io.netsecml.platform.domain.feature.FeatureVector;
 import io.netsecml.platform.domain.feature.ModbusEntityState;
 import io.netsecml.platform.domain.feature.ModbusFeatureSchemaV1;
+import io.netsecml.platform.domain.feature.PendingRequest;
 import io.netsecml.platform.domain.feature.QualityFlags;
 import io.netsecml.platform.port.in.BuildFeaturesUseCase;
 import java.time.Clock;
@@ -132,6 +133,14 @@ public final class ModbusBuildFeaturesUseCase implements BuildFeaturesUseCase<Mo
             currentState.reset();
         }
 
+        // Step 2b (docs/superpowers/specs/2026-09-26-modbus-stage1-scoring-design.md
+        // section 2.1, F2): a response Zeek wrote without an address or quantity
+        // takes its pending request's, as upstream's capture adapter did (100% of
+        // training rows carry both). After the reset above, so a new segment --
+        // which forgets every pending request -- borrows nothing. Everything
+        // below reads the effective event.
+        event = withPendingRequestFields(event, currentState);
+
         // Step 3: advance the state in place with this event's own fields, at
         // the same ts the extractor computes below. advance captures the
         // before-event values first and returns them.
@@ -180,5 +189,24 @@ public final class ModbusBuildFeaturesUseCase implements BuildFeaturesUseCase<Mo
             clock.instant().truncatedTo(ChronoUnit.MILLIS));
 
         return new FeatureBuildResult<>(vector, currentState);
+    }
+
+    // The event with its pending request's address and quantity filled in
+    // where a response lacks them; the event itself in every other case.
+    static ModbusEvent withPendingRequestFields(ModbusEvent event, ModbusEntityState state) {
+        // Only a response lacking a field can borrow.
+        if (event.direction() != ModbusEvent.ModbusDirection.RESPONSE
+                || (event.address() != null && event.quantity() != null)) {
+            return event;
+        }
+        // Unanswered, evicted by the cap, or forgotten by a new segment: nothing to borrow.
+        PendingRequest request = state.pendingRequest(event.transactionId());
+        if (request == null) {
+            return event;
+        }
+        // The response's own value wins; the request fills only what is missing.
+        Double address = event.address() != null ? event.address() : request.address();
+        Double quantity = event.quantity() != null ? event.quantity() : request.quantity();
+        return event.withAddressAndQuantity(address, quantity);
     }
 }

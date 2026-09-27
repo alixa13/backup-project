@@ -315,4 +315,21 @@ class ModbusFeatureProcessFunctionTest {
         assertThrows(IllegalArgumentException.class, () -> new ModbusFeatureProcessFunction(Duration.ofMinutes(-1)));
         assertThrows(NullPointerException.class, () -> new ModbusFeatureProcessFunction(null));
     }
+
+    // The side output carries every vector with its stream key; a response
+    // lands in its request's stream.
+    @Test
+    void theScoringSideOutputCarriesEachVectorWithItsStreamKey() throws Exception {
+        OneInputStreamOperatorTestHarness<ModbusEvent, FeatureVector> harness = harness();
+        harness.open();
+        harness.processElement(new StreamRecord<>(request(1000.0, 3, "7")));
+        harness.processElement(new StreamRecord<>(response(1000.25, 3, "7")));
+        List<KeyedModbusVector> side = harness.getSideOutput(ModbusFeatureProcessFunction.SCORING_TAG).stream()
+            .map(StreamRecord::getValue).toList();
+        assertEquals(2, side.size());
+        assertEquals(side.get(0).key(), side.get(1).key(), "request and response share one stream");
+        assertEquals("10.0.0.5", side.get(0).key().clientIp());
+        assertEquals(harness.extractOutputValues().get(1).eventId(), side.get(1).vector().eventId());
+        harness.close();
+    }
 }

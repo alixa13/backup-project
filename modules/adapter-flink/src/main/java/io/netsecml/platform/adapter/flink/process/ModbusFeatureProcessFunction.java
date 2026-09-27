@@ -14,6 +14,7 @@ import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.util.Collector;
+import org.apache.flink.util.OutputTag;
 
 import java.time.Duration;
 import java.util.Objects;
@@ -47,6 +48,10 @@ public final class ModbusFeatureProcessFunction
     // with. Choose the TTL above the longest expected outage
     // (MODBUS_STATE_TTL_MINUTES).
     public static final Duration DEFAULT_STATE_TTL = Duration.ofHours(1);
+
+    // Every vector, with its stream key, for modbus-score (spec section 4). A
+    // side output, so the main output and the feature-vector topic are unchanged.
+    public static final OutputTag<KeyedModbusVector> SCORING_TAG = new OutputTag<>("modbus-scoring") {};
 
     private final Duration stateTtl;
 
@@ -128,5 +133,7 @@ public final class ModbusFeatureProcessFunction
         // never cache it in a field across calls.
         entityState.update(result.newState());
         out.collect(result.vector());
+        // The same vector, keyed by its stream, for the scoring operator.
+        ctx.output(SCORING_TAG, new KeyedModbusVector(ctx.getCurrentKey(), result.vector()));
     }
 }

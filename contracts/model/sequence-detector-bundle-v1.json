@@ -1,0 +1,18 @@
+{
+  "id": "sequence-detector-bundle-v1",
+  "semanticVersion": "1.0.0",
+  "encoding": "application/json",
+  "fields": [
+    {"name": "name", "type": "string", "required": true, "description": "Model family, e.g. modbus-stage1-detector; with version, the bundle's identity in every prediction"},
+    {"name": "version", "type": "string", "required": true, "description": "Version within the family, e.g. v1"},
+    {"name": "schemaId", "type": "string", "required": true, "description": "Feature schema the detector was trained on, e.g. modbus-feature-v1; must resolve in FeatureSchemaRegistry, whose feature order must equal preprocessing.json's feature_order"},
+    {"name": "sequenceLength", "type": "integer", "required": true, "description": "Events per window, e.g. 20"},
+    {"name": "featureCount", "type": "integer", "required": true, "description": "Values per event, e.g. 42"},
+    {"name": "inputName", "type": "string", "required": true, "description": "The ONNX graph's input, shape [?, sequenceLength, featureCount]"},
+    {"name": "denseOutputName", "type": "string", "required": true, "description": "The reconstruction output, shape [?, sequenceLength, featureCount]"},
+    {"name": "temporalOutputName", "type": "string", "required": true, "description": "The next-event output, shape [?, sequenceLength - 1, featureCount]"},
+    {"name": "modelSha", "type": "string", "required": true, "description": "SHA-256 of model.onnx, 64 lowercase hex"},
+    {"name": "preprocessingSha", "type": "string", "required": true, "description": "SHA-256 of preprocessing.json, the delivered PREPROCESSING_CONTRACT_V1.json byte for byte"},
+    {"name": "thresholdsSha", "type": "string", "required": true, "description": "SHA-256 of thresholds.json, the delivered THRESHOLD_CONTRACT_V1.json byte for byte"}
+  ]
+}

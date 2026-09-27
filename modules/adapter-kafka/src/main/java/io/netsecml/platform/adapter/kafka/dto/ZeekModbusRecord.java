@@ -139,6 +139,21 @@ public record ZeekModbusRecord(
     // already refuses to bind a scalar string into a List, which is exactly
     // the strictness this parser wants.
     @JsonProperty("request_values") List<Double> requestValues,
-    @JsonProperty("response_values") List<Double> responseValues
+    @JsonProperty("response_values") List<Double> responseValues,
+
+    // icsnpp-modbus v1.0.0's own register/coil field: one comma-separated
+    // string, read by ZeekModbusValues when neither array above is present
+    // (docs/superpowers/specs/2026-09-26-modbus-stage1-scoring-design.md
+    // section 2.1, F1).
+    @JsonProperty("values") String values
 ) {
+    // The record as it was before `values` existed, so every positional
+    // caller keeps compiling; a record built this way has no `values`.
+    public ZeekModbusRecord(double ts, String uid, String origHost, String respHost, String sourceHost,
+                            String destinationHost, Boolean isOrig, String requestResponse, int tid,
+                            String unitId, String func, Double address, Double quantity, Boolean matched,
+                            List<Double> requestValues, List<Double> responseValues) {
+        this(ts, uid, origHost, respHost, sourceHost, destinationHost, isOrig, requestResponse, tid, unitId,
+            func, address, quantity, matched, requestValues, responseValues, null);
+    }
 }

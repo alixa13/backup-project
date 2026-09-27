@@ -133,6 +133,20 @@ public final class ModbusEventMapper {
             return MappingResult.invalid(responseValues.reason(), responseValues.detail());
         }
 
+        // F1 (docs/superpowers/specs/2026-09-26-modbus-stage1-scoring-design.md
+        // section 2.1): icsnpp-modbus v1.0.0 writes no arrays, only a `values`
+        // string, which belongs to this record's own direction. An array, when
+        // present, wins; a string that is not wholly numeric is absent
+        // (ZeekModbusValues), never a rejection.
+        double[] zeekValues = ZeekModbusValues.parse(dto.values());
+        if (zeekValues.length > 0) {
+            if (direction == ModbusEvent.ModbusDirection.REQUEST && requestValues.value().length == 0) {
+                requestValues = MappingResult.valid(zeekValues);
+            } else if (direction == ModbusEvent.ModbusDirection.RESPONSE && responseValues.value().length == 0) {
+                responseValues = MappingResult.valid(zeekValues);
+            }
+        }
+
         // Every field this event needs is now known valid, so none of the
         // domain constructors below can throw.
         //

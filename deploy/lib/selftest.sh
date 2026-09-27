@@ -69,7 +69,12 @@ selftest_run() {
       break
     fi
     if [ "${dlq:-0}" != 0 ] || [ "$(date +%s)" -ge "$deadline" ]; then
-      warn "selftest FAILED: feature vectors (modbus, s7comm) = '${got}', want 2 and 2; DLQ rows = '${dlq}', want 0${scoring:+; Modbus predictions = '${preds}', want 2}"
+      # The predictions are part of the verdict only when scoring is on.
+      local want_preds=""
+      if [ -n "$scoring" ]; then
+        want_preds="; Modbus predictions = '${preds}', want 2"
+      fi
+      warn "selftest FAILED: feature vectors (modbus, s7comm) = '${got}', want 2 and 2; DLQ rows = '${dlq}', want 0${want_preds}"
       ch_query "SELECT log_type, reason_code, detail FROM invalid_events WHERE event_id LIKE '%${run}%' FORMAT PrettyCompactMonoBlock" >&2 || true
       selftest_cleanup "$run" "$uid_m" "$uid_s"
       return 1

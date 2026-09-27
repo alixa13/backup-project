@@ -89,8 +89,9 @@ check_detector_bundle() {
     key="${file#*:}"; file="${file%%:*}"
     expected="$(jq -r ".${key} // empty" "${REPO_ROOT}/models/${bundle}/bundle.json" 2>/dev/null || true)"
     actual="$(sha256sum "${REPO_ROOT}/models/${bundle}/${file}" 2>/dev/null | cut -c1-64 || true)"
-    [ -n "$expected" ] && [ "$expected" = "$actual" ] \
-      || die "the Modbus detector bundle is corrupt: models/${bundle}/${file} does not match its SHA-256 in bundle.json (expected ${expected:-none}, got ${actual:-no file}); package it again with deploy/models/package-modbus-detector.sh, or set MODBUS_DETECTOR_BUNDLE= (empty) in deploy/.env to run without scoring"
+    if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+      die "the Modbus detector bundle is corrupt: models/${bundle}/${file} does not match its SHA-256 in bundle.json (expected ${expected:-none}, got ${actual:-no file}); package it again with deploy/models/package-modbus-detector.sh, or set MODBUS_DETECTOR_BUNDLE= (empty) in deploy/.env to run without scoring"
+    fi
   done
 }
 

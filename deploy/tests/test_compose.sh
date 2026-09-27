@@ -64,6 +64,21 @@ sed -i '/^MODBUS_STATE_TTL_MINUTES=/d' "$tmp/env"
 assert_eq 60 "$(config | jq -r '.services["job-submitter"].environment.MODBUS_STATE_TTL_MINUTES')" \
   "an older deploy/.env without the modbus TTL still gets the one-hour default"
 
+# Modbus scoring (spec section 7): the pin and the models mount reach the jobs.
+assert_eq modbus-stage1-detector/v1 "$(q '.services["job-submitter"].environment.MODBUS_DETECTOR_BUNDLE')" "the detector pin reaches the jobs"
+assert_eq /opt/netsec/models "$(q '.services["job-submitter"].environment.NETSEC_MODELS_DIR')" "the models dir"
+assert_eq netsec.modbus.prediction.v1 "$(q '.services["job-submitter"].environment.MODBUS_PREDICTION_TOPIC')" "the prediction topic"
+for svc in job-submitter flink-taskmanager; do
+  assert_eq "/opt/netsec/models:true" "$(q ".services[\"$svc\"].volumes[] | select(.target == \"/opt/netsec/models\") | \"\(.target):\(.read_only)\"")" "$svc mounts models/ read-only"
+done
+# Review Focus 1: unset (an older .env) scores with the default; set empty turns scoring off.
+sed -i '/^MODBUS_DETECTOR_BUNDLE=/d; /^MODBUS_PREDICTION_TOPIC=/d' "$tmp/env"
+assert_eq modbus-stage1-detector/v1 "$(config | jq -r '.services["job-submitter"].environment.MODBUS_DETECTOR_BUNDLE')" "an older .env scores with the default bundle"
+assert_eq netsec.modbus.prediction.v1 "$(config | jq -r '.services["job-submitter"].environment.MODBUS_PREDICTION_TOPIC')" "and gets the default topic"
+printf 'MODBUS_DETECTOR_BUNDLE=\n' >> "$tmp/env"
+assert_eq "" "$(config | jq -r '.services["job-submitter"].environment.MODBUS_DETECTOR_BUNDLE')" "an empty pin turns scoring off"
+make_env 127.0.0.1
+
 # P6: widening BIND_ADDRESS moves the UI and ClickHouse, never Kafka.
 make_env 0.0.0.0
 json="$(config)"

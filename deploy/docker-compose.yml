@@ -106,6 +106,8 @@ services:
         taskmanager.memory.managed.fraction: 0.05
     volumes:
       - ${NETSEC_DATA_DIR}/flink:/flink-data
+      # The detector bundle each subtask loads in open() (spec section 7).
+      - ../models:/opt/netsec/models:ro
     mem_limit: ${FLINK_TM_MEMORY_MIB}m
     cpus: ${FLINK_TM_CPUS}
 
@@ -142,6 +144,11 @@ services:
       S7COMM_STATE_TTL_MINUTES: ${S7COMM_STATE_TTL_MINUTES}
       # ':-60': a deploy/.env written before this setting existed has no line for it.
       MODBUS_STATE_TTL_MINUTES: ${MODBUS_STATE_TTL_MINUTES:-60}
+      # '-' (not ':-'): unset -- an older deploy/.env -- scores with the default
+      # bundle, while an explicit empty value turns scoring off.
+      MODBUS_DETECTOR_BUNDLE: ${MODBUS_DETECTOR_BUNDLE-modbus-stage1-detector/v1}
+      MODBUS_PREDICTION_TOPIC: ${MODBUS_PREDICTION_TOPIC:-netsec.modbus.prediction.v1}
+      NETSEC_MODELS_DIR: /opt/netsec/models
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: "8123"
       CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE}
@@ -151,6 +158,8 @@ services:
       - ./jars:/opt/netsec/jars:ro
       - ./flink/submit-jobs.sh:/opt/netsec/submit-jobs.sh:ro
       - ${NETSEC_DATA_DIR}/flink:/flink-data
+      # main() verifies the pinned bundle here before it submits the online job.
+      - ../models:/opt/netsec/models:ro
     mem_limit: ${JOB_SUBMITTER_MEMORY_MIB}m
 
   # The Zeek sensor (design §4): sniffs ZEEK_INTERFACE on the host network and

@@ -42,7 +42,7 @@ compose() {
   fi
 }
 create_topics >/dev/null
-assert_eq 12 "$(grep -c -- '--create' "$tmp/calls")" "create_topics creates every topic"
+assert_eq 13 "$(grep -c -- '--create' "$tmp/calls")" "create_topics creates every topic"
 assert_eq 1 "$(grep -c -- '--topic netsec.s7comm.raw.v1 --partitions 1 --replication-factor 1 --config retention.ms=604800000' "$tmp/calls")" "raw topic: 1 partition, 7 days"
 unset -f compose
 
@@ -54,7 +54,7 @@ list_interfaces() { printf 'lo\neth0\n'; }
 # shellcheck disable=SC2034  # stack_preflight reads ZEEK_INTERFACE
 out="$( (ZEEK_INTERFACE=eth9; stack_preflight) 2>&1; echo "exit=$?")"
 assert_eq 1 "$(grep -c 'capture interface eth9 does not exist (this host has: lo eth0 )' <<< "$out")" "preflight refuses an unknown interface"
-assert_eq 1 "$(grep -c 'exit=1' <<< "$out")" "and stops"
+assert_eq 1 "$(grep -cx 'exit=1' <<< "$out")" "and stops"
 # shellcheck disable=SC2034  # stack_preflight reads ZEEK_INTERFACE
 out="$( (ZEEK_INTERFACE=""; stack_preflight) 2>&1; echo "exit=$?")"
 assert_eq 1 "$(grep -c 'ZEEK_INTERFACE is not set' <<< "$out")" "preflight refuses an empty interface"
@@ -84,5 +84,38 @@ assert_eq 1 "$(grep -cE 'online-feature-job +RUNNING +no checkpoint yet$' <<< "$
 assert_eq 1 "$(grep -cE 'archive-job +RUNNING +last checkpoint 7s ago$' <<< "$out")" "status: a checkpoint's age in seconds"
 assert_eq 0 "$(grep -c 'nones' <<< "$out")" "status never prints 'nones ago'"
 unset -f load_env compose ch_query flink_rest
+
+
+# Review Focus 5: an older .env without MODBUS_PREDICTION_TOPIC still gets it
+# from the template, so create_topics creates every topic instead of aborting.
+set -a; . "${DEPLOY_DIR}/.env.template"; set +a
+unset MODBUS_PREDICTION_TOPIC
+: > "$tmp/calls"
+compose() {
+  if [ "$1" = exec ]; then
+    cat > /dev/null
+    printf '%s\n' "$*" >> "$tmp/calls"
+  fi
+}
+create_topics >/dev/null
+assert_eq 13 "$(grep -c -- '--create' "$tmp/calls")" "create_topics creates all 13 topics"
+assert_eq 1 "$(grep -c -- '--topic netsec.modbus.prediction.v1 ' "$tmp/calls")" "including the prediction topic from the template"
+unset -f compose
+
+# The preflight refuses a pinned bundle that is missing, and accepts an empty pin.
+# Each check runs in its own subshell: die exits, and the status must still print.
+REPO_ROOT_SAVED="$REPO_ROOT"; REPO_ROOT="$tmp/repo"; mkdir -p "$REPO_ROOT/models"
+ENV_FILE_SAVED="$ENV_FILE"; ENV_FILE="$tmp/stack.env"; printf 'MODBUS_DETECTOR_BUNDLE=modbus-stage1-detector/v1\n' > "$ENV_FILE"
+out="$( (check_detector_bundle) 2>&1; echo "exit=$?")"
+assert_eq 1 "$(grep -c 'models/modbus-stage1-detector/v1 is missing' <<< "$out")" "a missing pinned bundle is refused"
+assert_eq 1 "$(grep -cx 'exit=1' <<< "$out")" "and stops"
+printf 'MODBUS_DETECTOR_BUNDLE=\n' > "$ENV_FILE"
+out="$( (check_detector_bundle) 2>&1; echo "exit=$?")"
+assert_eq 1 "$(grep -cx 'exit=0' <<< "$out")" "an empty pin needs no bundle"
+mkdir -p "$REPO_ROOT/models/modbus-stage1-detector/v1"; touch "$REPO_ROOT/models/modbus-stage1-detector/v1/bundle.json"
+printf 'MODBUS_DETECTOR_BUNDLE=modbus-stage1-detector/v1\n' > "$ENV_FILE"
+out="$( (check_detector_bundle) 2>&1; echo "exit=$?")"
+assert_eq 1 "$(grep -cx 'exit=0' <<< "$out")" "a present bundle passes"
+REPO_ROOT="$REPO_ROOT_SAVED"; ENV_FILE="$ENV_FILE_SAVED"
 
 finish

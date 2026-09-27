@@ -53,6 +53,35 @@ stack_preflight() {
   list_interfaces | grep -qxF "$ZEEK_INTERFACE" \
     || die "capture interface ${ZEEK_INTERFACE} does not exist (this host has: ${interfaces})"
   tune_check_drift
+  check_detector_bundle
+}
+
+# A topic's name: deploy/.env's value, else the template's -- a .env written
+# before a topic existed must not abort 'up' (Review Focus 5).
+topic_name() {
+  local value="${!1:-}"
+  [ -n "$value" ] || value="$(env_value "${DEPLOY_DIR}/.env.template" "$1")"
+  [ -n "$value" ] || die "topics.conf names $1, which neither deploy/.env nor .env.template sets"
+  printf '%s\n' "$value"
+}
+
+# The pinned detector bundle: deploy/.env's MODBUS_DETECTOR_BUNDLE when it has
+# the line (even empty), else the template's default -- what compose resolves.
+detector_bundle_setting() {
+  if grep -q '^MODBUS_DETECTOR_BUNDLE=' "$ENV_FILE" 2>/dev/null; then
+    env_value "$ENV_FILE" MODBUS_DETECTOR_BUNDLE
+  else
+    env_value "${DEPLOY_DIR}/.env.template" MODBUS_DETECTOR_BUNDLE
+  fi
+}
+
+# A pinned bundle must be on disk before the jobs start (spec section 7).
+check_detector_bundle() {
+  local bundle
+  bundle="$(detector_bundle_setting)"
+  [ -z "$bundle" ] && return 0
+  [ -f "${REPO_ROOT}/models/${bundle}/bundle.json" ] \
+    || die "the Modbus detector bundle models/${bundle} is missing: package it with deploy/models/package-modbus-detector.sh <delivery-dir> and copy it to models/${bundle}/, or set MODBUS_DETECTOR_BUNDLE= (empty) in deploy/.env to run without scoring"
 }
 
 # Every topic both jobs subscribe to, created before they start: a missing
@@ -62,7 +91,7 @@ create_topics() {
   local var partitions hours topic
   while read -r var partitions hours; do
     case "$var" in ''|'#'*) continue ;; esac
-    topic="${!var:?topics.conf names ${var}, which deploy/.env does not set}"
+    topic="$(topic_name "$var")"
     compose exec -T kafka kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
       --topic "$topic" --partitions "$partitions" --replication-factor 1 \
       --config "retention.ms=$(( hours * 3600000 ))" </dev/null >/dev/null

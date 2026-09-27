@@ -79,10 +79,14 @@ public final class ModbusFeatureProcessFunction
         // section 2.1) changed ModbusEntityState's layout -- pending requests
         // now keep their address and quantity -- and the state is
         // Kryo-serialized, so the old bytes cannot be read as the new layout.
-        // The rename makes a restore of an older savepoint start every Modbus
-        // key fresh instead of failing; the old state stays unread in the
-        // savepoint (it held test data only). Never rename it again without the
-        // same deliberate step. Its siblings are "rolling-counters"
+        // The rename starts every Modbus key fresh -- but only a savepoint whose
+        // old state holds no live entries restores: the heap backend still
+        // deserializes the unregistered old state on restore, with today's
+        // class, and Kryo cannot read an old pending entry as a PendingRequest
+        // (CLAUDE.md, "The state rename"). For the next layout change, empty the
+        // old state first (no input for longer than the TTL before the
+        // savepoint) or change the uid and restore once with
+        // --allowNonRestoredState; a rename alone is not a migration. Its siblings are "rolling-counters"
         // (ConnFeatureProcessFunction) and "dns-window-state"
         // (DnsFeatureProcessFunction).
         //

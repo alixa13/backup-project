@@ -284,9 +284,13 @@ class ModbusFeatureProcessFunctionTest {
         after.close();
     }
 
-    // Spec section 2.1: a savepoint holding the pre-2026-09-26 state (named
-    // "modbus-entity-state") restores without failing, and the key starts
+    // Spec section 2.1: a savepoint holding state under the pre-2026-09-26 name
+    // ("modbus-entity-state") restores without failing, and the key starts
     // fresh -- the pending request is not read, so its response is unmatched.
+    // It pins the rename only: the "old" state is written with today's
+    // ModbusEntityState class, so its bytes are today's layout. A savepoint with
+    // live entries in the genuine old layout does NOT restore (the heap backend
+    // deserializes unregistered states too; see CLAUDE.md, "The state rename").
     @Test
     void aSavepointOfTheRenamedStateRestoresAndTheKeyStartsFresh() throws Exception {
         OneInputStreamOperatorTestHarness<ModbusEvent, FeatureVector> before =

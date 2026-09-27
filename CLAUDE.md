@@ -586,12 +586,22 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   row carried address and quantity), and neither is confirmed by the model team
   yet, like `response_matched`. They change the vectors on
   `netsec.modbus.feature-vector.v1` too, not only what is scored.
-- **The state rename (one-time).** F2 keeps each pending request's address and
-  quantity, so `ModbusEntityState`'s Kryo layout changed and the state was renamed
-  `modbus-entity-state-v2`. The operator uid is unchanged, so a savepoint restores
-  without `allowNonRestoredState`; the old `modbus-entity-state` is simply never
-  read, and every Modbus stream started fresh once, on that upgrade
-  (`ModbusFeatureProcessFunctionTest.aSavepointOfTheRenamedStateRestoresAndTheKeyStartsFresh`).
+- **The state rename (one-time), and why a rename alone is not a migration.** F2
+  keeps each pending request's address and quantity, so `ModbusEntityState`'s Kryo
+  layout changed and the state was renamed `modbus-entity-state-v2`; every Modbus
+  stream started fresh once, on that upgrade. The rename is weaker than it looks:
+  Flink's heap backend deserializes EVERY keyed state in a snapshot when it
+  restores -- registered or not -- with the class on the classpath now, so the old
+  `modbus-entity-state` is still read, and its old bytes (a pending map of
+  `Double`) cannot be read as the new layout (`PendingRequest`): Kryo fails on the
+  first live pending entry. The server3 upgrade restored cleanly most likely
+  because that state held no entries (its keys had idled past the 1 h TTL, and a
+  savepoint drops expired entries). The orphaned, empty state is carried in every
+  later checkpoint. `aSavepointOfTheRenamedStateRestoresAndTheKeyStartsFresh`
+  pins only the rename (its "old" savepoint is written with today's class), not
+  old bytes. For the next Kryo layout change: empty the old state first (stop
+  input for longer than the TTL, then take the savepoint), or change the operator
+  uid and restore once with `--allowNonRestoredState`.
 - **Every stream segment starts with 19 `WARMUP` predictions.** The detector reads
   20 consecutive vectors of one stream, so the first 19 events of a segment carry
   no scores. A segment starts at a stream's first event and again after a gap over

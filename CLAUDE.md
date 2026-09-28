@@ -315,8 +315,8 @@ skips were hiding real defects — including a deduplication query that was
 syntactically invalid and could never have executed. **Do not read a skipped
 container test as a passing one.**
 
-Verified fresh for the Modbus scoring unit at `8b8cc15` (Task 15 of its plan;
-the commit after it changes only documentation). One reactor run with every
+Verified fresh for the Modbus scoring unit at `60cb748`, the tip after its
+final-review fixes (the commit after it changes only documentation). One reactor run with every
 Testcontainers class excluded by name (`ArchiveJobE2ETest`, `ClickHouseOutageTest`,
 `ClientV2InserterTest`, `DdlMigrationTest`, `FeatureVectorDeduplicationTest`,
 `OnlineFeatureJobE2ETest`, and the `ClickHouseTestSupport` helper) -- so those were
@@ -329,16 +329,18 @@ were involved; BUILD SUCCESS:
 | `ports` | no tests exist |
 | `application` | 99/99, 0 skipped |
 | `adapter-kafka` | 160/160, 0 skipped |
-| `adapter-flink` | 69/69, 0 skipped |
+| `adapter-flink` | 71/71, 0 skipped (`ModbusScoringProcessFunctionTest` ×5, including scoring switched off and on again through savepoints) |
 | `adapter-onnx` | 16/16, 0 skipped (`OnnxSequenceScorerTest` ×7: both scores equal Python ONNX Runtime's to 1e-5) |
 | `adapter-clickhouse` (container classes excluded) | 38/38, 0 skipped |
 | `adapter-registry-filesystem` | 20/20, 0 skipped (`SequenceDetectorBundleLoaderTest` ×8, including the preprocessing against Python) |
-| `bootstrap-online-job` (container classes excluded) | 22/22, 0 skipped (`OnlineFeatureJobTopologyTest` 9, `ZeekRecordCheckTest` 8, `ModbusDetectorScorerFactoryTest` 2, `OnlineFeatureJobRestartStrategyTest` 2, and `ModbusDetectorOracleTest` 1 -- the scoring proof: all 86 events of the upstream-generated oracle through the real parser, mapper, feature engine, preprocessing and Java ONNX scorer, every vector value equal to upstream's and all 19 scored events' scores within 1e-5, while a planted `T -> 0.0` bug fails it at the first READ_COILS response) |
+| `bootstrap-online-job` (container classes excluded) | 23/23, 0 skipped (`OnlineFeatureJobTopologyTest` 10 -- the tenth proves an empty `MODBUS_DETECTOR_BUNDLE` keeps the scoring uids --, `ZeekRecordCheckTest` 8, `ModbusDetectorScorerFactoryTest` 2, `OnlineFeatureJobRestartStrategyTest` 2, and `ModbusDetectorOracleTest` 1 -- the scoring proof: all 86 events of the upstream-generated oracle through the real parser, mapper, feature engine, preprocessing and Java ONNX scorer, every vector value equal to upstream's and all 19 scored events' scores within 1e-5, while a planted `T -> 0.0` bug fails it at the first READ_COILS response) |
 | `bootstrap-archive-job` (container classes excluded) | 13/13, 0 skipped (`ArchiveJobTopologyTest` 11: nine chains, 27 distinct uids) |
-| `deploy/tests/run-all.sh` | every file 0 failed, shellcheck clean |
+| `deploy/tests/run-all.sh` | every file 0 failed, shellcheck clean (`test_stack.sh` 30, `test_submit_jobs.sh` 35, `test_selftest.sh` 14 among them) |
 
-The container tables below predate the scoring unit and were not re-run for it:
-neither E2E class exercises scoring.
+The container tables below predate the scoring unit and were not re-run for it.
+Neither E2E class exercises scoring, but both send Modbus records through the
+feature path F1/F2 changed, and they were compiled, not re-run: this unit's
+end-to-end evidence is the live server3 runs (below).
 
 Verified fresh for the S7comm unit and its final-review fixes, at `698487b`
 (the review-fix commit; the commit after it, this file, changes no code).
@@ -385,10 +387,20 @@ were not re-run):
 | `FeatureVectorDeduplicationTest` | 3/3 | The committed dedup query runs and resolves duplicates |
 | `ClientV2InserterTest` | 4/4 | An unknown column is rejected, not silently skipped |
 
-**Not yet verified: the deployed stack itself.** `deploy.sh up`, `selftest`,
-`zeek-check --live` and a `down`/`up` restore have not run anywhere: the
-development machine cannot hold the stack. The first run on the server is that
-verification.
+**The deployed stack, verified live on server3** (never on the development
+machine, which cannot hold it). Since 2026-09-24: `deploy.sh up`, `selftest`,
+and `restart` -- `down` with a savepoint per job, then `up`, each job resuming
+from its savepoint -- at every rollout; the resilience tests, including a
+ClickHouse outage ridden out and the exponential-delay restart strategy; the
+Modbus idle TTL's migration (a request published before the upgrade matched its
+response after it); and the `response_matched` derivation. On 2026-09-27, Modbus
+scoring: a 25-event stream gave 19 `WARMUP` and 6 scored predictions, each score
+equal to Python ONNX Runtime's within 5e-8; F1/F2 held on the ICSNPP sample
+(every response with numeric values, or whose request had an address, carries
+them); the final-review fixes were rolled out the same way, and the fixed
+`selftest` waited for its two predictions and removed them. A host reboot was
+not tested: on server3 it takes down the capture interfaces and other projects'
+containers, so that test was dropped.
 
 **Not verified:** `ClickHouseOutageTest` — the Definition of Done's headline claim
 that a ClickHouse failure cannot stop feature production. It is OOM-killed during

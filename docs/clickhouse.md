@@ -255,9 +255,11 @@ enabled; neither is in place, and nothing writes to it today.
 `modbus_detector_predictions` (Modbus scoring, 2026-09-26) carries `client_ip` and
 `server_ip` -- as `String`, not the `IPv6` type the other tables use -- for 180
 days, and it IS written whenever a detector bundle is pinned. It has neither the
-least-privilege user nor the retention approval `FINAL_ARCHITECTURE.md` requires
-of an IP-bearing table: that decision is open. `connection_uid` alone would join a
-prediction back to its addresses through Zeek's logs, if the columns were dropped.
+least-privilege user `FINAL_ARCHITECTURE.md` requires of an IP-bearing table.
+The columns and their 180-day retention were kept by the project owner's
+decision on 2026-09-28 (the alternative was to drop them: `connection_uid` alone
+joins a prediction back to its addresses through Zeek's logs); the least-privilege
+ClickHouse user is still to be created.
 
 `feature_vectors` carries no address columns itself — it holds the schema's
 numeric features (20 for `conn-feature-v1`), `log_type`, the sensor name, and

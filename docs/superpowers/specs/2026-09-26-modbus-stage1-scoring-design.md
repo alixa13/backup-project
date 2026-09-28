@@ -303,7 +303,8 @@ sample and confirms value and address presence now match section 2.1's rules.
   preprocessing and thresholds as the test fixture `tests/fixtures/models/modbus-stage1-detector/v1/`,
   which the loader, scorer and oracle tests read, and `feat/modbus-scoring` has been pushed with it.
   Keeping it, or rewriting the branch's history and making those tests read a local `models/` copy
-  instead, is the user's decision. The deployed bundle under `models/` stays out of Git.)*
+  instead, is the user's decision -- decided 2026-09-28: kept. The deployed bundle under `models/`
+  stays out of Git.)*
 - The first 19 events of every stream segment are never scored; that is the detector's design (no
   padding), made visible as `WARMUP`, not a platform choice.
 - S7 scoring and Modbus Stage 2 are the next units; each gets its own design.

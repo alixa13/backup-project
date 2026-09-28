@@ -1,5 +1,22 @@
 # S7comm Stage 1 Scoring Implementation Plan
 
+> **Revision (2026-09-28, detector v2).** Task 1's pre-check stopped this plan: the delivered
+> model scores independent benign S7 traffic 0% NORMAL. It resumes against our own detector v2
+> (`docs/models/s7comm-stage1-detector-v2.md`, release `v2_multisource_r1`). Its Task 1 re-runs on
+> v2 first and must pass now. The bundle is packaged as `models/s7comm-stage1-detector/v2/` and
+> committed as this plan's test fixture (spec section 9). Four changes are made when execution
+> resumes, and ledgered there:
+> 1. **Drop Task 2 (S2) and S1's upper-casing.** v2 was trained on `S7commFeatureExport`'s rows,
+>    i.e. on exactly what the online job computes. Those fixes made Java's input look like the
+>    delivered training table, and v2 has no such gap. v2's own categories spell operations as
+>    the Java decoder does (`FUNCTION_0x44`, not `FUNCTION_0X44`).
+> 2. **Packaging takes the release directory and file names as arguments** (Plan A ruling A4):
+>    `artifacts/model/` and `s7comm_lstm_autoencoder.onnx`, not `artifacts/v4_causal_final_model/`
+>    and `…_debiased.onnx`.
+> 3. **The loader reads the one-hot width from the bundle** (Plan A ruling A2): v2's is 22, not 21.
+> 4. **The fixture bundle and every number pinned against the delivered model are regenerated
+>    from v2:** the oracle, the thresholds, and the live-check expectations.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** First measure, on independent real traffic, whether the delivered S7comm Stage 1 detector calls benign S7 traffic normal; then make two S7comm inputs match its training data, score every S7comm feature vector with it in the online job, publish one prediction per event to Kafka, and archive the predictions to ClickHouse.

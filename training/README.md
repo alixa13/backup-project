@@ -46,3 +46,22 @@ python -m venv .venv
 pip install -e ".[dev]"
 pytest
 ```
+
+## S7comm Stage 1 detector v2
+
+Trains the S7comm anomaly detector on the platform's own features (spec
+`docs/superpowers/specs/2026-09-28-s7comm-detector-v2-design.md`; model card
+`docs/models/s7comm-stage1-detector-v2.md`). Nothing here computes a feature:
+`S7commFeatureExport` (bootstrap-online-job) writes every value.
+
+```sh
+# on the development machine: the unit tests
+uv venv --python 3.12 training/.venv
+uv pip install --python training/.venv/bin/python torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+uv pip install --python training/.venv/bin/python -e 'training[s7comm,dev]'
+training/.venv/bin/pytest training/tests/unit/s7comm -q
+bash training/s7comm/tests/test_acquire.sh
+
+# on server3 only: captures -> Zeek -> features -> training -> gated release
+bash training/s7comm/run-pipeline.sh /root/s7data/v2 <online-job-all.jar> configs/s7comm-v2.yaml run-N
+```

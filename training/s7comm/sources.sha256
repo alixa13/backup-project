@@ -1,0 +1,23 @@
+# The S7comm detector v2's captures (spec section 4), one per line:
+#   capture  sha256  kind  location
+# kind: url (downloaded), local (copied read-only from server3), iti (ITI/ICS-Security-Tools
+# at ITI_COMMIT), qut-zip (the single member of a zip in qut-infosec/2017QUT_S7comm at QUT_COMMIT).
+qut-control           05fc253dd84f5db9ad9ba910ea694ba3ee83b8c477c2dcf91d1ed04aefb1ff51  qut-zip  LabelledDataset/20161219132813_control_set/hmi.pcap.zip
+qut-attack            74c8b1744ada2e3f6245976efa951b7e9a945c931e78601a8a394d01cea71b5a  qut-zip  LabelledDataset/20161215163606_s7_process_attacks/hmi.pcap.zip
+4sics-151020          8c6ee02dc26b1b5298a7c9b4dc83cc779bd2a3219d5c5cbc51e3d4d325763bc2  url      https://share.netresec.com/s/xYj2qCNbsLEAd6M/download/4SICS-GeekLounge-151020.pcap
+4sics-151021          7365b0ea475b76bf79b207fd8f83baa45e4449aead5da6a9214bbcffbc5fa7de  url      https://share.netresec.com/s/camL59aoxbCRyyZ/download/4SICS-GeekLounge-151021.pcap
+4sics-151022          82529c23906416dc73d7f1926a0d38b82527f1f2a7ff8c6f755ce3208feb9643  url      https://share.netresec.com/s/gw6Y2QzJHqDD5pr/download/4SICS-GeekLounge-151022.pcap
+server3-s7            81fb17992e2de08d59309ba2a48c6596449572c39f9622690e3c4088c50f3e70  local    /root/1405-06-15/Models/data/raw/benign/pcap/s7comm/s7.pcap
+server3-s701          d1e1414443ab548d5fe1fbd05245eccb2cee8ad90798537f429bc802b3a8a726  local    /root/1405-06-15/Models/data/raw/benign/pcap/s7comm/s701.pcap
+server3-s702          4ba4e3f127f27002d0126b3b6fcee57b5afad38bd910692f9bd75b08797650f1  local    /root/1405-06-15/Models/data/raw/benign/pcap/s7comm/s702.pcap
+server3-S7COMM        b9ffbc6812bbeccb777a87216f1f6458da11279a767cf462b2db22470270a41a  local    /root/1405-06-15/Models/data/raw/benign/pcap/s7comm/S7COMM.pcap
+libnodave-bench       bdbacb1b09c621f23be1c4c55145aec24930b6fa5541e7f4626dab6a314f1308  iti      pcaps/s7/s7comm_varservice_libnodavedemo_bench.pcap
+s7comm-clean          0998a2c0ecdd83e20a0fa166fffb53648ea31f9b62b41cf48841d5419bf127d7  iti      pcaps/s7/S7Comm/s7comm_clean.pcap
+cyclic-1s             a5d778c725c34313883849eda83d62e184ffdc712bed18dcca2e96d068257147  url      https://media.githubusercontent.com/media/automayt/ICS-pcap/13b7ae335529146b40535c2d7aa756886040d8ad/S7/2-S7comm-VarService-CyclicData-1s/2-S7comm-VarService-CyclicData-1s.pcap
+eng-readDiagData      6ba61ac1ec340e9129007a5a7aec16ae1009f9691eda31172c56b155022e702c  iti      pcaps/s7/step7_s300_readDiagData.pcapng
+eng-readVarTab        9cd63c73f2e5715585357f1f278cfb5baeeae9ecaa326bb5fcd4a038afa1ca85  iti      pcaps/s7/step7_s300_readVarTab.pcapng
+eng-plc-status        e71f81b471bd67da2fd6e40dc69a7179574ba66771c6150cd7bfe232cc07b8a9  iti      pcaps/s7/s7comm_reading_plc_status.pcap
+eng-blocklist         b2e7014362630b803b413dda595e4ba7a3a910105712f448c22dba517ec02851  iti      pcaps/s7/s7comm_program_blocklist_onlineview.pcap
+eng-download-db1      48725bd1af7b778821351cd0f50f0ee259e438074a27f8431a8a1a3351dfd3d0  iti      pcaps/s7/s7comm_downloading_block_db1.pcap
+eng-plc-time          d74c1eca1f2039dadcccd43c212f649b293acf6a80db1560e9ee22aeabb4c5d4  iti      pcaps/s7/s7comm_reading_setting_plc_time.pcap
+eng-snap7-everything  2b91f6a8a203ec83e4f2dbb69d5e61602845f23da0baa31d95d029fb24cbd427  iti      pcaps/s7/snap7_s300_everything.pcapng

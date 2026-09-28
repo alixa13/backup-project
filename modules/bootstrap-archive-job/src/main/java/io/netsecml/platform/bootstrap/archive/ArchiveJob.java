@@ -3,6 +3,7 @@ package io.netsecml.platform.bootstrap.archive;
 import io.netsecml.platform.adapter.clickhouse.row.FeatureVectorRow;
 import io.netsecml.platform.adapter.clickhouse.row.InvalidEventRow;
 import io.netsecml.platform.adapter.clickhouse.row.ModbusDetectorPredictionRow;
+import io.netsecml.platform.adapter.clickhouse.row.S7commDetectorPredictionRow;
 import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseBatchSink;
 import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseConfig;
 import io.netsecml.platform.adapter.flink.source.RawBytesDeserializationSchema;
@@ -195,6 +196,27 @@ public final class ArchiveJob {
         return List.copyOf(chains);
     }
 
+    // S7comm Stage 1 predictions (docs/superpowers/specs/2026-09-28-s7comm-stage1-scoring-design.md
+    // section 6), their own three uids.
+    public static LogTypeChain<S7commDetectorPredictionRow> s7commPredictionChain(String topic) {
+        return new LogTypeChain<>(topic, new S7commDetectorPredictionRowMapFunction(topic),
+            "s7comm_detector_predictions", "s7comm-prediction-source", "s7comm-prediction-row",
+            "s7comm-predictions-clickhouse-sink");
+    }
+
+    // The ten chains main() wires: the nine above plus S7comm predictions. A new
+    // method, as every protocol before it paid (CLAUDE.md, the multi-protocol seams).
+    public static List<LogTypeChain<?>> connDnsModbusS7commAndBothPredictionChains(
+            String connFeatureTopic, String connDlqTopic, String dnsFeatureTopic, String dnsDlqTopic,
+            String modbusFeatureTopic, String modbusDlqTopic, String s7commFeatureTopic, String s7commDlqTopic,
+            String modbusPredictionTopic, String s7commPredictionTopic) {
+        List<LogTypeChain<?>> chains = new ArrayList<>(connDnsModbusS7commAndModbusPredictionChains(connFeatureTopic,
+            connDlqTopic, dnsFeatureTopic, dnsDlqTopic, modbusFeatureTopic, modbusDlqTopic, s7commFeatureTopic,
+            s7commDlqTopic, modbusPredictionTopic));
+        chains.add(s7commPredictionChain(s7commPredictionTopic));
+        return List.copyOf(chains);
+    }
+
     // One feature-vector chain for a log type. Mirrors dlqChain immediately
     // below -- a factory rather than three literal strings at each call site,
     // because the uids are checkpoint state identity and hand-writing them per
@@ -365,6 +387,9 @@ public final class ArchiveJob {
         // Modbus Stage 1 predictions; the topic must exist even when scoring is off.
         String modbusPredictionTopic = System.getenv().getOrDefault("MODBUS_PREDICTION_TOPIC",
             "netsec.modbus.prediction.v1");
+        // S7comm Stage 1 predictions; the topic must exist even when S7 scoring is off.
+        String s7commPredictionTopic = System.getenv().getOrDefault("S7COMM_PREDICTION_TOPIC",
+            "netsec.s7comm.prediction.v1");
 
         ClickHouseConfig clickHouse = ClickHouseConfig.of(
             System.getenv().getOrDefault("CLICKHOUSE_HOST", "localhost"),
@@ -373,16 +398,16 @@ public final class ArchiveJob {
             System.getenv().getOrDefault("CLICKHOUSE_USER", "default"),
             System.getenv().getOrDefault("CLICKHOUSE_PASSWORD", ""));
 
-        // Nine chains through connDnsModbusS7commAndModbusPredictionChains()
-        // and the parameterised, list-form build(): conn's two (unchanged
-        // uids), then dns's, modbus's and s7comm's two each under the shared
-        // prefix pattern, then Modbus predictions. The eight-, six- and
-        // four-chain methods stay public for the tests that call them
-        // directly. ArchiveJobTopologyTest's nine-chain case builds through
-        // the same method, so it pins the exact list this method wires.
+        // Ten chains through connDnsModbusS7commAndBothPredictionChains() and the
+        // parameterised, list-form build(): conn's two (unchanged uids), then
+        // dns's, modbus's and s7comm's two each, then Modbus and S7comm
+        // predictions. The nine-, eight-, six- and four-chain methods stay public
+        // for the tests that call them directly. ArchiveJobTopologyTest's
+        // ten-chain case builds through the same method.
         build(env, bootstrapServers,
-            connDnsModbusS7commAndModbusPredictionChains(featureTopic, dlqTopic, dnsFeatureTopic, dnsDlqTopic,
-                modbusFeatureTopic, modbusDlqTopic, s7commFeatureTopic, s7commDlqTopic, modbusPredictionTopic),
+            connDnsModbusS7commAndBothPredictionChains(featureTopic, dlqTopic, dnsFeatureTopic, dnsDlqTopic,
+                modbusFeatureTopic, modbusDlqTopic, s7commFeatureTopic, s7commDlqTopic, modbusPredictionTopic,
+                s7commPredictionTopic),
             clickHouse);
         env.execute("archive-job");
     }

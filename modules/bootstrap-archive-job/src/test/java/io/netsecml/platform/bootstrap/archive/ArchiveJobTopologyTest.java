@@ -322,4 +322,27 @@ class ArchiveJobTopologyTest {
         assertTrue(uids.containsAll(Set.of("modbus-prediction-source", "modbus-prediction-row",
             "modbus-predictions-clickhouse-sink")), "found: " + uids);
     }
+
+    // The ten chains main() wires: the nine of
+    // connDnsModbusS7commAndModbusPredictionChains plus S7comm predictions,
+    // whose three uids are new and distinct.
+    @Test
+    void tenChainsProduceThirtyDistinctUids() {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        ArchiveJob.build(env, "localhost:9092", ArchiveJob.connDnsModbusS7commAndBothPredictionChains(
+                "netsec.conn.feature-vector.v1", "netsec.conn.dlq.v1",
+                "netsec.dns.feature-vector.v1", "netsec.dns.dlq.v1",
+                "netsec.modbus.feature-vector.v1", "netsec.modbus.dlq.v1",
+                "netsec.s7comm.feature-vector.v1", "netsec.s7comm.dlq.v1",
+                "netsec.modbus.prediction.v1", "netsec.s7comm.prediction.v1"),
+            ClickHouseConfig.of("localhost", 8123, "netsec_ml", "default", "test-password"));
+        Set<String> uids = new HashSet<>();
+        for (StreamNode node : env.getStreamGraph(false).getStreamNodes()) {
+            assertTrue(uids.add(node.getTransformationUID()), "duplicate uid " + node.getTransformationUID());
+        }
+        assertEquals(30, uids.size());
+        assertTrue(uids.containsAll(Set.of("s7comm-prediction-source", "s7comm-prediction-row",
+            "s7comm-predictions-clickhouse-sink", "modbus-prediction-source")), "found: " + uids);
+    }
 }

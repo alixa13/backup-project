@@ -1,25 +1,28 @@
 # S7comm Stage 1 Scoring Implementation Plan
 
-> **Revision (2026-09-28, detector v2).** Task 1's pre-check stopped this plan: the delivered
-> model scores independent benign S7 traffic 0% NORMAL. It resumes against our own detector v2
-> (`docs/models/s7comm-stage1-detector-v2.md`, release `v2_multisource_r1`). Its Task 1 re-runs on
-> v2 first and must pass now. The bundle is packaged as `models/s7comm-stage1-detector/v2/` and
-> committed as this plan's test fixture (spec section 9). Four changes are made when execution
-> resumes, and ledgered there:
-> 1. **Drop Task 2 (S2) and S1's upper-casing.** v2 was trained on `S7commFeatureExport`'s rows,
->    i.e. on exactly what the online job computes. Those fixes made Java's input look like the
->    delivered training table, and v2 has no such gap. v2's own categories spell operations as
->    the Java decoder does (`FUNCTION_0x44`, not `FUNCTION_0X44`).
-> 2. **Packaging takes the release directory and file names as arguments** (Plan A ruling A4):
->    `artifacts/model/` and `s7comm_lstm_autoencoder.onnx`, not `artifacts/v4_causal_final_model/`
->    and `…_debiased.onnx`.
-> 3. **The loader reads the one-hot width from the bundle** (Plan A ruling A2): v2's is 22, not 21.
-> 4. **The fixture bundle and every number pinned against the delivered model are regenerated
->    from v2:** the oracle, the thresholds, and the live-check expectations.
->
-> **Before resuming at all, the owner rules on v2's long-lived-connection limit.** Every event of a
-> read-only connection is flagged once `s7_same_function_run_length` passes about 73,000, which is
-> about 20 h at one read per second (the model card's "Measured after release").
+> **Revision R2 (2026-09-28): execute this plan with spec amendment A1, which the owner approved.**
+> Task 1's pre-check stopped the plan on the delivered model. It resumes on our detector v2
+> (`docs/models/s7comm-stage1-detector-v2.md`), with a restart for long connections. Every
+> affected task carries an **R2** note under its heading, and the note wins where it differs from
+> the task's text. Across the whole plan:
+> - **Task 1 is skipped** (satisfied by Plan A) and **Task 2 is dropped** (no S2). There is **no S1**
+>   anywhere (no upper-casing).
+> - **The bundle is `s7comm-stage1-detector/v2`.** Its test fixture is
+>   `tests/fixtures/models/s7comm-stage1-detector/v2/`, and it is the deploy default. v2's
+>   one-hot width is **22**. Unit tests that build their own 21-wide contract stay as they are:
+>   the classes are generic over width and categories.
+> - **Every number a test pins against the real bundle is regenerated from v2's release,**
+>   `models/S7v2/models/stage1_anomaly/v2_multisource_r1/`. That covers SHA-256s, Python
+>   preprocessing outputs, reconstructions, scores and oracle lines. Regenerate with
+>   `training/.venv/bin/python` (its `netsec_ml` unpickles v2's `preprocessor.joblib`), and ledger
+>   each regeneration.
+> - **The behaviour changes:**
+>   - the warm-up is **64 events** (Task 6);
+>   - the feature state **restarts every 16,384 events** and sets the `S7COMM_RESTARTED` flag
+>     (Task 12);
+>   - packaging finds the release's files through its manifest (Task 7);
+>   - the oracle is built from v2 (Task 15);
+>   - the live check uses a 96-event connection (Task 19).
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -89,6 +92,12 @@
 ---
 
 ### Task 1: Real-traffic pre-check (Python, throwaway, can stop the plan)
+
+> **R2: skipped.** Plan A covers this check. Run-2 and the frozen-release measurements scored v2
+> on the same four server3 captures at 100% NORMAL past the 64th event, plus four more normal
+> sources at 99.46–100% (see the model card). Ledger it as
+> `Task 1: complete (skipped by R2; evidence docs/models/s7comm-stage1-detector-v2.md)` and start
+> Task 3.
 
 **Files:** nothing in the repository. Scratch only:
 - `$SP/s7pkg/`: a copy of upstream's code;
@@ -271,6 +280,9 @@ The owner decides whether to continue, return to the model team, or change the d
 ---
 
 ### Task 2: A USERDATA PDU's function code is read as 0x00 (spec 2.1, S2)
+
+> **R2: dropped.** v2 was trained on the Java features exactly as they are, and S2 would move
+> them away from its training data. Ledger it as skipped.
 
 **Files:**
 - Modify: `modules/application/src/main/java/io/netsecml/platform/application/usecase/S7commBuildFeaturesUseCase.java` (`build(...)`, plus a new static method)
@@ -459,6 +471,19 @@ git commit -m "fix(s7comm): read a USERDATA PDU's function code as 0x00, as trai
 ---
 
 ### Task 3: The frozen preprocessing, in the domain
+
+> **R2: no S1.**
+> - In `category(...)`, return `S7commCategories.decodeOperation(c)` as it is, without
+>   `.toUpperCase(Locale.ROOT)`, and remove `java.util.Locale` if it becomes unused.
+> - Replace the test `theOperationIsOneHotAfterUpperCasing` with
+>   `theOperationIsOneHotAsDecoded`:
+>   - the hand-built contract's operation categories become `FUNCTION_0x00`, `READ_VAR`,
+>     `SETUP_COMMUNICATION` and `WRITE_VAR` (v2's spelling);
+>   - code 0 sets column 17, because `decodeOperation(0)` is exactly `FUNCTION_0x00`;
+>   - a second contract spelling it `FUNCTION_0X00` leaves columns 17–20 all 0 for code 0,
+>     which pins that no upper-casing happens;
+>   - the loop over `0x29`, `UNSEEN_NAME` and `MISSING` stays.
+> - Drop the comments that mention S1.
 
 **Files:**
 - Create: `modules/domain/src/main/java/io/netsecml/platform/domain/model/S7commPreprocessing.java`
@@ -1603,6 +1628,66 @@ git commit -m "feat(s7comm): the detector bundle, score window and prediction ty
 
 ### Task 6: The scorer port and `ScoreS7commSequenceUseCase`
 
+> **R2: the warm-up is 64 events (amendment A1, item 5).**
+> - In `ScoreS7commSequenceUseCase`, add the constant and field, and turn the constructor into
+>   the two below:
+>   ```java
+>       // The first events after any reset that are never scored (spec amendment A1, item 5):
+>       // v2 was gated on events past the 64th, and events 16-64 after a reset carry ~12%
+>       // false alarms.
+>       public static final int WARMUP_EVENTS = 64;
+>       private final int warmupEvents;
+>
+>       public ScoreS7commSequenceUseCase(ReconstructionScorer scorer, Clock clock) {
+>           this(scorer, clock, WARMUP_EVENTS);
+>       }
+>
+>       // warmupEvents: events after a reset that are WARMUP; never shorter than the window.
+>       public ScoreS7commSequenceUseCase(ReconstructionScorer scorer, Clock clock, int warmupEvents) {
+>           // (the existing constructor body, unchanged, then:)
+>           if (warmupEvents < bundle.sequenceLength()) {
+>               throw new IllegalArgumentException("warmupEvents " + warmupEvents
+>                   + " is shorter than the window, " + bundle.sequenceLength());
+>           }
+>           this.warmupEvents = warmupEvents;
+>       }
+>   ```
+> - In `score(...)`, change the warm-up condition to
+>   `if (!window.isFull() || eventsSinceReset <= warmupEvents)`, with the comment "Fewer than a
+>   full window, or still inside the warm-up: WARMUP (spec amendment A1, item 5)." The window
+>   still receives every vector.
+> - In the test class, construct the field `useCase` as
+>   `new ScoreS7commSequenceUseCase(scorer, CLOCK, 16)`, so every existing 16-event test keeps
+>   its meaning. Then add two tests:
+>   ```java
+>       // Amendment A1: by default the first 64 events after a reset are WARMUP, the 65th is scored.
+>       @Test
+>       void theDefaultWarmUpIsSixtyFourEvents() {
+>           ScoreS7commSequenceUseCase byDefault = new ScoreS7commSequenceUseCase(scorer, CLOCK);
+>           S7commScoreWindow window = null;
+>           List<S7commDetectorPrediction> out = new ArrayList<>();
+>           for (int i = 0; i < 65; i++) {
+>               S7commScoringResult r = byDefault.score(vector(i, false, 4, 0), i == 0, "a", "b", window);
+>               window = r.window();
+>               out.add(r.prediction());
+>           }
+>           for (int i = 0; i < 64; i++) {
+>               assertEquals(DetectorVerdict.WARMUP, out.get(i).verdict(), "event " + i);
+>           }
+>           assertEquals(DetectorVerdict.NORMAL, out.get(64).verdict());
+>           assertEquals(65, out.get(64).eventsSinceReset());
+>           assertEquals(1, scorer.calls, "the detector runs only once the warm-up is over");
+>       }
+>
+>       @Test
+>       void aWarmUpShorterThanTheWindowIsRefused() {
+>           assertThrows(IllegalArgumentException.class, () -> new ScoreS7commSequenceUseCase(scorer, CLOCK, 15));
+>       }
+>   ```
+> - Add `assertThrows` to the static imports if it is missing. In the Interfaces block,
+>   `ScoreS7commSequenceUseCase` gains `(ReconstructionScorer, Clock, int warmupEvents)` and
+>   `WARMUP_EVENTS = 64`.
+
 **Files:**
 - Create: `modules/ports/src/main/java/io/netsecml/platform/port/out/ReconstructionScorer.java`
 - Create: `modules/ports/src/main/java/io/netsecml/platform/port/out/ReconstructionScorerFactory.java`
@@ -2078,6 +2163,44 @@ git commit -m "feat(s7comm): the reconstruction scorer port and the scoring use 
 
 ### Task 7: The bundle contract, the packaging script and the fixture bundle
 
+> **R2: package any release through its own manifest; the fixture is v2.**
+> - **Usage:** `package-s7comm-detector.sh <release-dir> <version> [out-root, default: models]`.
+>   `<release-dir>` is the directory holding `FROZEN_MANIFEST.json`. Replace the script's
+>   `delivery`/`release`/`artifacts`/`version` lines with:
+>   ```bash
+>   release="${1:?usage: package-s7comm-detector.sh <release-dir> <version> [out-root]}"
+>   version="${2:?usage: package-s7comm-detector.sh <release-dir> <version> [out-root]}"
+>   out_root="${3:-models}"
+>   name=s7comm-stage1-detector
+>   manifest="$release/FROZEN_MANIFEST.json"
+>   [ -f "$manifest" ] || die "missing $manifest"
+>   # The artifacts directory and the graph, as the release's own manifest lists them:
+>   # artifacts/v4_causal_final_model/ in the delivery, artifacts/model/ in v2.
+>   contract="$(jq -r '.files | keys[] | select(endswith("/preprocessor_contract.json"))' "$manifest")"
+>   [ "$(printf '%s\n' "$contract" | grep -c .)" -eq 1 ] || die "$manifest lists no single preprocessor_contract.json"
+>   artifacts="${contract%/preprocessor_contract.json}"
+>   graph="$(jq -r --arg a "$artifacts/" '.files | keys[] | select(startswith($a) and endswith(".onnx"))' "$manifest")"
+>   [ "$(printf '%s\n' "$graph" | grep -c .)" -eq 1 ] || die "$manifest lists no single ONNX graph under $artifacts"
+>   graph="${graph#"$artifacts"/}"
+>   ```
+>   Then use `"$graph"` wherever the script names `s7comm_lstm_autoencoder_debiased.onnx`, both in
+>   the `verify` loop and in the `cp`. Update the header comment to match.
+> - **The test's fake release uses v2's layout:** `artifacts/model/` holding
+>   `s7comm_lstm_autoencoder.onnx`, a `transformed_dimension` of 22, and a call of
+>   `bash "$s7script" "$tmp/s7/models/stage1_anomaly/r1" v2 "$tmp/s7out"`. Every path that
+>   mentions `v1` becomes `v2`, and the featureCount assertion expects 22. Add one check that a
+>   release in the delivered layout (`artifacts/v4_causal_final_model/`,
+>   `s7comm_lstm_autoencoder_debiased.onnx`) packages too, with its `model.onnx` equal to that
+>   graph.
+> - **The contract's descriptions** say "for example 16" and "for example 22" instead of fixing
+>   16 and 21, and the three SHA fields say "the release's file byte for byte".
+> - **Step 5** runs
+>   `bash deploy/models/package-s7comm-detector.sh models/S7v2/models/stage1_anomaly/v2_multisource_r1 v2 tests/fixtures/models`.
+>   Expected: `packaged tests/fixtures/models/s7comm-stage1-detector/v2`, with `modelSha`
+>   `59992382178b1f367e6f189e41f69ceaee0b96d69f228b8a3d631bc5c2571002`, `sequenceLength` 16,
+>   `featureCount` 22, `zeroWeightFeatures` `["s7_operation"]`, and `none ignored`. Commit
+>   `.../v2`, not `.../v1`.
+
 **Files:**
 - Create: `contracts/model/s7comm-detector-bundle-v1.json`
 - Create: `deploy/models/package-s7comm-detector.sh`
@@ -2266,6 +2389,15 @@ git commit -m "feat(s7comm): the detector bundle contract, packaging script and 
 ---
 
 ### Task 8: The bundle loader and the `.npz` reader
+
+> **R2:**
+> - `FIXTURE` is `.../s7comm-stage1-detector/v2`, and the loader test expects `featureCount` 22.
+> - The Python reference outputs (`RAW` → `PREPROCESSED`) are recomputed from v2's
+>   `preprocessor.joblib` with `training/.venv/bin/python`, and with **no** upper-casing.
+> - The three raw vectors keep their shapes, but their comments must describe v2's categories.
+>   Operation code 0 decodes to `FUNCTION_0x00`, which v2 never saw, so all its operation columns
+>   are 0. Code `0x44` is `FUNCTION_0x44`.
+> - Ledger the regeneration.
 
 **Files:**
 - Create: `modules/adapter-registry-filesystem/src/main/java/io/netsecml/platform/adapter/registry/NpzReader.java`
@@ -2950,6 +3082,12 @@ git commit -m "feat(s7comm): load and verify the detector bundle, calibration re
 
 ### Task 9: The ONNX reconstruction scorer
 
+> **R2:**
+> - The width is the fixture bundle's (22). Build test inputs as
+>   `new float[sequenceLength][bundle.featureCount()]`, not with a literal 21.
+> - Every Python reference reconstruction is recomputed from v2's
+>   `s7comm_lstm_autoencoder.onnx` with `training/.venv/bin/python`, and ledgered.
+
 **Files:**
 - Create: `modules/adapter-onnx/src/main/java/io/netsecml/platform/adapter/onnx/runtime/OnnxReconstructionScorer.java`
 - Test: `modules/adapter-onnx/src/test/java/io/netsecml/platform/adapter/onnx/runtime/OnnxReconstructionScorerTest.java`
@@ -3231,6 +3369,10 @@ git commit -m "feat(s7comm): the ONNX reconstruction scorer
 
 ---
 ### Task 10: The prediction stream contract and its serializer
+
+> **R2:** the contract's `verdict` description reads "WARMUP (the first 64 events since the
+> connection's last reset: a new connection, a TTL expiry, a restore or a restart), NORMAL,
+> ANOMALY, or UNSCORABLE".
 
 **Files:**
 - Create: `contracts/stream/s7comm-detector-prediction-v1.json`
@@ -3664,6 +3806,67 @@ git commit -m "feat(s7comm): the s7comm_detector_predictions table, row and mapp
 ---
 
 ### Task 12: The Flink side output and the scoring operator
+
+> **R2: the restart and its flag (amendment A1, item 4), and the 64-event warm-up in the
+> operator's tests.**
+> - **Domain.** In `QualityFlags`, add after `S7COMM_OUT_OF_ORDER`:
+>   ```java
+>       // S7comm: this vector's connection state was restarted before it, because the connection
+>       // reached S7commFeatureProcessFunction's restart count (scoring spec amendment A1, item 4):
+>       // s7_same_function_run_length is unbounded, and the detector flags a connection once
+>       // it runs long. Every windowed feature and run starts again from this event.
+>       public static final int S7COMM_RESTARTED = 32;
+>   ```
+>   Update `QualityFlagsTest` wherever it lists or counts the flags. Run the domain tests
+>   (`./mvnw test -pl modules/domain -am`) and read their count.
+> - **The operator.** In `S7commFeatureProcessFunction`:
+>   - add `public static final long RESTART_EVENTS = 16_384L;` and a field
+>     `private final long restartEvents;`;
+>   - the existing constructors pass `RESTART_EVENTS` to a new
+>     `S7commFeatureProcessFunction(Duration stateTtl, long restartEvents)`, which requires
+>     `restartEvents >= 1`;
+>   - in `open()`, register a second state with the same `ttl` config:
+>     ```java
+>         // "s7comm-events-since-restart" (amendment A1, item 4): its own state, so the
+>         // deployed s7comm-connection-state keeps its layout and restores unchanged.
+>         ValueStateDescriptor<Long> counter = new ValueStateDescriptor<>("s7comm-events-since-restart", Types.LONG);
+>         counter.enableTimeToLive(ttl);
+>         eventsSinceRestart = getRuntimeContext().getState(counter);
+>     ```
+>   - in `processElement`, replace the plan's `freshState` lines with:
+>     ```java
+>         S7commConnectionState state = connectionState.value();
+>         Long counted = eventsSinceRestart.value();
+>         // A connection that has run restartEvents events starts again from empty state: its
+>         // run lengths are unbounded, and the detector flags a connection that runs too long
+>         // (amendment A1, item 4). A key restored without a counter counts from here.
+>         boolean restart = state != null && counted != null && counted >= restartEvents;
+>         // Empty state -- a new connection, a TTL expiry, a restore without state, or a
+>         // restart -- is where the scorer's window must start again (spec section 5).
+>         boolean freshState = state == null || restart;
+>         if (freshState) {
+>             state = S7commConnectionState.empty();
+>         }
+>     ```
+>   - after `connectionState.update(...)`, write
+>     `eventsSinceRestart.update(freshState || counted == null ? 1L : counted + 1);`;
+>   - use
+>     `FeatureVector vector = restart ? withFlag(result.vector(), QualityFlags.S7COMM_RESTARTED) : result.vector();`
+>     for both `out.collect` and the side output. `withFlag` is a private static helper that
+>     rebuilds the record with `qualityFlags() | flag`, every other component as it is.
+> - **Operator tests** (append to `S7commFeatureProcessFunctionTest`, using the class's harness
+>   helpers):
+>   - `aConnectionRestartsAfterItsRestartCount`: with `new S7commFeatureProcessFunction(DEFAULT_STATE_TTL, 3)`,
+>     events 1–3 have no restart flag. Event 4 carries `S7COMM_RESTARTED` and reaches the side
+>     output with `freshState` true. Its `s7_same_function_run_length` is back to 1 for a request.
+>     Event 5 is not flagged.
+>   - `aKeyRestoredWithoutACounterCountsFromItsNextEvent`: a snapshot taken by a harness whose
+>     counter is cleared (or a harness built before the counter existed) must not restart
+>     early. Simplest form: the second event after a restore into
+>     `new S7commFeatureProcessFunction(DEFAULT_STATE_TTL, 2)` is not flagged.
+> - **Scoring-operator tests:** the operator builds the use case with the default 64-event
+>   warm-up. Every test that feeds 16 events and reads index 15 as the first scored event feeds
+>   65 and reads index 64. Every "15 earlier rows" becomes "64 earlier rows".
 
 **Files:**
 - Create: `modules/adapter-flink/src/main/java/io/netsecml/platform/adapter/flink/process/KeyedS7commVector.java`
@@ -4612,6 +4815,22 @@ git commit -m "feat(s7comm): the archive job's tenth chain, S7comm predictions
 ---
 ### Task 15: The scoring oracle
 
+> **R2: the oracle comes from v2.**
+> - **Features:** still upstream's own builder, the independent reference, with **no S2**.
+> - **Scoring files:** the preprocessor, graph, calibration and policy are v2's, read from
+>   `models/S7v2/models/stage1_anomaly/v2_multisource_r1/artifacts/model/`
+>   (`preprocessor.joblib`, `s7comm_lstm_autoencoder.onnx`,
+>   `causal_online_conformal_calibration_scores.npz`, `causal_online_shadow_policy.json`), with
+>   **no S1**. Pin their SHA-256s from v2's `FROZEN_MANIFEST.json`.
+> - **The decision:** upstream's `operation_groups` and `conformal_pvalues`, as before.
+> - **Warm-up:** a line is `WARMUP` while its connection's events since reset are 64 or fewer.
+>   The generated traffic must include connections longer than 64 events, so that each group
+>   that can be scored is.
+> - **How to run it:** `PYTHONPATH=training/src training/.venv/bin/python tests/fixtures/s7comm/generate_detector_oracle.py`
+>   (the venv holds scikit-learn 1.9.1, onnxruntime, pandas, and `netsec_ml` for the joblib).
+> - **The planted-bug check:** deleting `.toUpperCase` no longer applies. Plant instead a
+>   weight-0 column scored with weight 1, which must fail the oracle test.
+
 **Files:**
 - Create: `tests/fixtures/s7comm/generate_detector_oracle.py`
 - Create (generated): `tests/fixtures/s7comm/detector_oracle_v1.jsonl`
@@ -5118,6 +5337,10 @@ git commit -m "test(s7comm): the upstream-generated scoring oracle
 
 ### Task 16: Deploy: topic, pin, preflight, supervisor and selftest
 
+> **R2:** the deploy default for `S7COMM_DETECTOR_BUNDLE` is `s7comm-stage1-detector/v2` (the
+> `.env` template, compose, preflight, and the topology test that sets it). The selftest's S7
+> pair still gets two `WARMUP` predictions.
+
 **Files:**
 - Modify: `deploy/kafka/topics.conf`, `deploy/.env.template`, `.env.example`, `deploy/docker-compose.yml`
 - Modify: `deploy/lib/stack.sh` (`detector_bundle_setting`, `check_detector_bundle`, and a new `check_one_bundle`)
@@ -5428,6 +5651,12 @@ git commit -m "feat(deploy): the S7comm prediction topic, detector pin, prefligh
 
 ### Task 17: The real-traffic check through the Java production path (before merge)
 
+> **R2:**
+> - The bundle is v2.
+> - The expectation is Plan A's: each server3 benign capture ≥ 99% NORMAL past the 64th event,
+>   agreeing with the model card to within a few events.
+> - There are no `[S1+S2]` columns.
+
 **Files:** nothing in the repository. Scratch only: `$SP/S7ScoreCapture.java`, `$SP/s7java/` and `$SP/s7check/java-check.txt`.
 
 **Interfaces:**
@@ -5561,6 +5790,16 @@ If any benign capture's `past 64th` figure is below 99% NORMAL: **STOP** before 
 
 ### Task 18: Documentation and full verification
 
+> **R2:**
+> - Record in the docs:
+>   - v2;
+>   - the restart (16,384 events, `S7COMM_RESTARTED`, the `s7comm-events-since-restart` state);
+>   - the 64-event warm-up;
+>   - the exporter-versus-online difference (the exporter does not restart);
+>   - that S1/S2 were dropped.
+> - The model card's long-connection limit becomes "handled by the restart", with the
+>   measurement.
+
 **Files:**
 - Modify: `CLAUDE.md`, `deploy/README.md`, `docs/clickhouse.md`
 
@@ -5640,6 +5879,15 @@ Expected: `exit=0`, `BUILD SUCCESS`; every module `failures=0 errors=0 skipped=0
 ---
 
 ### Task 19: Roll out to server3 and verify live (only after the owner approves the merge)
+
+> **R2:**
+> - The live connection has **96** events. Expect 96 rows: the first 64 `WARMUP` with a null
+>   score, then 32 scored rows whose verdicts equal Python's and whose scores match Python within
+>   1e-4 relative.
+> - The bundle is packaged from v2's release on the workstation:
+>   `package-s7comm-detector.sh <release-dir> v2`.
+> - The rollout needs the code on server3's branch, `feat/deploy-mvp`. Pushing it also updates
+>   PR #5, so ask the owner first.
 
 **Files:** none in the repository beyond CLAUDE.md's live paragraph.
 

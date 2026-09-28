@@ -1,5 +1,51 @@
 # S7comm Stage 1 Scoring — Design
 
+> **Amendment A1 (2026-09-28, the owner's approved design; it overrides the sections below where
+> they differ).** The pre-check (section 11) stopped this unit on the delivered model. It resumes
+> with our own detector v2 (`docs/models/s7comm-stage1-detector-v2.md`), and with a fix for v2's
+> long-connection limit.
+>
+> 1. **The model is v2.** It is release `v2_multisource_r1`, packaged as the bundle
+>    `s7comm-stage1-detector/v2`, which is the deploy default and the committed test fixture.
+>    - Its one-hot width is 22, and every consumer reads the width from the bundle.
+>    - The packaging script takes a release directory and a version. It finds the artifacts and
+>      the ONNX graph through the release's own `FROZEN_MANIFEST.json`, so both the delivered and
+>      the v2 layouts package.
+> 2. **S1 and S2 are dropped (section 2.1).** v2 was trained on `S7commFeatureExport`'s rows,
+>    which are exactly what the online job computes. So the operation is one-hot encoded exactly as
+>    `S7commCategories` decodes it, with no upper-casing. A USERDATA PDU keeps its own function
+>    code.
+> 3. **The pre-check (plan Task 1) is satisfied.** Plan A measured v2 on the same server3
+>    captures, and on four more normal sources: 99.46–100% NORMAL past the 64th event.
+> 4. **The connection state restarts every 16,384 events.** `s7_same_function_run_length` has no
+>    upper bound. v2 flags every event once it passes about 73,000 (about 20 h at one request per
+>    second).
+>    - `S7commFeatureProcessFunction` keeps its own per-connection counter, in a separate state
+>      `s7comm-events-since-restart` (a `Long`, under the same idle TTL), so the deployed
+>      `s7comm-connection-state` keeps its layout and restores.
+>    - When a connection with state reaches 16,384 events, its next event starts from empty
+>      state. That event carries the new quality flag `S7COMM_RESTARTED` (bit 5, value 32), and
+>      it reaches the scorer with `freshState` true, so the scorer resets as for any reset
+>      (section 5, D4).
+>    - A key restored without a counter (after the upgrade) counts from its first event after
+>      the upgrade.
+>    - Measured on v2 (the model card's "Measured after release"): with restarts every 16,384
+>      events, every gated source stays at 99.46–100% NORMAL past each segment's 64th event, and
+>      0.4% of events fall in a segment's first 64.
+>    - `S7commFeatureExport` does not restart: it builds training data. The difference is
+>      recorded as a limit.
+> 5. **The warm-up is 64 events, not 16 (D3 is amended).** The first 64 events after any reset
+>    are `WARMUP`: a new connection, a TTL expiry, a restore, or a restart. The window still
+>    holds 16 vectors and fills during the warm-up. The 65th event is the first one scored.
+>    v2 was gated on exactly these events (past the 64th). Scoring from the 16th would add about
+>    12% false alarms over events 16–64 after every reset, which is roughly 6 per restart.
+>    `eventsSinceReset` stays on every prediction.
+> 6. **The oracle, the fixture numbers and the live-check expectations come from v2.**
+>    - The oracle runs upstream's builder for the features, v2's fitted preprocessor, graph,
+>      calibration and policy, and the 64-event warm-up.
+>    - The live check sends a 96-event connection and expects 64 `WARMUP` rows, then 32 scored
+>      rows that match Python.
+
 **Status:** agreed in conversation 2026-09-28, section by section; written here for review.
 **Branch:** `feat/s7comm-scoring`, cut from `feat/deploy-mvp` at `1cbbc04`.
 **Scope in one line:** first make two S7comm inputs match the detector's training data (section

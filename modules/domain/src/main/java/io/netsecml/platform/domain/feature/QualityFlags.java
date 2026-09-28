@@ -82,6 +82,13 @@ public final class QualityFlags {
     // observable. Bit 4, the next free bit.
     public static final int S7COMM_OUT_OF_ORDER = 16;
 
+    // S7comm: this vector's connection state was restarted before it, because the
+    // connection reached S7commFeatureProcessFunction's restart count (scoring spec
+    // amendment A1, item 4): s7_same_function_run_length is unbounded, and the
+    // detector flags a connection once it runs long. Every windowed feature and
+    // run starts again from this event. Bit 5, the next free bit.
+    public static final int S7COMM_RESTARTED = 32;
+
     // Non-instantiable: every member is a constant.
     private QualityFlags() {
     }

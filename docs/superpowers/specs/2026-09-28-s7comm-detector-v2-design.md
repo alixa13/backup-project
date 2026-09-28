@@ -21,7 +21,7 @@ several polling styles and must prove itself on normal traffic it never trained 
 
 ## 2. What is in scope, and what is not
 
-In scope: the data (downloads and a traffic lab on server3), a feature exporter that runs the
+In scope: the data (public and server3 captures, downloaded to server3), a feature exporter that runs the
 platform's own Java feature code, a training pipeline, evaluation against acceptance gates, a
 comparison with existing detectors, the release in the delivered bundle format, a model card, and
 one command that repeats all of it on new traffic (a real site's).
@@ -53,39 +53,30 @@ drops both (section 9).
 
 ## 4. Data
 
-Everything lives on server3 under `/root/s7data` (never in Git): downloads, captures, Zeek logs,
-feature exports, trained candidates.
+Revised 2026-09-28, after scoring the delivered model on real public captures: several
+independent real sources of normal S7 polling exist, so the synthetic traffic lab of the first
+draft is dropped. Attack detection is measured on QUT's published, labelled attacks.
 
-| Source | Kind | Size | Use |
-|---|---|---|---|
-| QUT `20161219132813_control_set` (`master.pcap`) | normal, 1 connection, pipelined HMI, 2 PDU refs | 238,172 events | train/val/test |
-| QUT `20161215163606_s7_process_attacks` (`master.pcap`), HMI connection `10.10.10.20` | normal, same style, during attacks | 258,790 events | test only (normal) |
-| QUT attack run, attacker `10.10.10.66` + `master.csv` frame labels | attacks: process commands and floods | 1,331,702 events, 15 connections | test only (attacks) |
-| server3 benign captures `s7`, `s701`, `s702`, `S7COMM` (another project's, read-only; copied under `/root/s7data`) | normal, strictly alternating poller, new PDU ref per request | 11,960 events | train/val/test |
-| Traffic lab (below) | normal: 6 profiles; attacks: 7 kinds | hours per profile | train/val/test; attacks test only |
+Everything lives on server3 under `/root/s7data/v2` (never in Git): downloads, Zeek logs, feature
+exports, runs. Every file is pinned by SHA-256 (git sources also by commit) in
+`training/s7comm/sources.sha256`.
 
-The Mendeley medical-waste dataset (`vpcr4wpgfd`) was examined and excluded: it is S7comm-plus
-(protocol id 0x72) with frames shorter than their TPKT length, and our Zeek writes no s7comm
-records for it.
+| Logical source | Captures | Client(s) | What it is | Events | Role |
+|---|---|---|---|---|---|
+| `qut-control` | QUT `20161219132813_control_set/master.pcap` | 10.10.10.20 | the delivered model's training connection: pipelined HMI, 2 PDU refs | 238,172 | normal: train/val/test |
+| `4sics-hmi` | 4SICS Geek Lounge 151020, 151021, 151022 (Netresec) | 10.10.10.20 | a real lab HMI polling a real S7 PLC for ~25 h, one request at a time | 178,362 | normal: train/val/test |
+| `server3-benign` | `s7`, `s701`, `s702`, `S7COMM` (another project's, read-only copies) | 192.168.10.100 | a lab poller, one request at a time, new PDU ref per request | 11,960 | normal: train/val/test |
+| `libnodave-bench` | ITI `s7comm_varservice_libnodavedemo_bench.pcap` | 192.168.1.10 | libnodave benchmark against a real S7-300: fast reads and writes | 10,006 | normal: train/val/test |
+| `qut-attack-hmi` | QUT `20161215163606_s7_process_attacks/master.pcap` | 10.10.10.20 | the same HMI during the attack run | 258,790 | normal: test only |
+| `s7comm-clean` | ITI `S7Comm/s7comm_clean.pcap` | 192.168.0.21 | a read poller never seen in training | 387 | unseen client: test only |
+| `cyclic-1s` | automayt `2-S7comm-VarService-CyclicData-1s.pcap` (LFS) | 192.168.1.20 | 1 s cyclic reads with user-data, never seen in training | 200 | unseen client: test only |
+| `qut-attack` | QUT attack run + `master.csv` frame labels | 10.10.10.66 | process-command and flooding attacks | ~1.33 M | attack: test only |
+| `engineering` | ITI STEP7/Snap7 sessions: diagnostics, variable tables, PLC status, block list, block download, PLC time, Snap7 "everything" | various | legitimate but rare engineering operations | ~1,100 | report only |
+| `4sics-other` | the three 4SICS captures | 10.10.10.30, 192.168.1.10, 192.168.2.42 | operator writes and conference attendees' short sessions | ~250 | report only |
 
-**The traffic lab** is a Docker Compose project of its own (`s7lab`) on an internal network on
-server3 — no internet, no link to the deployed stack or to other projects' containers:
-
-- a simulated PLC: a Snap7 server (python-snap7), classic S7comm on port 102, with data blocks
-  that change over time;
-- normal clients, one IP each, running for hours with jittered timing:
-  N1 strictly alternating poller, new PDU reference each request (python-snap7 client);
-  N2 pipelined poller, two requests in flight on two alternating PDU references (our own minimal
-  raw S7 client, since python-snap7 is synchronous);
-  N3 slow multi-item reads (0.5-2 s);
-  N4 reads with periodic setpoint writes;
-  N5 occasional engineering sessions (SZL/status reads, clock read, block list and info, upload);
-  N6 PDU-reference habits across the above: constant, +1, +256, random;
-- attack clients, each from its own IP, run in scheduled episodes: A1 unauthorized write bursts,
-  A2 PLC stop/start requests, A3 block download attempts, A4 read flood, A5 write flood, A6 SZL
-  enumeration scan, A7 malformed requests (fuzzed parameter lengths and function codes);
-- capture: `tcpdump` on the lab network's bridge, rotated per hour; an episode log records every
-  client's IP, profile and start/end time, which labels every record exactly.
+Excluded, with the reason recorded: the Mendeley medical-waste dataset (S7comm-plus, damaged
+frames); the S7-1200/1500 HMI captures (S7comm-plus, which the platform does not parse); the
+WinCC captures (ICSNPP logs only their first two PDUs, a sensor limitation noted in section 10).
 
 ## 5. Features from the platform's own code
 
@@ -106,8 +97,9 @@ In `training/src/netsec_ml/s7comm/` (the currently empty training project), run 
 CLAUDE.md's "no deep-learning frameworks" invariant becomes "none on the serving path; CPU-only
 PyTorch in `training/` only" (the online job keeps only ONNX Runtime).
 
-- **Split:** per source (per connection for the lab), chronological 70/15/15 train/validation/test
-  with a 64-event gap between parts (the delivered recipe). The QUT attack run is test only.
+- **Split:** per normal logical source, chronological 70/15/15 train/validation/test by timestamp,
+  with a gap of min(64, 1% of the source) events between parts (the delivered recipe's gap, shrunk
+  for small sources). Test-only, attack and report sources are never trained or calibrated on.
 - **Preprocessing:** fitted on the pooled training part only.
 - **Sequences:** length 16 per connection, stride 8 for training, stride 1 for scoring; weighted so
   every source contributes equally per epoch, and write endpoints are up-weighted to 10% of
@@ -126,9 +118,9 @@ PyTorch in `training/` only" (the online job keeps only ONNX Runtime).
 - **Candidates:** chosen on validation data and leave-one-source-out runs on the training sources
   only; the test parts are scored once, by the final model.
 
-One script, `training/s7comm/run-pipeline.sh`, takes folders of normal and attack captures (plus
-the lab episode log or QUT labels) and runs Zeek (the deployed image), the exporter, training,
-evaluation, the comparison and the release — so a real site's traffic, once the sensor sees it,
+One script, `training/s7comm/run-pipeline.sh`, takes the source list (captures, clients, roles)
+and runs Zeek (the deployed image), the exporter, training, evaluation, the comparison and the
+release — so a real site's traffic, once the sensor sees it,
 is one run away from a site model.
 
 ## 7. Acceptance
@@ -139,12 +131,11 @@ Gates (all must hold on the final model's test data):
   64th event.
 - **G2** — QUT attack run: ≥ 99% of flooding-attack events flagged, and every command-attack
   episode detected (at least one ANOMALY among its scored events).
-- **G3** — every lab attack episode whose connection reaches 16 events is detected. An attack
-  connection shorter than the 16-event warm-up cannot be scored; it is reported as a limit.
-- **G4** — ONNX and PyTorch reconstructions agree within 1e-4.
+- **G3** — ONNX and PyTorch reconstructions agree within 1e-4.
 
-Reported, not gated: leave-one-source-out NORMAL rate (a polling style the model never saw — the
-honest generalisation number); the 16th-64th-event false-alarm rate; per-group results; inference
+Reported, not gated: the unseen clients' NORMAL rate (`s7comm-clean`, `cyclic-1s`) and the
+leave-one-source-out NORMAL rate — a polling style the model never saw, the honest
+generalisation numbers; the engineering and 4SICS-other sessions' results; the 16th-64th-event false-alarm rate; per-group results; inference
 cost per window; event-level recall per attack kind.
 
 If a gate fails, the causes go to the owner before anything is released; candidates are never
@@ -193,10 +184,11 @@ and limits.
 
 ## 10. Limits stated up front
 
-- v2 is general only across the polling styles its data contains (two real, six lab profiles).
+- v2 is general only across the polling styles its data contains (four real training sources).
   Trust at a real site comes from re-running the pipeline on that site's own traffic.
-- Lab traffic is synthetic; its normal profiles widen the model, they do not replace real traffic.
-- The QUT attacks and the lab attacks are the only S7-level attack evidence; the server3 attack
-  captures are TCP/ICMP-level and not usable for S7 detection.
+- The QUT attacks are the only S7-level attack evidence; the server3 attack captures are
+  TCP/ICMP-level and not usable for S7 detection.
+- ICSNPP (icsnpp-s7comm 7ebeb03) logs only the first two PDUs of the public WinCC captures, so the
+  sensor misses that HMI traffic entirely; recorded as a sensor finding, outside this unit.
 - Attack connections shorter than the 16-event warm-up are never scored (a property of the
   contract, shared with v1).

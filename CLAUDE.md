@@ -52,7 +52,7 @@ here. `deploy/README.md` is the operator guide.
 
 ## Architecture
 
-**Data flow:** External Kafka (`conn`, `dns`, `netsec.modbus.raw.v1` and `netsec.s7comm.raw.v1` topics) → Online Flink job (parse → validate → bounded keyed state → per-schema feature vector — conn's own 20 values, dns's 24 (the common tier, whose conn-derived fields come from a non-blocking left join against conn.log snapshots, plus dns's own protocol tier), modbus's 42 (exactly the externally frozen upstream contract, keyed per `(sensor, client, server, unit)`), s7comm's 16 (exactly the externally frozen upstream contract, keyed per `(sensor, uid)`)) → internal Kafka topics (separate feature-vector and DLQ topics per protocol: `netsec.<protocol>.feature-vector.v1` and `netsec.<protocol>.dlq.v1` for `conn`, `dns`, `modbus` and `s7comm`) → Archive Flink job → ClickHouse. Modbus is also scored: `modbus-features` hands every vector, with its stream key, to a side output → `modbus-score` (the model team's Modbus Stage 1 dual-head detector in ONNX Runtime, one prediction per Modbus event) → `netsec.modbus.prediction.v1` → the archive job's ninth chain → ClickHouse `modbus_detector_predictions`. ONNX inference is wired for Modbus Stage 1 only (see Implementation state).
+**Data flow:** External Kafka (`conn`, `dns`, `netsec.modbus.raw.v1` and `netsec.s7comm.raw.v1` topics) → Online Flink job (parse → validate → bounded keyed state → per-schema feature vector — conn's own 20 values, dns's 24 (the common tier, whose conn-derived fields come from a non-blocking left join against conn.log snapshots, plus dns's own protocol tier), modbus's 42 (exactly the externally frozen upstream contract, keyed per `(sensor, client, server, unit)`), s7comm's 16 (exactly the externally frozen upstream contract, keyed per `(sensor, uid)`)) → internal Kafka topics (separate feature-vector and DLQ topics per protocol: `netsec.<protocol>.feature-vector.v1` and `netsec.<protocol>.dlq.v1` for `conn`, `dns`, `modbus` and `s7comm`) → Archive Flink job → ClickHouse. Modbus is also scored: `modbus-features` hands every vector, with its stream key, to a side output → `modbus-score` (the model team's Modbus Stage 1 dual-head detector in ONNX Runtime, one prediction per Modbus event) → `netsec.modbus.prediction.v1` → the archive job's ninth chain → ClickHouse `modbus_detector_predictions`. S7comm is scored the same way: `s7comm-features` hands every vector, with its connection key, whether the connection started from empty state, and its endpoints, to `s7comm-score` (our own S7comm Stage 1 detector v2, an LSTM autoencoder in ONNX Runtime with a group-conditional conformal decision) → `netsec.s7comm.prediction.v1` → the archive job's tenth chain → ClickHouse `s7comm_detector_predictions`. ONNX inference is wired for the Modbus and S7comm Stage 1 detectors only (see Implementation state).
 
 **Hexagonal, one-way dependency chain:**
 ```
@@ -139,7 +139,11 @@ domain → ports → application → adapters → bootstrap
 - The Modbus feature state is `modbus-entity-state-v2` (renamed from `modbus-entity-state` when
   its layout changed for the scoring inputs; see "Modbus limits and decisions"), and the scorer's
   is `modbus-score-window`: each stream's last 20 preprocessed vectors, keyed like
-  `modbus-features` and expiring under the same idle TTL (`MODBUS_STATE_TTL_MINUTES`). A state
+  `modbus-features` and expiring under the same idle TTL (`MODBUS_STATE_TTL_MINUTES`). S7comm's
+  scorer state is `s7comm-score-window`: each connection's last 16 preprocessed vectors and its
+  event count since the last reset, keyed like `s7comm-features` and expiring under
+  `S7COMM_STATE_TTL_MINUTES`. `s7comm-features` also keeps `s7comm-events-since-restart`, a
+  per-connection counter under the same TTL, beside the unchanged `s7comm-connection-state`. A state
   name is checkpoint identity, like a uid: renaming one starts every key fresh.
 - `NetworkEvent` is a **sealed interface** over a shared `EventEnvelope`, with one record per log
   type. `permits` lists only log types that have a parser, mapper and feature schema — adding a
@@ -312,6 +316,32 @@ plan: `docs/superpowers/plans/2026-09-28-s7comm-detector-v2-plan-a.md`; model ca
   four benign captures and the libnodave bench. S7comm scoring itself is still not
   implemented: its plan resumes against v2 per the plan's revision note
 
+The S7comm scoring unit (`feat/s7comm-scoring`) scores S7comm with our detector v2.
+Spec: `docs/superpowers/specs/2026-09-28-s7comm-stage1-scoring-design.md` (with amendment A1);
+plan: `docs/superpowers/plans/2026-09-28-s7comm-stage1-scoring.md` (with revision R2).
+Deliverables:
+
+- `S7commPreprocessing` (the categories exactly as `S7commCategories` decodes them),
+  `S7commConformalPolicy`, the bundle, window and prediction types, the `ReconstructionScorer`
+  port and `ScoreS7commSequenceUseCase`, with a 64-event warm-up
+- `contracts/model/s7comm-detector-bundle-v1.json`; `deploy/models/package-s7comm-detector.sh
+  <release-dir> <version>`, which finds a release's files through its own `FROZEN_MANIFEST.json`;
+  `S7commDetectorBundleLoader` (reading the release's `.npz` directly) and
+  `OnnxReconstructionScorer`; the fixture bundle `tests/fixtures/models/s7comm-stage1-detector/v2/`
+- `contracts/stream/s7comm-detector-prediction-v1.json` and DDL `004`
+- `s7comm-score` and `s7comm-prediction-sink` (disabled when the pin is empty) and the archive
+  job's tenth chain (`connDnsModbusS7commAndBothPredictionChains`)
+- the connection restart: `s7comm-features` starts a connection's state again every 16,384
+  events (`RESTART_EVENTS`, its own `s7comm-events-since-restart` state), and the restarted event
+  carries the quality flag `S7COMM_RESTARTED` (32)
+- deployment: the topic, the pin `S7COMM_DETECTOR_BUNDLE` (default `s7comm-stage1-detector/v2`),
+  and the preflight and selftest for both pins
+- the scoring oracle `tests/fixtures/s7comm/detector_oracle_v1.jsonl`: 1,200 events, upstream's
+  own feature builder and v2's released files in Python (`generate_detector_oracle.py`)
+
+The spec's S1 and S2 input fixes were dropped: v2 was trained on exactly what the online job
+computes.
+
 The pipeline is now: external `conn`, `dns`, `netsec.modbus.raw.v1` and
 `netsec.s7comm.raw.v1` topics →
 parse/validate → bounded keyed state → per-schema `FeatureVector` (conn: 20
@@ -319,14 +349,15 @@ values, on `netsec.conn.feature-vector.v1` / `netsec.conn.dlq.v1`; dns: 24
 values, on `netsec.dns.feature-vector.v1` / `netsec.dns.dlq.v1`; modbus: 42
 values, on `netsec.modbus.feature-vector.v1` / `netsec.modbus.dlq.v1`; s7comm:
 16 values, on `netsec.s7comm.feature-vector.v1` / `netsec.s7comm.dlq.v1`), and
-for modbus one `modbus-detector-prediction-v1` message per event on
-`netsec.modbus.prediction.v1` →
-archive job (nine Kafka-to-ClickHouse chains: one feature-vector and one DLQ
-chain per protocol, plus Modbus predictions, built by
-`ArchiveJob.connDnsModbusS7commAndModbusPredictionChains(...)`; the eight-, six-
-and four-chain methods are still public and still tested, but `main()` no longer
-calls them) → ClickHouse `feature_vectors` and `invalid_events`, both holding
-rows for all four log types, and `modbus_detector_predictions`.
+for modbus and s7comm one detector prediction per event on
+`netsec.modbus.prediction.v1` and `netsec.s7comm.prediction.v1` →
+archive job (ten Kafka-to-ClickHouse chains: one feature-vector and one DLQ
+chain per protocol, plus Modbus and S7comm predictions, built by
+`ArchiveJob.connDnsModbusS7commAndBothPredictionChains(...)`; the nine-, eight-,
+six- and four-chain methods are still public and still tested, but `main()` no
+longer calls them) → ClickHouse `feature_vectors` and `invalid_events`, both
+holding rows for all four log types, `modbus_detector_predictions` and
+`s7comm_detector_predictions`.
 
 **`main` cannot currently run the online job at all.** Three serialization defects
 (`SensorId` and both Kafka serializers not `Serializable`; two
@@ -348,6 +379,32 @@ Testcontainers test SKIPPED and read as neutral. When Docker became available th
 skips were hiding real defects — including a deduplication query that was
 syntactically invalid and could never have executed. **Do not read a skipped
 container test as a passing one.**
+
+Verified fresh for the S7comm scoring unit at `a520798` (the commit this documentation
+follows), 2026-09-28. One reactor run with every Testcontainers class excluded by name
+(`ArchiveJobE2ETest`, `ClickHouseOutageTest`, `ClientV2InserterTest`, `DdlMigrationTest`,
+`FeatureVectorDeduplicationTest`, `OnlineFeatureJobE2ETest`, `ClickHouseTestSupport`) -- compiled,
+not run -- with `target/surefire-reports/` cleared first; BUILD SUCCESS, and every module
+0 failures, 0 errors, 0 skipped:
+
+| Suite | Result |
+|---|---|
+| `domain` | 254/254 (`QualityFlagsTest` pins `S7COMM_RESTARTED` = 32; `S7commPreprocessingTest` 10, the categories as decoded) |
+| `ports` | no tests exist |
+| `application` | 114/114 (`ScoreS7commSequenceUseCaseTest` 12, the 64-event warm-up among them) |
+| `adapter-kafka` | 163/163 |
+| `adapter-flink` | 82/82 (`S7commFeatureProcessFunctionTest` 11 -- the restart, its flag, and a key restored from a pre-restart snapshot; `S7commScoringProcessFunctionTest` 6; `S7commUpstreamOracleTest` 2) |
+| `adapter-onnx` | 21/21 (`OnnxReconstructionScorerTest` 5: v2's reconstructions equal Python ONNX Runtime's to 1e-5) |
+| `adapter-clickhouse` (container classes excluded) | 40/40 |
+| `adapter-registry-filesystem` | 34/34 (`S7commDetectorBundleLoaderTest` 10: v2's preprocessing equals scikit-learn's to 1e-6) |
+| `bootstrap-online-job` (container classes excluded) | 35/35 (`S7commDetectorOracleTest` 1 -- the S7 scoring proof: all 1,200 events of the oracle through the real parser, mapper, features, preprocessing, Java ONNX scorer and warm-up, features bit for bit and scores within 1e-4 relative of Python's, while a planted weight bug fails it at the first scored event; `OnlineFeatureJobTopologyTest` 12; `S7commDetectorScorerFactoryTest` 2; `S7commFeatureExportTest` 7) |
+| `bootstrap-archive-job` (container classes excluded) | 14/14 (`ArchiveJobTopologyTest` 12: ten chains) |
+| `deploy/tests/run-all.sh` | every check passed, shellcheck clean (`test_stack.sh` 40, `test_models.sh` 44, `test_selftest.sh` 17, `test_submit_jobs.sh` 37, `test_compose.sh` 38 among them) |
+| `training/tests/unit/s7comm` | 49 passed |
+
+The container tables below predate this unit and were not re-run for it; neither E2E class
+exercises S7 scoring. This unit's end-to-end evidence is the Java real-traffic check (S7comm
+limits, below) and, once rolled out, the live server3 check.
 
 Verified fresh for the S7comm detector v2 unit on 2026-09-28 (Plan A; no containers
 on the development machine, nothing deployed):
@@ -508,7 +565,11 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   taking its TTL) and `ArchiveJob.connDnsModbusAndS7commChains(8 topics)`. A fifth
   protocol is another overload and another chains method (unlike
   `ArchiveJob.build(List<LogTypeChain<?>>)`, which is already genuinely N). The
-  enrichment carrier is per-record-type too (`DnsEvent.withEnrichment`).
+  enrichment carrier is per-record-type too (`DnsEvent.withEnrichment`). The two
+  scoring units are parallel code (spec D2): `S7commScoreWindow` beside
+  `ModbusScoreWindow`, `S7commScoringProcessFunction` beside
+  `ModbusScoringProcessFunction`, two bundle loaders. A third detector is the point to
+  generalise.
 - `RollingCounters.record(...)` resets a bucket slot whenever its stored
   minute merely differs from the incoming one, not only when the incoming one
   is newer — an out-of-order arrival for an older minute erases a newer
@@ -821,23 +882,38 @@ container startup (two Flink mini-clusters plus two containers do not fit in
 - **`S7commConnectionState` is Kryo (`GenericTypeInfo`)**, like the modbus state;
   its layout is free to change only until the first savepoint. Its `BitSet` is
   serialized by Kryo 5.6.2's built-in `BitSetSerializer`.
-- **No conn.log context and no scoring.** A later model wanting conn context needs
-  a `-v2` schema; scoring (and Stage 1's 16-event sequence assembly) is a later
-  unit, which decodes the two codes with `S7commCategories`.
+- **No conn.log context.** A later model wanting conn context needs a `-v2` schema.
 - **S7 scoring targets our own detector v2, not the delivered model (2026-09-28).**
   Its false-alarm evidence is G1 on four real sources, plus one unseen client at
   100%. A push-style cyclic-data client (`cyclic-1s`) scores 0.74%: v2 is general
   only across the polling styles it was trained on. Its attack detection is not
   measured yet (Plan B). See `docs/models/s7comm-stage1-detector-v2.md`.
-- **v2 flags long-lived connections in full: not fit for live scoring until the owner
-  rules.** `s7_same_function_run_length` is unbounded: it counts one uninterrupted
-  same-function run since the connection began.
-  - Every event of a read-only connection is flagged once that value passes about 73,000.
-    The training maximum is 52,529. That is about 20 h of one uninterrupted connection
-    polling once a second (4SICS), or about 5 h at server3's rate. It was measured on the
-    frozen release at the final review.
-  - The remedy is a new feature schema (a windowed or capped run length) or retraining.
-    Decide it before S7 scoring goes live.
+- **Long connections restart every 16,384 events (scoring spec amendment A1).**
+  `s7_same_function_run_length` is unbounded (it counts one uninterrupted same-function run since
+  the connection began), and v2 flags every event of a read-only connection once it passes about
+  73,000: about 20 h at one read per second. `s7comm-features` therefore restarts a connection's
+  state every 16,384 events and flags that event `S7COMM_RESTARTED`. Measured on v2 with restarts
+  at 1,024, 4,096 and 16,384: every gated source stays at 99.45-100% NORMAL past each segment's
+  64th event, with about 0.4% of events in a segment's warm-up at 16,384. The cost is a blind
+  64-event window after every restart. `S7commFeatureExport` does not restart (it builds training
+  data), so exported and online vectors differ after a connection's 16,384th event.
+- **The warm-up is 64 events, not 16.** The first 64 events after any reset (a new connection, a TTL
+  expiry, a restore or a restart) are `WARMUP`, because v2 was gated past the 64th and events
+  16-64 after a reset carry about 12% false alarms. `eventsSinceReset` stays on every prediction.
+- **v2 flags every OTHER request past the warm-up** (`SETUP_COMMUNICATION`, `PLC_STOP`, user-data
+  CPU functions): its training holds 21, nearly all a connection's first event. Probes scored
+  them 16-100x above the pooled threshold. An engineering action mid-session is always `ANOMALY`,
+  which is what an S7 anomaly detector should surface, but it is not a finding by itself.
+- **Real-traffic result (Java production path, 2026-09-28).** Server3's four benign captures:
+  100.00% NORMAL past the 64th event (s7 3,696 scored, s701 1,526, s702 4,206, S7COMM 2,276;
+  0 rejected). The delivered model scored them 0%. Their attack captures (aS700-aS703) are
+  TCP/ICMP-level floods that never reach `s7comm.log`, so S7 recall is not measurable from
+  them.
+- **Scoring cost.** 240-480 us per window (Java ONNX Runtime, batch 1): about 2,000-4,000
+  windows/s per subtask. `s7comm-score` reads a side output of `s7comm-features`, so it
+  back-pressures S7 features the way Modbus scoring does.
+- **Stage 2 (`attack_mode_router_v1_r2`) is not wired**; attack detection (Plan B) is not
+  measured yet.
 
 The common feature tier (`contracts/features/common-feature-tier-v1.json`) and
 its `conn.log` enrichment carrier are implemented and now consumed:
@@ -845,15 +921,15 @@ its `conn.log` enrichment carrier are implemented and now consumed:
 `dns-feature-v1` leads with it at indices 0-11. `modbus-feature-v1` and
 `s7comm-feature-v1` carry none of it, by the scope clause in Key invariants.
 
-Scored today: Modbus, by the Stage 1 detector only (the scoring unit above). Not
-yet implemented: scoring for conn, dns and S7comm, both Stage 2 models (Modbus and
+Scored today: Modbus and S7comm, each by its Stage 1 detector only (the scoring units
+above). Not yet implemented: scoring for conn and dns, both Stage 2 models (Modbus and
 S7), predictions on `netsec.prediction.v1` (Day 9), and the Python training
 project beyond the S7comm detector v2 (`training/src/netsec_ml/s7comm/`). The parked conn scoring unit (`feat/conn-scoring-path`, an ancestor of
 this branch) built some of the pieces — the `ModelScorer` port and
 `ScoreFeaturesUseCase`, `FilesystemModelRegistry`, `OnnxModelScorer` and
 `PredictionSerializer` — but neither job calls any of them. Modbus scoring has its
 own `SequenceScorer` port, because its detector reads a sequence of 20 vectors,
-not one.
+not one, and S7comm scoring its own `ReconstructionScorer` port.
 
 Design records: `docs/conn-foundation-pipeline.md` (Steps 2-7),
 `docs/superpowers/specs/2026-08-27-clickhouse-archive-job-design.md` and
@@ -862,7 +938,9 @@ Design records: `docs/conn-foundation-pipeline.md` (Steps 2-7),
 its §5 and §7 carried a defect-shaped description of the endpoint fields,
 corrected in place 2026-09-23 with dated notes), and
 `docs/superpowers/specs/2026-09-24-s7comm-stage1-design.md` (the S7comm unit), and
-`docs/superpowers/specs/2026-09-26-modbus-stage1-scoring-design.md` (Modbus scoring).
+`docs/superpowers/specs/2026-09-26-modbus-stage1-scoring-design.md` (Modbus scoring), and
+`docs/superpowers/specs/2026-09-28-s7comm-stage1-scoring-design.md` (S7comm scoring, with
+amendment A1).
 
 ## Key reference files
 

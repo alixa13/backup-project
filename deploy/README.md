@@ -51,6 +51,25 @@ Switching scoring off or back on is a `restart` either way: the scoring operator
 stays in the job while off, so the saved state still fits. A new model version
 is a new folder and a new pin, then `restart`.
 
+S7comm is scored the same way by our S7comm Stage 1 detector v2 (an LSTM
+autoencoder), into `netsec.s7comm.prediction.v1` and ClickHouse
+`s7comm_detector_predictions`. The design is
+`docs/superpowers/specs/2026-09-28-s7comm-stage1-scoring-design.md`; the model card
+is `docs/models/s7comm-stage1-detector-v2.md`. Its bundle is pinned by
+`S7COMM_DETECTOR_BUNDLE` (default `s7comm-stage1-detector/v2`). Package it once from
+the release:
+
+```sh
+./deploy/models/package-s7comm-detector.sh models/S7v2/models/stage1_anomaly/v2_multisource_r1 v2
+```
+
+It checks every file against the release's own `FROZEN_MANIFEST.json`.
+- **The warm-up.** A connection's first 64 events are `WARMUP`, and so are the first 64 after any
+  reset; `events_since_reset` counts them.
+- **The restart.** A connection restarts its S7 state every 16,384 events, because one feature
+  grows without bound, and the restarted event carries the quality flag 32.
+- **Turning it off.** Set `S7COMM_DETECTOR_BUNDLE=` (empty) to run S7 features only.
+
 Each prediction's `verdict`:
 
 | Verdict | Meaning |

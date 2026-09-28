@@ -7,8 +7,9 @@ archive job stalls and Kafka lag grows — feature production continues.
 
 ## Tables
 
-`infrastructure/clickhouse/ddl/001_mvp_tables.sql` defines five tables and
-`003_modbus_detector_predictions.sql` a sixth. Three are written today.
+`infrastructure/clickhouse/ddl/001_mvp_tables.sql` defines five tables,
+`003_modbus_detector_predictions.sql` a sixth and `004_s7comm_detector_predictions.sql`
+a seventh. Four are written today.
 
 | Table | Engine | Partition | Order | TTL | Written by |
 |---|---|---|---|---|---|
@@ -18,6 +19,7 @@ archive job stalls and Kafka lag grows — feature production continues.
 | `network_events` | `ReplacingMergeTree(row_version)` | `toYYYYMMDD(event_time)` | `(sensor, event_time, event_id)` | 14 days | nothing — optional |
 | `model_releases` | `MergeTree` | none | `(model_name, model_version)` | none | Roadmap Day 11 |
 | `modbus_detector_predictions` | `ReplacingMergeTree(row_version)` | `toYYYYMMDD(event_time)` | `(model_name, model_version, event_time, event_id)` | 180 days | archive job, when Modbus scoring is on |
+| `s7comm_detector_predictions` | `ReplacingMergeTree(row_version)` | `toYYYYMMDD(event_time)` | `(model_name, model_version, event_time, event_id)` | 180 days | archive job, when S7comm scoring is on |
 
 `DateTime64(3, 'UTC')` throughout. `IPv6` for IP columns, so IPv4 is consistently
 mapped. `LowCardinality(String)` only for bounded values — sensor, log type,
@@ -249,12 +251,13 @@ alerting, histograms — is Roadmap Day 12.
 
 ## Access and retention
 
-Two tables have columns holding raw IP addresses. `network_events` needs a
+Three tables have columns holding raw IP addresses. `network_events` needs a
 least-privilege ClickHouse user and a documented retention approval before it is
 enabled; neither is in place, and nothing writes to it today.
-`modbus_detector_predictions` (Modbus scoring, 2026-09-26) carries `client_ip` and
+`modbus_detector_predictions` (Modbus scoring, 2026-09-26) and
+`s7comm_detector_predictions` (S7comm scoring, 2026-09-28) carry `client_ip` and
 `server_ip` -- as `String`, not the `IPv6` type the other tables use -- for 180
-days, and it IS written whenever a detector bundle is pinned. It has neither the
+days, and they ARE written whenever a detector bundle is pinned. Neither has the
 least-privilege user `FINAL_ARCHITECTURE.md` requires of an IP-bearing table.
 The columns and their 180-day retention were kept by the project owner's
 decision on 2026-09-28 (the alternative was to drop them: `connection_uid` alone

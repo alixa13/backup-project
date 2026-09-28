@@ -154,18 +154,20 @@ policy), with no retraining. The harness first reproduced the release's recorded
   - It grows 1.0 per second on the 4SICS HMI and 4.2 per second on server3's poller. So one
     uninterrupted read-only connection is flagged in full after roughly **20 hours** at 4SICS's
     rate and **5 hours** at server3's.
-  - This follows from the frozen feature, not from the training. Removing it needs either a new
-    feature schema (a windowed or capped run length) or a model that ignores the feature's
-    magnitude; that decision is the owner's.
-  - Until it is taken, v2 is not fit to score long-lived connections.
+  - This follows from the frozen feature, not from the training. The owner chose the remedy on
+    2026-09-28: restart the connection's state every 16,384 events (see Limits).
 - **Re-acquiring changes every export's SHA-256 but no feature value.** Zeek draws random
   connection uids on each run, and the exports carry uid and event id. The harness's exact
   reproduction of the recorded G1 rows is the evidence that the features did not change.
 
 ## Limits (spec section 10)
 
-- **Long-lived connections (measured above).** v2 flags every event of a read-only connection
-  whose same-function run passes about 73,000 events: about 20 h at 1 read per second.
+- **Long-lived connections: handled by the restart (scoring spec amendment A1).** v2 flags every
+  event of a read-only connection whose same-function run passes about 73,000 events, about 20 h
+  at 1 read per second. The online job therefore restarts a connection's state every 16,384
+  events (quality flag `S7COMM_RESTARTED`). Measured on v2 at 1,024, 4,096 and 16,384 events:
+  every gated source stays at 99.45-100% NORMAL past each segment's 64th event, and about 0.4% of
+  events fall in a segment's 64-event warm-up at 16,384.
 
 - v2 is general only across the polling styles its data contains (four real training sources).
   Trust at a real site comes from re-running the pipeline on that site's own traffic.

@@ -1,0 +1,183 @@
+{
+  "schema_version": "stable-preprocessor-v2",
+  "raw_feature_order": [
+    "s7_outstanding_requests",
+    "s7_outstanding_mean_16",
+    "s7_response_match_rate_16",
+    "s7_same_function_run_length",
+    "s7_same_direction_run_length",
+    "s7_request_ratio_16",
+    "s7_direction_change_rate_16",
+    "s7_function_change_rate_16",
+    "s7_function_entropy_16",
+    "s7_function_transition_entropy_16",
+    "s7_rosctr_change_rate_16",
+    "s7_pdu_reference_unique_ratio_32",
+    "is_request_direction",
+    "s7_function_changed",
+    "s7_rosctr",
+    "s7_operation"
+  ],
+  "continuous": {
+    "features": [
+      "s7_outstanding_requests",
+      "s7_outstanding_mean_16",
+      "s7_response_match_rate_16",
+      "s7_same_function_run_length",
+      "s7_same_direction_run_length",
+      "s7_request_ratio_16",
+      "s7_direction_change_rate_16",
+      "s7_function_change_rate_16",
+      "s7_function_entropy_16",
+      "s7_function_transition_entropy_16",
+      "s7_rosctr_change_rate_16",
+      "s7_pdu_reference_unique_ratio_32"
+    ],
+    "imputer_statistics": [
+      1.0,
+      1.125,
+      1.0,
+      1243.0,
+      1.0,
+      0.5,
+      0.75,
+      0.0,
+      0.0,
+      0.0,
+      0.75,
+      0.0625
+    ],
+    "transformer": "StableNumericTransformer",
+    "robust_center": [
+      1.0,
+      1.125,
+      0.0,
+      1243.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "robust_scale": [
+      2.0,
+      0.75,
+      1.0,
+      44767.399999999965,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "quantile_range": [
+      5.0,
+      95.0
+    ],
+    "minimum_scale": 0.1,
+    "transformed_clip": 20.0,
+    "bounded_ranges": {
+      "s7_response_match_rate_16": [
+        0.0,
+        1.0
+      ],
+      "s7_request_ratio_16": [
+        0.0,
+        1.0
+      ],
+      "s7_direction_change_rate_16": [
+        0.0,
+        1.0
+      ],
+      "s7_function_change_rate_16": [
+        0.0,
+        1.0
+      ],
+      "s7_function_entropy_16": [
+        0.0,
+        1.0
+      ],
+      "s7_function_transition_entropy_16": [
+        0.0,
+        1.0
+      ],
+      "s7_rosctr_change_rate_16": [
+        0.0,
+        1.0
+      ],
+      "s7_pdu_reference_unique_ratio_32": [
+        0.0,
+        1.0
+      ]
+    },
+    "bounded_policy": "clip to physical range; no robust scaling",
+    "unbounded_policy": "(x - median) / max(q_high-q_low,min_scale), then transformed clipping"
+  },
+  "binary": {
+    "features": [
+      "is_request_direction",
+      "s7_function_changed"
+    ],
+    "imputer_statistics": [
+      0.0,
+      0.0
+    ]
+  },
+  "categorical": {
+    "features": [
+      "s7_rosctr",
+      "s7_operation"
+    ],
+    "imputer_statistics": [
+      "__MISSING__",
+      "__MISSING__"
+    ],
+    "categories": {
+      "s7_rosctr": [
+        "1",
+        "3",
+        "7"
+      ],
+      "s7_operation": [
+        "FUNCTION_0x44",
+        "FUNCTION_0x84",
+        "READ_VAR",
+        "SETUP_COMMUNICATION",
+        "WRITE_VAR"
+      ]
+    },
+    "unknown_policy": "all-zero one-hot for unseen category"
+  },
+  "transformed_feature_order": [
+    "continuous__s7_outstanding_requests",
+    "continuous__s7_outstanding_mean_16",
+    "continuous__s7_response_match_rate_16",
+    "continuous__s7_same_function_run_length",
+    "continuous__s7_same_direction_run_length",
+    "continuous__s7_request_ratio_16",
+    "continuous__s7_direction_change_rate_16",
+    "continuous__s7_function_change_rate_16",
+    "continuous__s7_function_entropy_16",
+    "continuous__s7_function_transition_entropy_16",
+    "continuous__s7_rosctr_change_rate_16",
+    "continuous__s7_pdu_reference_unique_ratio_32",
+    "binary__is_request_direction",
+    "binary__s7_function_changed",
+    "categorical__s7_rosctr_1",
+    "categorical__s7_rosctr_3",
+    "categorical__s7_rosctr_7",
+    "categorical__s7_operation_FUNCTION_0x44",
+    "categorical__s7_operation_FUNCTION_0x84",
+    "categorical__s7_operation_READ_VAR",
+    "categorical__s7_operation_SETUP_COMMUNICATION",
+    "categorical__s7_operation_WRITE_VAR"
+  ],
+  "transformed_dimension": 22,
+  "dtype": "float32"
+}

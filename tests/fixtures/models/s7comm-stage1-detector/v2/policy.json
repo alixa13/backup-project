@@ -1,0 +1,43 @@
+{
+  "schema_version": "s7-causal-online-shadow-policy-v2",
+  "status": "SHADOW_ONLY_NOT_PRODUCTION_VALIDATED",
+  "score_semantics": {
+    "sequence_length": 16,
+    "stride": 1,
+    "scored_timestep": "LAST_ONLY",
+    "future_context": false,
+    "minimum_events_before_score": 16
+  },
+  "alpha_by_group": {
+    "RESPONSE": 0.001,
+    "READ_REQUEST": 0.001,
+    "WRITE_REQUEST": 0.001277139208173691
+  },
+  "fallback_alpha": 0.001,
+  "calibration_groups": [
+    {
+      "group": "RESPONSE",
+      "calibration_n": 32760,
+      "alpha": 0.001,
+      "minimum_possible_pvalue": 3.0524098775983637e-05
+    },
+    {
+      "group": "READ_REQUEST",
+      "calibration_n": 31978,
+      "alpha": 0.001,
+      "minimum_possible_pvalue": 3.127052127958973e-05
+    },
+    {
+      "group": "WRITE_REQUEST",
+      "calibration_n": 782,
+      "alpha": 0.001277139208173691,
+      "minimum_possible_pvalue": 0.001277139208173691
+    },
+    {
+      "group": "OTHER_REQUEST",
+      "calibration_n": 0,
+      "alpha": null,
+      "minimum_possible_pvalue": null
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "id": "s7comm-detector-bundle-v1",
+  "semanticVersion": "1.0.0",
+  "encoding": "application/json",
+  "fields": [
+    {"name": "name", "type": "string", "required": true, "description": "Model family, e.g. s7comm-stage1-detector; with version, the bundle's identity in every prediction"},
+    {"name": "version", "type": "string", "required": true, "description": "Version within the family, e.g. v2"},
+    {"name": "schemaId", "type": "string", "required": true, "description": "Feature schema the detector was trained on, s7comm-feature-v1; must resolve in FeatureSchemaRegistry, whose feature order must equal preprocessing.json's raw_feature_order"},
+    {"name": "sequenceLength", "type": "integer", "required": true, "description": "Events per window, for example 16; must equal policy.json's score_semantics.sequence_length"},
+    {"name": "featureCount", "type": "integer", "required": true, "description": "Preprocessed values per event, for example 22 (detector v2); must equal preprocessing.json's transformed_dimension"},
+    {"name": "inputName", "type": "string", "required": true, "description": "The ONNX graph's input, shape [?, sequenceLength, featureCount]"},
+    {"name": "outputName", "type": "string", "required": true, "description": "The reconstruction output, shape [?, sequenceLength or symbolic, featureCount]"},
+    {"name": "zeroWeightFeatures", "type": "array", "items": {"type": "string"}, "required": true, "description": "Raw features whose preprocessed columns weigh 0 in the score: the release's identity_features_excluded_from_event_score"},
+    {"name": "modelSha", "type": "string", "required": true, "description": "SHA-256 of model.onnx, 64 lowercase hex"},
+    {"name": "preprocessingSha", "type": "string", "required": true, "description": "SHA-256 of preprocessing.json, the release's preprocessor_contract.json byte for byte"},
+    {"name": "policySha", "type": "string", "required": true, "description": "SHA-256 of policy.json, the release's causal_online_shadow_policy.json byte for byte"},
+    {"name": "calibrationSha", "type": "string", "required": true, "description": "SHA-256 of calibration.npz, the release's causal_online_conformal_calibration_scores.npz byte for byte"}
+  ]
+}

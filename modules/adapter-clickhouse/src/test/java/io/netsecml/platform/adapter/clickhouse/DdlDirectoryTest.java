@@ -39,7 +39,7 @@ class DdlDirectoryTest {
         // it to itself. DdlMigrationTest covers the runtime consequence of a wrong
         // order (a migration failing against a real server).
         assertEquals(List.of("001_mvp_tables.sql", "002_add_invalid_events_log_type.sql",
-                "003_modbus_detector_predictions.sql"), names,
+                "003_modbus_detector_predictions.sql", "004_s7comm_detector_predictions.sql"), names,
             "DDL files must be applied in lexical order");
     }
 

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import io.netsecml.platform.adapter.clickhouse.row.FeatureVectorRow;
 import io.netsecml.platform.adapter.clickhouse.row.InvalidEventRow;
 import io.netsecml.platform.adapter.clickhouse.row.ModbusDetectorPredictionRow;
+import io.netsecml.platform.adapter.clickhouse.row.S7commDetectorPredictionRow;
 import org.junit.jupiter.api.Test;
 import java.lang.reflect.RecordComponent;
 import java.nio.file.Files;
@@ -180,5 +181,10 @@ class SchemaDriftTest {
             columns.add(name);
         }
         return columns;
+    }
+
+    @Test
+    void s7commDetectorPredictionRowPropertiesMatchDdlColumns() throws Exception {
+        assertJsonPropertiesAreDdlColumns(S7commDetectorPredictionRow.class, "s7comm_detector_predictions");
     }
 }

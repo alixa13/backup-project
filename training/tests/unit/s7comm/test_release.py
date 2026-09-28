@@ -121,3 +121,25 @@ def test_a_release_is_never_overwritten(tmp_path):
     release(tmp_path)
     with pytest.raises(FileExistsError):
         release(tmp_path)
+
+
+def strict_load(path):
+    """JSON as a strict parser (RFC 8259, Jackson's default) reads it: NaN and Infinity refused."""
+    def refuse(token):
+        raise ValueError(f"not JSON: {token}")
+    return json.loads(path.read_text(encoding="utf-8"), parse_constant=refuse)
+
+
+# Final review I2: an undefined rate is null, never a bare NaN token.
+def test_release_json_is_strict_even_with_undefined_rates(tmp_path):
+    pre, X, model, windows, policy = small()
+    onnx_path = tmp_path / "model.onnx"
+    R.export_onnx(model, onnx_path, 16, X.shape[1])
+    rel = R.write_release(
+        tmp_path / "out", "nan_r1", model=model, model_config={"hidden_size": 8, "latent_size": 4},
+        pre=pre, policy=policy, score_weights=np.ones(X.shape[1], np.float32),
+        parity=R.onnx_parity(model, onnx_path, X, windows, batches=(1, 8)),
+        documents={"outputs/evaluation_summary.json": {"rate": float("nan")}},
+        summary={"internal_metrics": {"rate": float("nan")}})
+    assert strict_load(rel / "outputs" / "evaluation_summary.json") == {"rate": None}
+    assert strict_load(rel / "FROZEN_MANIFEST.json")["internal_metrics"] == {"rate": None}

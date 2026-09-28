@@ -42,3 +42,11 @@ def test_the_card_shows_every_gated_source_and_the_gates():
     card = E.render_card(summary)
     assert "| qut-control | 5 | 4 | 100.00% | 100.00% |" in card
     assert "G1" in card and "PASSED" in card
+
+
+# Final review I1: a gated source absent from the table (every test connection shorter than the
+# warm-up) fails G1 by name; G1 never passes a source it did not judge.
+def test_g1_fails_a_gated_source_missing_from_the_table():
+    table = pd.DataFrame([{"source": "a", "scored": 10, "past_64": 100, "normal_rate_past_64": 1.0,
+                           "normal_rate_16_to_64": 1.0}])
+    assert E.gate_g1(table, 0.99, ["a", "b"]) == ["b: no scored event past the 64th in its gated rows"]

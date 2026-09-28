@@ -76,6 +76,22 @@ assert_eq 2 "$(grep -c -- '--entrypoint java' "$tmp/calls")" "the exporter alway
 bash "$HERE/../acquire.sh" "$tmp/data" "$tmp/online.jar" cap-b >/dev/null 2>&1
 assert_eq 1 "$(grep -c -- '--entrypoint java' "$tmp/calls")" "one capture named, one exported"
 
+# Final review M8: Zeek's output is reused only for the very capture it was made from. A
+# half-written output left by a killed run, or a capture whose pin changed, runs Zeek again.
+: > "$tmp/calls"
+rm -f "$tmp/data/zeek/cap-a/.pcap-sha256"
+bash "$HERE/../acquire.sh" "$tmp/data" "$tmp/online.jar" cap-a >/dev/null 2>&1
+assert_eq 1 "$(grep -c -- '--entrypoint zeek' "$tmp/calls")" "an unstamped Zeek output is not trusted"
+printf 'local pcap, recaptured' > "$tmp/local.pcap"
+new_sha="$(sha256sum < "$tmp/local.pcap" | cut -c1-64)"
+sed -i "s/$local_sha/$new_sha/" "$tmp/pins"
+: > "$tmp/calls"
+bash "$HERE/../acquire.sh" "$tmp/data" "$tmp/online.jar" cap-b >/dev/null 2>&1
+assert_eq 1 "$(grep -c -- '--entrypoint zeek' "$tmp/calls")" "a re-pinned capture runs Zeek again"
+assert_eq "$new_sha" "$(cat "$tmp/data/zeek/cap-b/.pcap-sha256")" "the output is stamped with its capture's pin"
+sed -i "s/$new_sha/$local_sha/" "$tmp/pins"
+printf 'local pcap' > "$tmp/local.pcap"
+
 # A pin that does not match stops the run, naming the capture's file.
 sed -i "s/$local_sha/$(printf '0%.0s' {1..64})/" "$tmp/pins"
 out="$(bash "$HERE/../acquire.sh" "$tmp/data2" "$tmp/online.jar" 2>&1)"; status=$?

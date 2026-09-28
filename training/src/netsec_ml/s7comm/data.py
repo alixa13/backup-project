@@ -93,6 +93,8 @@ def load_sources(config: dict, sources: list[Source]) -> pd.DataFrame:
         if s.clients:
             claim &= data["client_ip"].isin(s.clients)
         data.loc[claim, "source"] = s.name
+        if not claim.any():  # a mistyped client or capture must never shrink the run silently
+            raise ValueError(f"source {s.name} claims no rows: check its captures and clients")
     data["role"] = data["source"].map({s.name: s.role for s in sources}).fillna("")
     return data
 

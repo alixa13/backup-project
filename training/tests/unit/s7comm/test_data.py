@@ -103,3 +103,12 @@ def test_other_roles_are_test_only(tmp_path):
 def test_an_unknown_role_is_refused(tmp_path):
     with pytest.raises(ValueError, match="role"):
         D.sources_of(config(tmp_path, {"s": {"captures": ["c1"], "role": "training"}}))
+
+
+# Final review I1: a configured source that claims nothing (a mistyped client, a wrong capture)
+# must stop the run by name, never train or gate on less.
+def test_a_source_that_claims_no_rows_is_named(tmp_path):
+    write(tmp_path, "c1", [row("c1", "u1", 1.0, client="A")])
+    cfg = config(tmp_path, {"hmi": {"captures": ["c1"], "clients": ["10.0.0.99"], "role": "normal"}})
+    with pytest.raises(ValueError, match="hmi claims no rows"):
+        D.load_sources(cfg, D.sources_of(cfg))

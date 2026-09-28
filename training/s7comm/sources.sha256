@@ -3,7 +3,7 @@
 # kind: url (downloaded), local (copied read-only from server3), iti (ITI/ICS-Security-Tools
 # at ITI_COMMIT), qut-zip (the single member of a zip in qut-infosec/2017QUT_S7comm at QUT_COMMIT).
 qut-control           05fc253dd84f5db9ad9ba910ea694ba3ee83b8c477c2dcf91d1ed04aefb1ff51  qut-zip  LabelledDataset/20161219132813_control_set/hmi.pcap.zip
-qut-attack            74c8b1744ada2e3f6245976efa951b7e9a945c931e78601a8a394d01cea71b5a  qut-zip  LabelledDataset/20161215163606_s7_process_attacks/hmi.pcap.zip
+qut-attack            c5d520e61fb5d20d20201afc80abd40090b0bc6ce7d5b07384e43060ace30279  qut-zip  LabelledDataset/20161215163606_s7_process_attacks/master.pcap.zip
 4sics-151020          8c6ee02dc26b1b5298a7c9b4dc83cc779bd2a3219d5c5cbc51e3d4d325763bc2  url      https://share.netresec.com/s/xYj2qCNbsLEAd6M/download/4SICS-GeekLounge-151020.pcap
 4sics-151021          7365b0ea475b76bf79b207fd8f83baa45e4449aead5da6a9214bbcffbc5fa7de  url      https://share.netresec.com/s/camL59aoxbCRyyZ/download/4SICS-GeekLounge-151021.pcap
 4sics-151022          82529c23906416dc73d7f1926a0d38b82527f1f2a7ff8c6f755ce3208feb9643  url      https://share.netresec.com/s/gw6Y2QzJHqDD5pr/download/4SICS-GeekLounge-151022.pcap

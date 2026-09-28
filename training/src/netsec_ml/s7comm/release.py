@@ -57,10 +57,26 @@ def sha256(path) -> str:
     return h.hexdigest()
 
 
+def _finite(value):
+    """The value with every non-finite float (an undefined rate) as None, recursively."""
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {k: _finite(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite(v) for v in value]
+    return value
+
+
+def strict_json(value) -> str:
+    """Pretty, strict JSON (RFC 8259): NaN and Infinity become null, never bare tokens."""
+    return json.dumps(_finite(value), indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+
+
 def _json(path: Path, value) -> None:
-    """Pretty JSON, UTF-8, parents created."""
+    """Strict JSON, UTF-8, parents created."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    path.write_text(strict_json(value), encoding="utf-8")
 
 
 def write_release(root, release_id, *, model, model_config, pre, policy, score_weights, parity,

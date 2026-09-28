@@ -40,10 +40,11 @@ def group_table(groups, verdicts, mask, late) -> pd.DataFrame:
                          for name in GROUPS])
 
 
-def gate_g1(table, threshold) -> list[str]:
+def gate_g1(table, threshold, gated_sources=()) -> list[str]:
     """G1's failures, named: a gated source below the threshold past the 64th event, or with no
-    scored event there at all. Empty means G1 holds."""
-    failures = []
+    scored event there at all -- including one absent from the table. Empty means G1 holds."""
+    missing = [s for s in gated_sources if s not in set(table["source"])]
+    failures = [f"{s}: no scored event past the 64th in its gated rows" for s in missing]
     for r in table.itertuples():
         if r.past_64 == 0:
             failures.append(f"{r.source}: no scored event past the 64th in its gated rows")

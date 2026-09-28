@@ -66,16 +66,22 @@ PY
   pinned "$out" "$sha" || die "$out does not match its pinned SHA-256 $sha"
 }
 
-# run_zeek CAPTURE: the deployed image's offline JSON policy over the capture, no network.
+# run_zeek CAPTURE SHA256: the deployed image's offline JSON policy over the capture, no network.
+# The output is reused only when stamped with this capture's pin: Zeek writes into a temporary
+# directory that becomes the output, stamped, only once Zeek has finished, so neither a killed
+# run nor a re-pinned capture can leave a stale or truncated log behind.
 run_zeek() {
-  local out="$data/zeek/$1"
-  [ -s "$out/s7comm.log" ] && return 0
-  rm -rf "$out"
-  mkdir -p "$out"
+  local out="$data/zeek/$1" work="$data/zeek/.$1.partial"
+  [ -s "$out/s7comm.log" ] && [ "$(cat "$out/.pcap-sha256" 2>/dev/null)" = "$2" ] && return 0
+  rm -rf "$work"
+  mkdir -p "$work"
   docker run --rm --network none --user "$(id -u):$(id -g)" --entrypoint zeek \
-    -v "$data/pcap:/pcap:ro" -v "$out:/work" -w /work \
+    -v "$data/pcap:/pcap:ro" -v "$work:/work" -w /work \
     "$ZEEK_IMAGE" -C -r "/pcap/$1.pcap" /opt/netsec/offline-json.zeek
-  [ -s "$out/s7comm.log" ] || die "Zeek wrote no s7comm.log for $1"
+  [ -s "$work/s7comm.log" ] || die "Zeek wrote no s7comm.log for $1"
+  printf '%s\n' "$2" > "$work/.pcap-sha256"
+  rm -rf "$out"
+  mv "$work" "$out"
 }
 
 # run_export CAPTURE: S7commFeatureExport on the Flink image's Java 21, no network.
@@ -95,7 +101,7 @@ while read -r capture sha kind location; do
   log "$capture: fetch"
   fetch "$capture" "$sha" "$kind" "$location"
   log "$capture: zeek"
-  run_zeek "$capture"
+  run_zeek "$capture" "$sha"
   log "$capture: export"
   run_export "$capture"
 done < "$PINS"

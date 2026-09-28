@@ -7,7 +7,6 @@ score every source once, check G1 and G3, and release only when both hold.
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
 from dataclasses import dataclass
@@ -124,7 +123,8 @@ def run(cfg, out: Path) -> int:
     role, late = data["role"].to_numpy(), data["event_index"].to_numpy() >= E.PAST
     gated = ((role == "normal") & (part == "test").to_numpy()) | (role == "normal-test")
     g1 = E.rate_table(data, verdicts, gated)
-    g1_failures = E.gate_g1(g1, cfg["gates"]["normal_rate_past_64"])
+    g1_failures = E.gate_g1(g1, cfg["gates"]["normal_rate_past_64"],
+                            [s.name for s in sources if s.role in ("normal", "normal-test")])
 
     # G3: ONNX against PyTorch on validation windows.
     val_w = window_rows(connections, 16, 1, (part == "validation").to_numpy())
@@ -153,7 +153,7 @@ def run(cfg, out: Path) -> int:
                     for s in sources},
         "exports": {c: sha256(Path(cfg["features_dir"]) / f"{c}.csv") for c in sorted(data["capture"].unique())},
     }
-    (out / "evaluation_summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    (out / "evaluation_summary.json").write_text(R.strict_json(summary), encoding="utf-8")
     card = E.render_card(summary)
     (out / "MODEL_CARD.md").write_text(card, encoding="utf-8")
     print(card, flush=True)

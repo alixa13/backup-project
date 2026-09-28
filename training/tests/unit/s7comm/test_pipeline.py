@@ -8,6 +8,11 @@ from netsec_ml.s7comm.release import verify_release
 from tests.unit.s7comm.synthetic import write_polling
 
 
+def _refuse(token):
+    """A strict JSON parser's answer to NaN or Infinity."""
+    raise ValueError(f"not JSON: {token}")
+
+
 def config(tmp_path, threshold):
     features = tmp_path / "features"
     features.mkdir(exist_ok=True)
@@ -36,7 +41,8 @@ def config(tmp_path, threshold):
 def test_passing_gates_write_a_verified_release(tmp_path):
     out = tmp_path / "run"
     assert pipeline.main(["--config", str(config(tmp_path, 0.0)), "--out", str(out)]) == 0
-    summary = json.loads((out / "evaluation_summary.json").read_text())
+    # Strict JSON (final review I2): the synthetic run has undefined 16th-64th rates.
+    summary = json.loads((out / "evaluation_summary.json").read_text(), parse_constant=_refuse)
     assert summary["gates"]["G1"]["passed"] and summary["gates"]["G3"]["passed"]
     assert [r["source"] for r in summary["g1"]] == ["a", "b"]
     assert [r["source"] for r in summary["unseen"]] == ["c"]

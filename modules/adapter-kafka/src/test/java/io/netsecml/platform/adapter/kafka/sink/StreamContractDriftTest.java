@@ -11,6 +11,8 @@ import io.netsecml.platform.domain.feature.FeatureVector;
 import io.netsecml.platform.domain.inference.DetectorTrigger;
 import io.netsecml.platform.domain.inference.DetectorVerdict;
 import io.netsecml.platform.domain.inference.ModbusDetectorPrediction;
+import io.netsecml.platform.domain.inference.S7commDetectorPrediction;
+import io.netsecml.platform.domain.inference.S7commScoreGroup;
 import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -139,5 +141,18 @@ class StreamContractDriftTest {
             .serialize("netsec.modbus.prediction.v1", scoredPrediction()));
         assertEquals(contractFields("modbus-detector-prediction-v1.json"), emitted,
             "the serializer and contracts/stream/modbus-detector-prediction-v1.json must describe the same message");
+    }
+
+    @Test
+    void s7commDetectorPredictionSerializerEmitsExactlyTheContractFields() throws Exception {
+        S7commDetectorPrediction scored = new S7commDetectorPrediction("a".repeat(64), "sensor-eu-1:C1:25:REQUEST:1",
+            Instant.parse("2026-09-28T12:00:00Z"), new SensorId("sensor-eu-1"), "C1", "10.0.0.5", "10.0.0.9",
+            "s7comm-stage1-detector", "v1", "b".repeat(64), "s7comm-feature-v1", "c".repeat(64),
+            DetectorVerdict.NORMAL, 0.01f, 0.5, S7commScoreGroup.RESPONSE, 0.001, 20, 0, 90L,
+            Instant.parse("2026-09-28T12:00:00.004Z"));
+        Set<String> emitted = messageFields(new S7commDetectorPredictionSerializer()
+            .serialize("netsec.s7comm.prediction.v1", scored));
+        assertEquals(contractFields("s7comm-detector-prediction-v1.json"), emitted,
+            "the serializer and contracts/stream/s7comm-detector-prediction-v1.json must describe the same message");
     }
 }

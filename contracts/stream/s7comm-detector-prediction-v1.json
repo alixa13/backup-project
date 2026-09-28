@@ -1,0 +1,29 @@
+{
+  "id": "s7comm-detector-prediction-v1",
+  "semanticVersion": "1.0.0",
+  "topic": "netsec.s7comm.prediction.v1",
+  "encoding": "application/json",
+  "fields": [
+    {"name": "predictionId", "type": "string", "required": true, "description": "Prediction.deriveId(eventId, modelName, modelVersion): 64 lowercase hex, stable on replay"},
+    {"name": "eventId", "type": "string", "required": true, "description": "The scored feature vector's eventId: the join back to it"},
+    {"name": "eventTime", "type": "string", "format": "date-time", "required": true, "description": "The event's time, copied from the feature vector, ISO-8601 UTC"},
+    {"name": "sensor", "type": "string", "required": true, "description": "The sensor that captured the event"},
+    {"name": "connectionUid", "type": "string", "required": true, "description": "Zeek's connection uid: the scorer's key with the sensor"},
+    {"name": "clientIp", "type": "string", "required": true, "description": "The connection's client: the sender of a request to port 102"},
+    {"name": "serverIp", "type": "string", "required": true, "description": "The connection's server: the PLC on port 102"},
+    {"name": "modelName", "type": "string", "required": true, "description": "The detector bundle's name"},
+    {"name": "modelVersion", "type": "string", "required": true, "description": "The detector bundle's version"},
+    {"name": "modelSha", "type": "string", "required": true, "description": "SHA-256 of the detector's model.onnx"},
+    {"name": "schemaId", "type": "string", "required": true, "description": "The feature schema scored, s7comm-feature-v1"},
+    {"name": "schemaHash", "type": "string", "required": true, "description": "That schema's content hash"},
+    {"name": "verdict", "type": "string", "required": true, "description": "WARMUP (the first 64 events since the connection's last reset: a new connection, a TTL expiry, a restore or a restart), NORMAL, ANOMALY, or UNSCORABLE (a non-finite score)"},
+    {"name": "score", "type": "number", "required": true, "nullable": true, "description": "The last event's weighted reconstruction error; null unless NORMAL or ANOMALY"},
+    {"name": "pValue", "type": "number", "required": true, "nullable": true, "description": "Its conformal p-value against its group's calibration scores; null unless NORMAL or ANOMALY"},
+    {"name": "scoreGroup", "type": "string", "required": true, "description": "RESPONSE, READ_REQUEST, WRITE_REQUEST or OTHER_REQUEST: the calibration group that judges the event"},
+    {"name": "alpha", "type": "number", "required": true, "description": "The alpha that applies to the group: ANOMALY iff pValue <= alpha"},
+    {"name": "eventsSinceReset", "type": "integer", "required": true, "description": "The connection's events since the scorer last reset, this one included; decisions before about the 64th carry the model's post-reset false-alarm rate"},
+    {"name": "qualityFlags", "type": "integer", "required": true, "description": "OR of this vector's quality flags and those of every vector in the window"},
+    {"name": "inferenceMicros", "type": "integer", "required": true, "description": "Inference time in microseconds; 0 unless the detector ran"},
+    {"name": "producedAt", "type": "string", "format": "date-time", "required": true, "description": "When the prediction was emitted, ISO-8601 UTC"}
+  ]
+}

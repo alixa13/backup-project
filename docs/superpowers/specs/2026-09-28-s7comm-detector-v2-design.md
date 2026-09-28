@@ -150,24 +150,36 @@ cost per window; event-level recall per attack kind.
 If a gate fails, the causes go to the owner before anything is released; candidates are never
 tuned on test data.
 
-## 8. Comparison with existing detectors
+## 8. Published models: inspiration and comparison
 
-Every detector we can run is evaluated on the same test data with the same metrics (normal rate on
-each normal test part, detection per attack episode, event-level recall), and the results table goes
-in the model card:
+The owner asked for this explicitly (2026-09-28): find the models others have published for S7 /
+ICS network anomaly detection, learn from them, and compare v2 with them on the same data. Each
+one below is reproduced from its paper or code, trained on the same normal training parts,
+thresholded on the same validation parts, and scored on the same test data with the same
+metrics (normal rate per normal test part, detection per attack episode, event-level recall).
+The results table and a short review of each (what it models, what it needs, where it wins or
+loses) go in `docs/models/s7comm-related-work.md` and the model card.
 
-1. **The delivered v1** (`v4_causal_final_r1`) — the model this replaces.
-2. **The published QUT / Digital Bond S7 rules** (`S7Rules.txt` in the QUT repository, Snort
-   syntax: alerts on S7 read, write or setup requests from hosts outside an allow-list), run with
-   Suricata in a throwaway container over the same pcaps, the allow-list set per source to its
-   legitimate clients. It needs that per-site configuration; the model does not.
-3. **Simple statistical baselines** on the same exported features: per-connection request rate
-   and inter-arrival mean ± 2σ, and an isolation forest on single events — to show whether the
-   sequence model earns its complexity.
-4. **Published or open-source S7comm ML detectors**: a search at plan time (papers using the QUT
-   dataset, GitHub projects) — any that runs offline on pcaps or our exported features is added;
-   one that cannot is listed with the reason. Published numbers measured with other metrics or
-   splits are quoted as such, never mixed into our table.
+| # | Model | Published as | What it learns | Input here |
+|---|---|---|---|---|
+| C1 | Delivered v1 LSTM autoencoder (`v4_causal_final_r1`) | the model team's release | reconstruction of 16-event windows, one connection's style | our exported features |
+| C2 | QUT / Digital Bond S7 rules (`S7Rules.txt`) | Rodofile et al., ACISP 2017; Digital Bond 2015 | allow-list: S7 read/write/setup from unauthorised hosts | the pcaps, via Suricata; allow-list per source |
+| C3 | Package signatures + stacked LSTM next-signature classifier | Feng, Li & Chana, IEEE DSN 2017 | a database of normal message signatures (content level) and an LSTM predicting the next signature (time-series level); anomaly if unseen, or not in the top-k | signatures built from our exported records |
+| C4 | Discrete-time Markov chain / statechart of DFAs | Kleinmann & Wool, arXiv:1607.07489 (Siemens S7 traffic) | the cyclic symbol patterns of each channel; anomaly on a transition normal traffic never makes | symbols (direction, ROSCTR, operation) from our records, per connection |
+| C5 | Kitsune (AfterImage + KitNET autoencoder ensemble) | Mirsky et al., NDSS 2018; github.com/ymirsky/Kitsune-py | incremental per-channel packet statistics, reconstructed by an ensemble of small autoencoders | the pcaps; packet scores joined to S7 records by timestamp |
+| C6 | USAD (adversarially trained twin autoencoders) | Audibert et al., KDD 2020 | reconstruction of multivariate windows | our preprocessed 16x21 windows |
+| C7 | Classic baselines: isolation forest on single events; per-connection rate and inter-arrival mean +- 2 sigma | textbook | single-event outliers; rate shifts | our exported features |
+
+**Inspiration.** What a published model does better is examined for what v2 can adopt without
+changing its contract (a training choice, a calibration choice, a data choice): such a change is
+tried as a v2 candidate, selected on validation data only. An idea that needs a different contract
+(for example C3's content-level "never-seen signature" check, or C4's per-channel automaton as a
+second opinion) is written up as a proposal for a later version, with the comparison numbers that
+justify it, and is never folded silently into v2.
+
+**Honesty rules.** A model that cannot be run (code that no longer builds, missing parts) is listed
+with the reason and whatever its paper reports, clearly marked as not reproduced here. Numbers a
+paper reports on other data or with other metrics are quoted as such and never mixed into our table.
 
 ## 9. After release
 

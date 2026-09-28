@@ -101,9 +101,14 @@ PyTorch in `training/` only" (the online job keeps only ONNX Runtime).
   with a gap of min(64, 1% of the source) events between parts (the delivered recipe's gap, shrunk
   for small sources). Test-only, attack and report sources are never trained or calibrated on.
 - **Preprocessing:** fitted on the pooled training part only.
-- **Sequences:** length 16 per connection, stride 8 for training, stride 1 for scoring; weighted so
+- **Sequences:** length 16 per connection, stride 1 for training and for scoring; weighted so
   every source contributes equally per epoch, and write endpoints are up-weighted to 10% of
-  samples (the delivered recipe's write handling).
+  samples (the delivered recipe's write handling). *Amended 2026-09-28, the owner's decision after
+  run-1:* the delivered recipe's training stride was 8. Under the last-event-only loss, stride 8
+  ends every training window of a request/response poller on the same direction: 0% of the
+  windows of 4SICS HMI, server3 and libnodave ended on a request. So the model never learned their
+  requests, and it failed G1 on server3 (54.20%). Run-2 is judged on the same test parts that
+  run-1 was, and the model card says so.
 - **Model and loss:** the delivered `LSTMAutoencoder`; `WeightedLastTimestepMSE` with the
   `s7_operation` columns at training weight 0.5 (the delivered selection) and scoring weight 0.
 - **Optimisation:** Adam, learning rate 1e-3, weight decay 1e-5, batch 256, gradient clip 1.0, up to

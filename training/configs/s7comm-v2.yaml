@@ -13,7 +13,9 @@ sources:
   engineering:     {captures: [eng-readDiagData, eng-readVarTab, eng-plc-status, eng-blocklist, eng-download-db1, eng-plc-time, eng-snap7-everything], role: report}
   4sics-other:     {captures: [4sics-151020, 4sics-151021, 4sics-151022], clients: [10.10.10.30, 192.168.1.10, 192.168.2.42], role: report}
 split: {train: 0.70, validation: 0.15, gap_events: 64, gap_fraction: 0.01}
-model: {hidden: 32, latent: 16, sequence: 16, train_stride: 8}
+# train_stride 1, not the delivered 8: under the last-event-only loss, stride 8 ends every training
+# window of a request/response poller on the same direction (run-1, 2026-09-28; tests/unit/s7comm/test_config.py).
+model: {hidden: 32, latent: 16, sequence: 16, train_stride: 1}
 training: {batch: 256, lr: 0.001, weight_decay: 1.0e-5, clip: 1.0, max_epochs: 40, patience: 7, seed: 42, threads: 16}
 candidates:
   - {name: id0.5-equal, identity_weight: 0.5, balance: equal, write_fraction: 0.1}

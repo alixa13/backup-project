@@ -1,0 +1,19 @@
+{
+  "contract_id": "modbus_dual_head_threshold_contract_v1",
+  "status": "FROZEN",
+  "frozen_at_utc": "2026-09-20T07:01:04.217267+00:00",
+  "dense_score": "MAE(input_20x42, dense_reconstruction_20x42)",
+  "temporal_score": "MAE(actual_event_20, predicted_event_20_from_events_1_to_19)",
+  "decision_rule": "dense_score > dense_threshold OR temporal_score > temporal_threshold",
+  "dense": {
+    "quantile": 0.999,
+    "threshold": 0.2483385056257248
+  },
+  "temporal": {
+    "quantile": 0.9999,
+    "threshold": 0.4121147692203522
+  },
+  "calibration_source": "Normal capture 29",
+  "combined_calibration_fpr_pct": 0.10984388146209217,
+  "attack_threshold_tuning": false
+}

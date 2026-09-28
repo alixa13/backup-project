@@ -34,12 +34,13 @@ class DdlDirectoryTest {
 
         List<String> names = files.stream().map(p -> p.getFileName().toString()).toList();
         // Docker-free ordering guard: the expected sequence is built independently
-        // of ddlFiles()'s own sort, by listing today's two files literally, so this
+        // of ddlFiles()'s own sort, by listing today's files literally, so this
         // cannot pass by re-sorting the implementation's own output and comparing
         // it to itself. DdlMigrationTest covers the runtime consequence of a wrong
         // order (a migration failing against a real server).
-        assertEquals(List.of("001_mvp_tables.sql", "002_add_invalid_events_log_type.sql"), names,
-            "DDL files must be applied in lexical order so 002_ follows 001_");
+        assertEquals(List.of("001_mvp_tables.sql", "002_add_invalid_events_log_type.sql",
+                "003_modbus_detector_predictions.sql"), names,
+            "DDL files must be applied in lexical order");
     }
 
     // The specific pairing this unit introduces. Stated explicitly because the

@@ -1,0 +1,5 @@
+# Variables such as CLICKHOUSE_USER come from deploy/.env at run time
+# (load_env), and lib/*.sh are sourced by computed paths shellcheck cannot follow.
+# The tests' stub functions (docker, curl, flink, compose...) are called
+# indirectly, by the code under test, which SC2317 cannot see.
+disable=SC1090,SC1091,SC2154,SC2317

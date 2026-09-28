@@ -106,4 +106,91 @@
       <scope>test</scope>
     </dependency>
   </dependencies>
+  <build>
+    <plugins>
+      <!-- The deployable JAR (deploy/, design §6): this job, our modules and the
+           libraries the Flink 2.2.1 image lacks. Everything flink-dist already
+           ships is excluded, because two copies on one classpath break class
+           loading; deploy/tests/check-jars.sh pins both halves. Attached with
+           the classifier "all", so the plain JAR is unchanged. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <shadedArtifactAttached>true</shadedArtifactAttached>
+              <shadedClassifierName>all</shadedClassifierName>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <artifactSet>
+                <excludes>
+                  <!-- Flink's own runtime: the image's flink-dist provides it. -->
+                  <exclude>org.apache.flink:flink-annotations</exclude>
+                  <exclude>org.apache.flink:flink-clients</exclude>
+                  <exclude>org.apache.flink:flink-connector-base</exclude>
+                  <exclude>org.apache.flink:flink-connector-datagen</exclude>
+                  <exclude>org.apache.flink:flink-core</exclude>
+                  <exclude>org.apache.flink:flink-core-api</exclude>
+                  <exclude>org.apache.flink:flink-datastream</exclude>
+                  <exclude>org.apache.flink:flink-datastream-api</exclude>
+                  <exclude>org.apache.flink:flink-file-sink-common</exclude>
+                  <exclude>org.apache.flink:flink-hadoop-fs</exclude>
+                  <exclude>org.apache.flink:flink-metrics-core</exclude>
+                  <exclude>org.apache.flink:flink-queryable-state-client-java</exclude>
+                  <exclude>org.apache.flink:flink-rpc-akka-loader</exclude>
+                  <exclude>org.apache.flink:flink-rpc-core</exclude>
+                  <exclude>org.apache.flink:flink-runtime</exclude>
+                  <exclude>org.apache.flink:flink-shaded-asm-9</exclude>
+                  <exclude>org.apache.flink:flink-shaded-guava</exclude>
+                  <exclude>org.apache.flink:flink-shaded-jackson</exclude>
+                  <exclude>org.apache.flink:flink-shaded-netty</exclude>
+                  <exclude>org.apache.flink:flink-shaded-zookeeper-3</exclude>
+                  <exclude>org.apache.flink:flink-streaming-java</exclude>
+                  <!-- Libraries flink-dist bundles unrelocated. -->
+                  <exclude>com.esotericsoftware:*</exclude>
+                  <exclude>org.objenesis:*</exclude>
+                  <exclude>org.apache.commons:*</exclude>
+                  <exclude>commons-cli:*</exclude>
+                  <exclude>commons-collections:*</exclude>
+                  <exclude>commons-io:*</exclude>
+                  <exclude>org.javassist:*</exclude>
+                  <exclude>org.snakeyaml:*</exclude>
+                  <exclude>org.slf4j:*</exclude>
+                  <exclude>tools.profiler:*</exclude>
+                  <exclude>com.google.code.findbugs:*</exclude>
+                  <exclude>org.lz4:*</exclude>
+                  <exclude>at.yawk.lz4:*</exclude>
+                  <exclude>org.xerial.snappy:*</exclude>
+                </excludes>
+              </artifactSet>
+              <filters>
+                <!-- Signatures of shaded JARs no longer match; module
+                     descriptors do not apply inside an uber JAR. -->
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                    <exclude>module-info.class</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+              <transformers>
+                <!-- Kafka and Jackson register implementations via ServiceLoader. -->
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>io.netsecml.platform.bootstrap.archive.ArchiveJob</mainClass>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
 </project>

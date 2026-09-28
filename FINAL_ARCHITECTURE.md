@@ -437,7 +437,7 @@ Run it independently so ClickHouse failure cannot restart the online job.
 | Checkpoint interval / min pause | 30 s / 10 s | Acceptable replay window with small state; reduce only if RPO requires it and checkpoint cost permits. |
 | Checkpoint timeout / concurrency | 2 min / 1 | Avoid overlapping checkpoint pressure in MVP. |
 | Retained checkpoints | 3 externalized, durable storage | Enables diagnosis/savepoint recovery without container-local loss. |
-| Restart strategy | failure-rate: 3 failures per 10 min, 10 s delay | Avoids hot-looping a broken deployment; page after repeated failure. |
+| Restart strategy | exponential-delay: 10 s doubling to 2 min, job failed after 10 attempts, count reset after 10 min without failure | A lost TaskManager fails every pipelined region at once; exponential-delay counts that as one attempt, where the original failure-rate (3 per 10 min) counted each region and failed the archive job on one TaskManager restart (server test, 2026-09-25). Still avoids hot-looping a broken deployment; page after repeated failure. |
 | Kafka output | exactly-once/checkpointed when supported | Durability of online outputs; verify broker transaction settings in integration test. |
 | ClickHouse archive batch | 5,000 rows, 4 MiB, or 1 s | Efficient columnar writes while bounding latency/memory. |
 

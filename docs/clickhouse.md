@@ -7,8 +7,8 @@ archive job stalls and Kafka lag grows — feature production continues.
 
 ## Tables
 
-`infrastructure/clickhouse/ddl/001_mvp_tables.sql` defines five tables. Two are
-written today.
+`infrastructure/clickhouse/ddl/001_mvp_tables.sql` defines five tables and
+`003_modbus_detector_predictions.sql` a sixth. Three are written today.
 
 | Table | Engine | Partition | Order | TTL | Written by |
 |---|---|---|---|---|---|
@@ -17,6 +17,7 @@ written today.
 | `predictions` | `ReplacingMergeTree(row_version)` | `toYYYYMMDD(event_time)` | `(model_name, model_version, event_time, event_id)` | 180 days | Roadmap Day 9 |
 | `network_events` | `ReplacingMergeTree(row_version)` | `toYYYYMMDD(event_time)` | `(sensor, event_time, event_id)` | 14 days | nothing — optional |
 | `model_releases` | `MergeTree` | none | `(model_name, model_version)` | none | Roadmap Day 11 |
+| `modbus_detector_predictions` | `ReplacingMergeTree(row_version)` | `toYYYYMMDD(event_time)` | `(model_name, model_version, event_time, event_id)` | 180 days | archive job, when Modbus scoring is on |
 
 `DateTime64(3, 'UTC')` throughout. `IPv6` for IP columns, so IPv4 is consistently
 mapped. `LowCardinality(String)` only for bounded values — sensor, log type,
@@ -214,8 +215,9 @@ side output.
 The practical effect: one undeserializable message on `featureVectorTopic` or
 `dlqTopic` fails the map, which fails the checkpoint, so the offset in front of
 it never advances. The job retries the same message on restart. Under the
-failure-rate restart strategy (3 failures / 10 min) that eventually trips the
-limit and the job terminates rather than looping forever — and it stays down,
+exponential-delay restart strategy (given up after 10 attempts, about a
+quarter of an hour) that eventually trips the limit and the job terminates
+rather than looping forever — and it stays down,
 since nothing removes the poison message from the front of the topic.
 
 The exposure is narrower than it sounds: only the online job ever produces to
@@ -247,9 +249,17 @@ alerting, histograms — is Roadmap Day 12.
 
 ## Access and retention
 
-`network_events` is the only table with columns holding raw IP addresses.
-Before it is enabled it needs a least-privilege ClickHouse user and a documented
-retention approval; neither is in place, and nothing writes to it today.
+Two tables have columns holding raw IP addresses. `network_events` needs a
+least-privilege ClickHouse user and a documented retention approval before it is
+enabled; neither is in place, and nothing writes to it today.
+`modbus_detector_predictions` (Modbus scoring, 2026-09-26) carries `client_ip` and
+`server_ip` -- as `String`, not the `IPv6` type the other tables use -- for 180
+days, and it IS written whenever a detector bundle is pinned. It has neither the
+least-privilege user `FINAL_ARCHITECTURE.md` requires of an IP-bearing table.
+The columns and their 180-day retention were kept by the project owner's
+decision on 2026-09-28 (the alternative was to drop them: `connection_uid` alone
+joins a prediction back to its addresses through Zeek's logs); the least-privilege
+ClickHouse user is still to be created.
 
 `feature_vectors` carries no address columns itself — it holds the schema's
 numeric features (20 for `conn-feature-v1`), `log_type`, the sensor name, and

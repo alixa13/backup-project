@@ -65,6 +65,19 @@ class ModbusFeatureExtractorTest {
             functionCode, tid, "1", null, null, matched, new double[0], new double[0]);
     }
 
+    // A response and a request carrying `matched` exactly as given: null is a
+    // record with no `matched` field at all, which icsnpp-modbus v1.0.0 never
+    // writes.
+    private ModbusEvent responseWithMatched(double ts, String tid, Boolean matched) {
+        return new ModbusEvent(envelope(ts), ts, ModbusDirection.RESPONSE, "10.0.0.9", "10.0.0.5",
+            3, tid, "1", null, null, matched, new double[0], new double[0]);
+    }
+
+    private ModbusEvent requestWithMatched(double ts, String tid, Boolean matched) {
+        return new ModbusEvent(envelope(ts), ts, ModbusDirection.REQUEST, "10.0.0.5", "10.0.0.9",
+            3, tid, "1", null, null, matched, new double[0], new double[0]);
+    }
+
     private float[] extractFor(ModbusEvent event) {
         ModbusEntityState before = ModbusEntityState.empty();
         return extractFor(event, before);
@@ -142,6 +155,41 @@ class ModbusFeatureExtractorTest {
         assertEquals(0.0f, v[31], "it had a pending request");
         assertEquals(1.0f, v[33]);
         assertEquals(0.25f, v[34], 1e-6f);
+    }
+
+    // response_matched (index 12) when the record carries no `matched`.
+    // Upstream's training data took it from its own capture adapter, which
+    // paired each response with its request (1 on 99.99% of training
+    // responses); this engine's causal pairing -- the one rtt_valid (index 33)
+    // reads -- reproduces it, so an absent value is derived from that.
+    @Test
+    void anAbsentMatchedOnAResponseToAPendingRequestIsOne() {
+        ModbusEntityState before = stateAfter(1000.0, 3, "17", null);
+        float[] v = extractFor(responseWithMatched(1000.25, "17", null), before);
+        assertEquals(1.0f, v[12], "response_matched, derived from the pairing");
+        assertEquals(1.0f, v[33], "rtt_valid: the same pairing");
+    }
+
+    @Test
+    void anAbsentMatchedOnAResponseWithNoPendingRequestIsZero() {
+        float[] v = extractFor(responseWithMatched(1000.0, "17", null), ModbusEntityState.empty());
+        assertEquals(0.0f, v[12]);
+    }
+
+    // A record that carries `matched` is used as given, as upstream's engine
+    // does -- even where the causal pairing disagrees.
+    @Test
+    void anExplicitMatchedIsUsedAsGiven() {
+        ModbusEntityState pending = stateAfter(1000.0, 3, "17", null);
+        assertEquals(0.0f, extractFor(responseWithMatched(1000.25, "17", false), pending)[12],
+            "explicit false, although the request was pending");
+        assertEquals(1.0f, extractFor(responseWithMatched(1000.0, "17", true), ModbusEntityState.empty())[12],
+            "explicit true, although nothing was pending");
+    }
+
+    @Test
+    void aRequestWithAnAbsentMatchedIsZero() {
+        assertEquals(0.0f, extractFor(requestWithMatched(1000.0, "17", null))[12]);
     }
 
     @Test

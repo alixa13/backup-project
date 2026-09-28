@@ -1,0 +1,5 @@
+<!-- netsec-ml: keep ClickHouse inside its container limit (design §7). It
+     reads the cgroup limit as its RAM, so 0.8 is 80% of what tune gave it. -->
+<clickhouse>
+    <max_server_memory_usage_to_ram_ratio>0.8</max_server_memory_usage_to_ram_ratio>
+</clickhouse>

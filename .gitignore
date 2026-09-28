@@ -52,3 +52,9 @@ logs/
 
 # --- Git worktrees for isolated plan execution ---
 .worktrees/
+
+# deploy/: per-host state, never committed
+deploy/data/
+deploy/jars/
+deploy/.m2/
+deploy/.cache/

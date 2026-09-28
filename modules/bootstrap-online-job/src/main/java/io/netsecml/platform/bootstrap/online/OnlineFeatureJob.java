@@ -7,9 +7,11 @@ import io.netsecml.platform.adapter.flink.process.ConnSnapshotJoinFunction;
 import io.netsecml.platform.adapter.flink.process.DnsFeatureProcessFunction;
 import io.netsecml.platform.adapter.flink.process.DnsParseMapValidateFunction;
 import io.netsecml.platform.adapter.flink.process.EventUidKeySelector;
+import io.netsecml.platform.adapter.flink.process.KeyedModbusVectorKeySelector;
 import io.netsecml.platform.adapter.flink.process.ModbusEntityKeySelector;
 import io.netsecml.platform.adapter.flink.process.ModbusFeatureProcessFunction;
 import io.netsecml.platform.adapter.flink.process.ModbusParseMapValidateFunction;
+import io.netsecml.platform.adapter.flink.process.ModbusScoringProcessFunction;
 import io.netsecml.platform.adapter.flink.process.ParseMapValidateFunction;
 import io.netsecml.platform.adapter.flink.process.RejectedRecord;
 import io.netsecml.platform.adapter.flink.process.S7commConnectionKeySelector;
@@ -19,8 +21,10 @@ import io.netsecml.platform.adapter.flink.process.SnapshotUidKeySelector;
 import io.netsecml.platform.adapter.flink.process.SourceKeySelector;
 import io.netsecml.platform.adapter.flink.source.RawBytesDeserializationSchema;
 import io.netsecml.platform.adapter.kafka.sink.FeatureVectorSerializer;
+import io.netsecml.platform.adapter.kafka.sink.ModbusDetectorPredictionSerializer;
 import io.netsecml.platform.adapter.kafka.sink.RejectedRecordPayload;
 import io.netsecml.platform.adapter.kafka.sink.RejectedRecordSerializer;
+import io.netsecml.platform.adapter.registry.SequenceDetectorBundleLoader;
 import io.netsecml.platform.domain.event.ConnEvent;
 import io.netsecml.platform.domain.event.DnsEvent;
 import io.netsecml.platform.domain.event.ModbusEvent;
@@ -29,6 +33,7 @@ import io.netsecml.platform.domain.event.S7commEvent;
 import io.netsecml.platform.domain.event.SensorId;
 import io.netsecml.platform.domain.feature.ConnSnapshot;
 import io.netsecml.platform.domain.feature.FeatureVector;
+import io.netsecml.platform.domain.inference.ModbusDetectorPrediction;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.serialization.SerializationSchema;
@@ -43,7 +48,9 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Map;
 
 public final class OnlineFeatureJob {
 
@@ -67,6 +74,26 @@ public final class OnlineFeatureJob {
     // Nested here (rather than top-level) because it has no meaning outside
     // this job's own wiring.
     public record ProtocolTopics(String input, String featureVector, String dlq) {
+    }
+
+    // Modbus scoring's settings (spec section 7): the bundle directory the
+    // TaskManagers load and the prediction topic. A null bundleDir keeps
+    // modbus-score and its sink in the job but disabled (nothing scored), so
+    // switching scoring off never orphans their savepoint state; a null
+    // ModbusScoring builds neither operator (the overloads that predate scoring).
+    public record ModbusScoring(String bundleDir, String predictionTopic) {
+    }
+
+    // main()'s scoring settings from its environment: the pinned bundle under
+    // NETSEC_MODELS_DIR, or a null bundleDir when MODBUS_DETECTOR_BUNDLE is
+    // empty. Never null, so main() always builds the two scoring operators.
+    static ModbusScoring modbusScoring(Map<String, String> env) {
+        String bundle = env.getOrDefault("MODBUS_DETECTOR_BUNDLE", "");
+        String bundleDir = bundle.isBlank()
+            ? null
+            : Path.of(env.getOrDefault("NETSEC_MODELS_DIR", "/opt/netsec/models"), bundle).toString();
+        return new ModbusScoring(bundleDir,
+            env.getOrDefault("MODBUS_PREDICTION_TOPIC", "netsec.modbus.prediction.v1"));
     }
 
     // The two-protocol topology: conn and dns each get their own source ->
@@ -103,7 +130,8 @@ public final class OnlineFeatureJob {
     // per-(sensor, sourceIp) state only" invariant, which this satisfies
     // per-value but not in aggregate. Adding a TTL to these two is a separate
     // design decision with its own trade-offs and is deliberately not made
-    // here.
+    // here. (Modbus's and s7comm's feature states do carry idle TTLs: see
+    // ModbusFeatureProcessFunction and S7commFeatureProcessFunction.)
     //
     // KNOWN SEAM: this method's own signature -- build(conn, dns, sensor) --
     // is shaped and named for exactly two protocols, not for the general N.
@@ -192,25 +220,38 @@ public final class OnlineFeatureJob {
     public static void build(StreamExecutionEnvironment env, String bootstrapServers,
                               ProtocolTopics conn, ProtocolTopics dns, ProtocolTopics modbus, SensorId sensor) {
         build(env, bootstrapServers, conn, dns, sensor);
-        modbusChain(env, bootstrapServers, modbus, sensor);
+        modbusChain(env, bootstrapServers, modbus, sensor, ModbusFeatureProcessFunction.DEFAULT_STATE_TTL, null);
     }
 
     // The four-protocol topology: the three-protocol build() above plus
-    // s7comm's chain, with S7commFeatureProcessFunction's default one-hour
-    // idle TTL. A fourth overload, for the reason the three-protocol one gives:
+    // s7comm's chain, with ModbusFeatureProcessFunction's and
+    // S7commFeatureProcessFunction's default one-hour idle TTLs. A fourth overload, for the reason the three-protocol one gives:
     // every existing caller keeps compiling unchanged. KNOWN SEAM, as recorded
     // there: a fifth protocol is a fifth overload.
     public static void build(StreamExecutionEnvironment env, String bootstrapServers, ProtocolTopics conn,
                               ProtocolTopics dns, ProtocolTopics modbus, ProtocolTopics s7comm, SensorId sensor) {
-        build(env, bootstrapServers, conn, dns, modbus, s7comm, sensor, S7commFeatureProcessFunction.DEFAULT_STATE_TTL);
+        build(env, bootstrapServers, conn, dns, modbus, s7comm, sensor,
+            ModbusFeatureProcessFunction.DEFAULT_STATE_TTL, S7commFeatureProcessFunction.DEFAULT_STATE_TTL);
     }
 
-    // As above, with the s7comm connection state's idle TTL chosen by the
-    // caller; main() passes S7COMM_STATE_TTL_MINUTES.
+    // As above, with the modbus entity state's and the s7comm connection
+    // state's idle TTLs chosen by the caller; main() passes
+    // MODBUS_STATE_TTL_MINUTES and S7COMM_STATE_TTL_MINUTES. Two adjacent
+    // Durations, so OnlineFeatureJobTopologyTest builds with two different
+    // ones to catch a swap.
     public static void build(StreamExecutionEnvironment env, String bootstrapServers, ProtocolTopics conn,
                               ProtocolTopics dns, ProtocolTopics modbus, ProtocolTopics s7comm, SensorId sensor,
-                              Duration s7commStateTtl) {
-        build(env, bootstrapServers, conn, dns, modbus, sensor);
+                              Duration modbusStateTtl, Duration s7commStateTtl) {
+        build(env, bootstrapServers, conn, dns, modbus, s7comm, sensor, modbusStateTtl, s7commStateTtl, null);
+    }
+
+    // As above, with Modbus scoring; main() passes modbusScoring(env), whose
+    // bundleDir is null when MODBUS_DETECTOR_BUNDLE is empty (spec S10).
+    public static void build(StreamExecutionEnvironment env, String bootstrapServers, ProtocolTopics conn,
+                              ProtocolTopics dns, ProtocolTopics modbus, ProtocolTopics s7comm, SensorId sensor,
+                              Duration modbusStateTtl, Duration s7commStateTtl, ModbusScoring scoring) {
+        build(env, bootstrapServers, conn, dns, sensor);
+        modbusChain(env, bootstrapServers, modbus, sensor, modbusStateTtl, scoring);
         s7commChain(env, bootstrapServers, s7comm, sensor, s7commStateTtl);
     }
 
@@ -278,7 +319,8 @@ public final class OnlineFeatureJob {
     // those two classes' own comments for why. That typing difference is what
     // the narrow stage below exists to bridge.
     private static void modbusChain(StreamExecutionEnvironment env, String bootstrapServers,
-                                     ProtocolTopics modbus, SensorId sensor) {
+                                     ProtocolTopics modbus, SensorId sensor, Duration stateTtl,
+                                     ModbusScoring scoring) {
         DataStream<byte[]> modbusRaw = rawSource(env, bootstrapServers, modbus.input(), "modbus-online-job",
             "modbus-source");
 
@@ -302,9 +344,9 @@ public final class OnlineFeatureJob {
             .name("modbus-event-narrow")
             .uid("modbus-event-narrow");
 
-        DataStream<FeatureVector> modbusFeatureVectors = modbusEvents
+        SingleOutputStreamOperator<FeatureVector> modbusFeatureVectors = modbusEvents
             .keyBy(new ModbusEntityKeySelector())
-            .process(new ModbusFeatureProcessFunction())
+            .process(new ModbusFeatureProcessFunction(stateTtl))
             .name("modbus-features")
             .uid("modbus-features");
         sinkFeatureVectors(modbusFeatureVectors, bootstrapServers, modbus.featureVector(), "modbus-sink");
@@ -312,6 +354,22 @@ public final class OnlineFeatureJob {
         DataStream<RejectedRecord> modbusRejected =
             modbusParsed.getSideOutput(ParseMapValidateFunction.REJECTED_TAG);
         sinkRejected(modbusRejected, bootstrapServers, modbus.dlq(), "modbus-dlq-sink");
+
+        // Scoring (spec section 4): the side output, keyed by the same stream
+        // key, into modbus-score, then to the prediction topic. Off when null.
+        if (scoring != null) {
+            // A null bundleDir: the same operator, disabled (see ModbusScoring).
+            ModbusScoringProcessFunction scorer = scoring.bundleDir() == null
+                ? ModbusScoringProcessFunction.disabled(stateTtl)
+                : new ModbusScoringProcessFunction(new ModbusDetectorScorerFactory(scoring.bundleDir()), stateTtl);
+            DataStream<ModbusDetectorPrediction> predictions = modbusFeatureVectors
+                .getSideOutput(ModbusFeatureProcessFunction.SCORING_TAG)
+                .keyBy(new KeyedModbusVectorKeySelector())
+                .process(scorer)
+                .name("modbus-score")
+                .uid("modbus-score");
+            sinkModbusPredictions(predictions, bootstrapServers, scoring.predictionTopic(), "modbus-prediction-sink");
+        }
     }
 
     // The narrowing bridge modbusChain's own comment above describes. A named
@@ -431,6 +489,27 @@ public final class OnlineFeatureJob {
         return env.fromSource(source, WatermarkStrategy.noWatermarks(), uid).uid(uid);
     }
 
+    // The prediction topic: modbus-detector-prediction-v1, one message per Modbus event.
+    private static void sinkModbusPredictions(DataStream<ModbusDetectorPrediction> predictions,
+                                              String bootstrapServers, String topic, String uid) {
+        ModbusDetectorPredictionSerializer serializer = new ModbusDetectorPredictionSerializer();
+        KafkaSink<ModbusDetectorPrediction> sink = KafkaSink.<ModbusDetectorPrediction>builder()
+            .setBootstrapServers(bootstrapServers)
+            .setRecordSerializer(KafkaRecordSerializationSchema.<ModbusDetectorPrediction>builder()
+                .setTopic(topic)
+                // An anonymous class, not a lambda, so Flink keeps the generic type.
+                .setValueSerializationSchema(new SerializationSchema<ModbusDetectorPrediction>() {
+                    @Override
+                    public byte[] serialize(ModbusDetectorPrediction prediction) {
+                        return serializer.serialize(topic, prediction);
+                    }
+                })
+                .build())
+            .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+            .build();
+        predictions.sinkTo(sink).name(uid).uid(uid);
+    }
+
     // Shared shape 2 of 3: publish a FeatureVector to its protocol's
     // feature-vector topic.
     //
@@ -488,21 +567,38 @@ public final class OnlineFeatureJob {
         rejected.sinkTo(sink).name(uid).uid(uid);
     }
 
+    // Flink 2.x removed StreamExecutionEnvironment.setRestartStrategy, so the restart
+    // strategy is configuration-only now. exponential-delay, because a TaskManager
+    // that dies takes all three of this job's independent pipelines (conn+dns,
+    // modbus, s7comm) down at once and each reports its own failure: exponential-
+    // delay merges the failures that arrive while a restart is pending into that one
+    // attempt, where failure-rate (3 per 10 minutes, until the 2026-09-25 server
+    // test) spent its whole allowance on one TaskManager restart, leaving the job
+    // to fail on anything in the next 10 minutes (OnlineFeatureJobRestartStrategyTest).
+    // Restarts pause 10 s, doubling to 2 min. A job that keeps failing is given up
+    // on after 10 attempts -- about a quarter of an hour; Flink's own default with
+    // checkpointing on would retry forever -- so it turns FAILED and the
+    // supervisor's check for saved state that no longer fits
+    // (deploy/flink/submit-jobs.sh) gets to run; 10 minutes without a failure
+    // start the count afresh.
+    static Configuration restartStrategy() {
+        Configuration restartConfig = new Configuration();
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY,
+            RestartStrategyOptions.RestartStrategyType.EXPONENTIAL_DELAY.getMainValue());
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_EXPONENTIAL_DELAY_INITIAL_BACKOFF, Duration.ofSeconds(10));
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_EXPONENTIAL_DELAY_MAX_BACKOFF, Duration.ofMinutes(2));
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_EXPONENTIAL_DELAY_BACKOFF_MULTIPLIER, 2.0);
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_EXPONENTIAL_DELAY_RESET_BACKOFF_THRESHOLD, Duration.ofMinutes(10));
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_EXPONENTIAL_DELAY_ATTEMPTS, 10);
+        return restartConfig;
+    }
+
     public static void main(String[] args) throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
-        // Flink 2.x removed StreamExecutionEnvironment.setRestartStrategy, so the restart
-        // strategy is configuration-only now. Applied before enableCheckpointing below so
-        // the explicit checkpoint settings are the last word regardless of what configure()
-        // reads out of this Configuration. Without this the default with checkpointing on
-        // would restart forever; failure-rate stops hot-looping a broken deployment.
-        Configuration restartConfig = new Configuration();
-        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY,
-            RestartStrategyOptions.RestartStrategyType.FAILURE_RATE.getMainValue());
-        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_MAX_FAILURES_PER_INTERVAL, 3);
-        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_FAILURE_RATE_INTERVAL, Duration.ofMinutes(10));
-        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_DELAY, Duration.ofSeconds(10));
-        env.configure(restartConfig);
+        // Applied before enableCheckpointing below so the explicit checkpoint settings
+        // are the last word regardless of what configure() reads out of this Configuration.
+        env.configure(restartStrategy());
 
         // This job is stateful -- the keyed rolling windows in
         // ConnFeatureProcessFunction and DnsFeatureProcessFunction, and the
@@ -554,8 +650,24 @@ public final class OnlineFeatureJob {
         // (above Zeek's TCP inactivity timeout AND the longest expected outage).
         Duration s7commStateTtl = Duration.ofMinutes(Long.parseLong(
             System.getenv().getOrDefault("S7COMM_STATE_TTL_MINUTES", "60")));
+        // The modbus entity state's idle TTL in minutes; see
+        // ModbusFeatureProcessFunction.DEFAULT_STATE_TTL for how to choose it
+        // (above the longest expected outage).
+        Duration modbusStateTtl = Duration.ofMinutes(Long.parseLong(
+            System.getenv().getOrDefault("MODBUS_STATE_TTL_MINUTES", "60")));
 
-        build(env, bootstrapServers, conn, dns, modbus, s7comm, new SensorId(sensorId), s7commStateTtl);
+        // Modbus scoring (spec section 7): the pinned bundle under the models
+        // mount, verified here -- before submission -- so a missing or corrupt
+        // bundle fails the submission with the loader's own message instead of
+        // failing every TaskManager's open(). An empty MODBUS_DETECTOR_BUNDLE
+        // scores nothing, but still builds the (disabled) scoring operators.
+        ModbusScoring scoring = modbusScoring(System.getenv());
+        if (scoring.bundleDir() != null) {
+            SequenceDetectorBundleLoader.load(Path.of(scoring.bundleDir()));
+        }
+
+        build(env, bootstrapServers, conn, dns, modbus, s7comm, new SensorId(sensorId), modbusStateTtl,
+            s7commStateTtl, scoring);
         env.execute("online-feature-job");
     }
 }

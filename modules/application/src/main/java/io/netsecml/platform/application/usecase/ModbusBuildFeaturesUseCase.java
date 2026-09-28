@@ -9,6 +9,7 @@ import io.netsecml.platform.domain.feature.FeatureSchemaRegistry;
 import io.netsecml.platform.domain.feature.FeatureVector;
 import io.netsecml.platform.domain.feature.ModbusEntityState;
 import io.netsecml.platform.domain.feature.ModbusFeatureSchemaV1;
+import io.netsecml.platform.domain.feature.PendingRequest;
 import io.netsecml.platform.domain.feature.QualityFlags;
 import io.netsecml.platform.port.in.BuildFeaturesUseCase;
 import java.time.Clock;
@@ -132,6 +133,16 @@ public final class ModbusBuildFeaturesUseCase implements BuildFeaturesUseCase<Mo
             currentState.reset();
         }
 
+        // Step 2b (docs/superpowers/specs/2026-09-26-modbus-stage1-scoring-design.md
+        // section 2.1, F2): a response Zeek wrote without an address takes its
+        // pending request's, and a matched response always takes its request's
+        // quantity, as upstream's capture adapter did (100% of training rows
+        // carry both, and quantity never changes between a request and its
+        // response). After the reset above, so a new segment --
+        // which forgets every pending request -- borrows nothing. Everything
+        // below reads the effective event.
+        event = withPendingRequestFields(event, currentState);
+
         // Step 3: advance the state in place with this event's own fields, at
         // the same ts the extractor computes below. advance captures the
         // before-event values first and returns them.
@@ -180,5 +191,34 @@ public final class ModbusBuildFeaturesUseCase implements BuildFeaturesUseCase<Mo
             clock.instant().truncatedTo(ChronoUnit.MILLIS));
 
         return new FeatureBuildResult<>(vector, currentState);
+    }
+
+    // A response with its pending request's fields applied: the request's
+    // address where the response has none, and the request's quantity whenever
+    // the request has one; the event itself in every other case.
+    static ModbusEvent withPendingRequestFields(ModbusEvent event, ModbusEntityState state) {
+        // Only a response borrows.
+        if (event.direction() != ModbusEvent.ModbusDirection.RESPONSE) {
+            return event;
+        }
+        // Unanswered, evicted by the cap, or forgotten by a new segment: nothing to borrow.
+        PendingRequest request = state.pendingRequest(event.transactionId());
+        if (request == null) {
+            return event;
+        }
+        // Address: the response's own wins (Zeek writes one only where a write
+        // response echoes its request's); the request fills a missing one.
+        Double address = event.address() != null ? event.address() : request.address();
+        // Quantity: the request's wins (F2, amended 2026-09-28). For a coil or
+        // discrete-input read Zeek writes the response's quantity as the bits
+        // it returned -- 8 for one byte -- where the request asked for 1, and
+        // training never saw quantity change between the two. A request with
+        // no quantity leaves the response's own.
+        Double quantity = request.quantity() != null ? request.quantity() : event.quantity();
+        // Nothing changed: the event as it is.
+        if (Objects.equals(address, event.address()) && Objects.equals(quantity, event.quantity())) {
+            return event;
+        }
+        return event.withAddressAndQuantity(address, quantity);
     }
 }

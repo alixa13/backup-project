@@ -57,6 +57,11 @@ import java.util.Objects;
 // a sentinel (e.g. -1 or 0) would make that distinction unrepresentable at
 // the type level; null does not collide with any real address or quantity.
 //
+// matched is a boxed Boolean for the same reason: null is a record that
+// carries no `matched` field at all -- every record icsnpp-modbus v1.0.0
+// writes -- which ModbusFeatureExtractor must tell apart from an explicit
+// false, since it derives response_matched only when the field is absent.
+//
 // requestValues and responseValues are the record's only array components,
 // so -- per this codebase's rule for every record with an array component --
 // they are defensively copied both in the compact constructor (so a caller's
@@ -66,7 +71,7 @@ import java.util.Objects;
 // for exactly that reason.
 public record ModbusEvent(EventEnvelope envelope, double tsSeconds, ModbusDirection direction, String sourceIp,
                           String destinationIp, int functionCode, String transactionId, String unitId,
-                          Double address, Double quantity, boolean matched, double[] requestValues,
+                          Double address, Double quantity, Boolean matched, double[] requestValues,
                           double[] responseValues)
         implements NetworkEvent {
 
@@ -143,5 +148,13 @@ public record ModbusEvent(EventEnvelope envelope, double tsSeconds, ModbusDirect
     @Override
     public double[] responseValues() {
         return responseValues.clone();
+    }
+
+    // This event with the given address and quantity, everything else equal:
+    // how ModbusBuildFeaturesUseCase hands a response its request's (F2). The
+    // canonical constructor copies both arrays, so the two events share none.
+    public ModbusEvent withAddressAndQuantity(Double newAddress, Double newQuantity) {
+        return new ModbusEvent(envelope, tsSeconds, direction, sourceIp, destinationIp, functionCode,
+            transactionId, unitId, newAddress, newQuantity, matched, requestValues, responseValues);
     }
 }

@@ -8,6 +8,9 @@ import io.netsecml.platform.domain.event.RejectedEvent;
 import io.netsecml.platform.domain.event.SensorId;
 import io.netsecml.platform.domain.feature.ConnFeatureSchemaV1;
 import io.netsecml.platform.domain.feature.FeatureVector;
+import io.netsecml.platform.domain.inference.DetectorTrigger;
+import io.netsecml.platform.domain.inference.DetectorVerdict;
+import io.netsecml.platform.domain.inference.ModbusDetectorPrediction;
 import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -120,5 +123,21 @@ class StreamContractDriftTest {
         assertEquals("port 70000 out of range", restored.detail());
         assertEquals(64, restored.rawPayloadHash().length());
         assertEquals(Instant.parse("2026-08-27T10:03:11.250Z"), restored.receivedAt());
+    }
+
+    private static ModbusDetectorPrediction scoredPrediction() {
+        return new ModbusDetectorPrediction("a".repeat(64), "sensor-eu-1:u:7:RESPONSE:1", Instant.parse(
+            "2026-09-26T12:00:00Z"), new SensorId("sensor-eu-1"), "u", "10.0.0.5", "10.0.0.9", "1",
+            "modbus-stage1-detector", "v1", "b".repeat(64), "modbus-feature-v1", "c".repeat(64),
+            DetectorVerdict.ANOMALY, 0.3f, 0.2f, 0.2483385f, 0.4121148f, DetectorTrigger.DENSE, 20, 8, 180L,
+            Instant.parse("2026-09-26T12:00:00.004Z"));
+    }
+
+    @Test
+    void modbusDetectorPredictionSerializerEmitsExactlyTheContractFields() throws Exception {
+        Set<String> emitted = messageFields(new ModbusDetectorPredictionSerializer()
+            .serialize("netsec.modbus.prediction.v1", scoredPrediction()));
+        assertEquals(contractFields("modbus-detector-prediction-v1.json"), emitted,
+            "the serializer and contracts/stream/modbus-detector-prediction-v1.json must describe the same message");
     }
 }

@@ -1,0 +1,13 @@
+{
+  "name": "modbus-stage1-detector",
+  "version": "v1",
+  "schemaId": "modbus-feature-v1",
+  "sequenceLength": 20,
+  "featureCount": 42,
+  "inputName": "sequence_20x42",
+  "denseOutputName": "modbus_dense_autoencoder",
+  "temporalOutputName": "modbus_causal_next_event_predictor",
+  "modelSha": "b5f28fec103bddceb9b1bfcf1f6cc2e36d0780eba5340bd4a663be04bb72bf4f",
+  "preprocessingSha": "9ecff68f37cf964b3aad44ea5126942a4ea6a09982cc293c02ccdc04f040896a",
+  "thresholdsSha": "9da034b42ee980128e9eb99b1c2a838210685c2eb14a269c838f9f5f7da26c69"
+}

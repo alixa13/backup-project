@@ -395,15 +395,27 @@ class ModbusEventMapperTest {
         assertEquals("NA", asModbusEvent(result.value()).unitId());
     }
 
-    // matched is meaningful only on a response record; a null wire value
-    // must default to false rather than being rejected.
+    // matched is meaningful only on a response record. icsnpp-modbus v1.0.0
+    // never writes it, and an absent value must stay absent -- null, not
+    // false, and never a rejection -- so the engine can derive it from its own
+    // causal pairing (ModbusFeatureExtractor, response_matched).
     @Test
-    void aNullMatchedDefaultsToFalse() {
+    void aMissingMatchedStaysAbsent() {
         ZeekModbusRecord dto = new ZeekModbusRecord(1758000000.5, "CXY1", "10.0.0.5", "10.0.0.9", null, null,
             true, null, 17, "1", "READ_HOLDING_REGISTERS", null, null, null, List.of(), List.of());
         MappingResult<NetworkEvent> result = map(dto);
         assertTrue(result.isValid());
-        assertFalse(asModbusEvent(result.value()).matched());
+        assertNull(asModbusEvent(result.value()).matched());
+    }
+
+    // A record that does carry matched keeps it exactly, false included.
+    @Test
+    void anExplicitFalseMatchedIsKept() {
+        ZeekModbusRecord dto = new ZeekModbusRecord(1758000000.5, "CXY1", "10.0.0.5", "10.0.0.9", null, null,
+            true, null, 17, "1", "READ_HOLDING_REGISTERS", null, null, false, List.of(), List.of());
+        MappingResult<NetworkEvent> result = map(dto);
+        assertTrue(result.isValid());
+        assertEquals(Boolean.FALSE, asModbusEvent(result.value()).matched());
     }
 
     // A null element inside request_values/response_values (a valid JSON
@@ -568,5 +580,47 @@ class ModbusEventMapperTest {
 
     private static String describe(MappingResult<NetworkEvent> result) {
         return result.isValid() ? "valid" : result.reason() + ": " + result.detail();
+    }
+
+    // A record as icsnpp-modbus v1.0.0 writes it: `values` as a string and no
+    // arrays. The 17th argument is the new `values` component.
+    private static ZeekModbusRecord v1Record(boolean isOrig, String func, String values) {
+        return new ZeekModbusRecord(1758000000.5, "CXY1", "10.0.0.5", "10.0.0.9", null, null,
+            isOrig, null, 17, "1", func, null, null, null, null, null, values);
+    }
+
+    // F1: a response's `values` becomes its response values.
+    @Test
+    void aResponsesValuesStringBecomesItsResponseValues() {
+        MappingResult<NetworkEvent> result = map(v1Record(false, "READ_HOLDING_REGISTERS", "170,171"));
+        assertTrue(result.isValid());
+        assertArrayEquals(new double[]{170, 171}, asModbusEvent(result.value()).responseValues());
+        assertArrayEquals(new double[0], asModbusEvent(result.value()).requestValues());
+    }
+
+    // F1: a request's `values` (a write) becomes its request values; coils are 1/0.
+    @Test
+    void aRequestsValuesStringBecomesItsRequestValues() {
+        MappingResult<NetworkEvent> result = map(v1Record(true, "WRITE_MULTIPLE_COILS", "T,F,T"));
+        assertTrue(result.isValid());
+        assertArrayEquals(new double[]{1, 0, 1}, asModbusEvent(result.value()).requestValues());
+        assertArrayEquals(new double[0], asModbusEvent(result.value()).responseValues());
+    }
+
+    // F1: a `values` that is not wholly numeric leaves the record valid, valueless.
+    @Test
+    void aNonNumericValuesStringIsAbsentNotARejection() {
+        MappingResult<NetworkEvent> result =
+            map(v1Record(false, "READ_HOLDING_REGISTERS", "see modbus_mask_write_register.log"));
+        assertTrue(result.isValid());
+        assertArrayEquals(new double[0], asModbusEvent(result.value()).responseValues());
+    }
+
+    // F1: an array, when present, wins over `values`.
+    @Test
+    void anArrayWinsOverTheValuesString() {
+        ZeekModbusRecord dto = new ZeekModbusRecord(1758000000.5, "CXY1", "10.0.0.5", "10.0.0.9", null, null,
+            false, null, 17, "1", "READ_HOLDING_REGISTERS", null, null, null, null, List.of(7.0, 9.0), "170,171");
+        assertArrayEquals(new double[]{7, 9}, asModbusEvent(map(dto).value()).responseValues());
     }
 }

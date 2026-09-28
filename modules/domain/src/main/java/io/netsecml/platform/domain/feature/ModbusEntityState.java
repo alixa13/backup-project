@@ -132,7 +132,7 @@ public final class ModbusEntityState {
     //   - see evictOldestIfOverCap's own comment for the deployment
     //     assumption that makes "insertion order" and "timestamp order"
     //     the same order for a well-behaved caller.
-    private LinkedHashMap<String, Double> pending = new LinkedHashMap<>();
+    private LinkedHashMap<String, PendingRequest> pending = new LinkedHashMap<>();
 
     // Trailing-window deques, upstream's w1_ts, w60_ts and w10_events. w1/w60
     // are used purely as counts (event_rate_1s = len(w1_ts), event_rate_60s =
@@ -295,7 +295,15 @@ public final class ModbusEntityState {
         return pending.containsKey(tid);
     }
 
+    // The pending request's timestamp for a tid, or null if it is not pending.
     public Double pendingTs(String tid) {
+        PendingRequest request = pending.get(tid);
+        return request == null ? null : request.ts();
+    }
+
+    // The pending request for a tid, or null if it is not pending. A plain
+    // get: the map is insertion-ordered, so reading it reorders nothing.
+    public PendingRequest pendingRequest(String tid) {
         return pending.get(tid);
     }
 
@@ -374,8 +382,9 @@ public final class ModbusEntityState {
     public BeforeEvent advance(double ts, int functionCode, String tid, ModbusDirection direction,
                                Double address, Double quantity) {
         // 0. The before-event snapshot, before anything below changes.
+        PendingRequest pendingForTid = pending.get(tid);
         BeforeEvent before = new BeforeEvent(lastTs, prevFunctionCode, lastAddress, lastQuantity,
-            pending.size(), pending.get(tid));
+            pending.size(), pendingForTid == null ? null : pendingForTid.ts());
 
         // 1a. Purge (strict upstream semantics: stored <= cutoff is dropped).
         purgeTimeDeque(window1s, ts - WINDOW_1S);
@@ -427,7 +436,7 @@ public final class ModbusEntityState {
         // ModbusEntityStateTest.reInsertingAStillPendingTidMovesItToTheEndOfEvictionOrder).
         if (direction == ModbusDirection.REQUEST) {
             pending.remove(tid);
-            pending.put(tid, ts);
+            pending.put(tid, new PendingRequest(ts, address, quantity));
             evictOldestIfOverCap(pending);
         } else {
             pending.remove(tid);
@@ -506,7 +515,7 @@ public final class ModbusEntityState {
     // negative gap makes startsNewSegment(ts) report a new segment, and a
     // new segment resets pending to empty before any further event reaches
     // this method with a stale ordering to exploit.
-    private static void evictOldestIfOverCap(Map<String, Double> pending) {
+    private static <V> void evictOldestIfOverCap(Map<String, V> pending) {
         if (pending.size() <= MAX_PENDING) {
             return;
         }

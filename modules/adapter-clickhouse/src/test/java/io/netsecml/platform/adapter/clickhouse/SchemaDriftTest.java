@@ -3,6 +3,7 @@ package io.netsecml.platform.adapter.clickhouse;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.netsecml.platform.adapter.clickhouse.row.FeatureVectorRow;
 import io.netsecml.platform.adapter.clickhouse.row.InvalidEventRow;
+import io.netsecml.platform.adapter.clickhouse.row.ModbusDetectorPredictionRow;
 import org.junit.jupiter.api.Test;
 import java.lang.reflect.RecordComponent;
 import java.nio.file.Files;
@@ -47,6 +48,11 @@ class SchemaDriftTest {
     @Test
     void invalidEventRowPropertiesMatchDdlColumns() throws Exception {
         assertJsonPropertiesAreDdlColumns(InvalidEventRow.class, "invalid_events");
+    }
+
+    @Test
+    void modbusDetectorPredictionRowPropertiesMatchDdlColumns() throws Exception {
+        assertJsonPropertiesAreDdlColumns(ModbusDetectorPredictionRow.class, "modbus_detector_predictions");
     }
 
     // Reflects over the record's components (cleaner than string-scraping the

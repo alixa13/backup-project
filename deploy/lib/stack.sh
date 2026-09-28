@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# deploy.sh up / down / restart / status (design §8).
+
+# --- small filters, pinned by tests/test_stack.sh ---
+
+# Names of RUNNING jobs, from a /jobs/overview document on stdin.
+running_job_names() { jq -r '.jobs[] | select(.state == "RUNNING") | .name' | sort -u; }
+
+# "jid name" for each RUNNING job, from a /jobs/overview document on stdin.
+running_jobs() { jq -r '.jobs[] | select(.state == "RUNNING") | "\(.jid) \(.name)"'; }
+
+# Total records ever written to a topic, from kafka-get-offsets output
+# (topic:partition:offset lines) on stdin.
+sum_offsets() { awk -F: 'NF >= 3 { s += $NF } END { print s + 0 }'; }
+
+# Seconds since the newest completed checkpoint, from a /jobs/<id>/checkpoints
+# document on stdin; "none" before the first one.
+checkpoint_age() {
+  jq -r --argjson now "$1" \
+    'if .latest.completed == null then "none"
+     else (($now - .latest.completed.latest_ack_timestamp) / 1000 | floor | tostring) end'
+}
+
+# Epoch milliseconds. Cut from %N (nanoseconds, which every date implementation
+# supports) rather than asked for as %3N: some implementations ignore the width
+# and print all nine digits.
+now_millis() {
+  local ns
+  ns="$(date +%s%N)"
+  printf '%s\n' "${ns:0:13}"
+}
+
+# True when both jobs are RUNNING on the cluster.
+jobs_running() {
+  [ "$(flink_rest /jobs/overview | running_job_names | grep -cxE 'online-feature-job|archive-job')" -eq 2 ]
+}
+
+# True when at least one TaskManager has registered.
+taskmanager_registered() { [ "$(flink_rest /overview | jq '.taskmanagers')" -ge 1 ]; }
+
+# --- up ---
+
+# Refuse to start anything that cannot work: missing JARs or Zeek image, an
+# unset or unknown capture interface (Review Focus 2), no resources block.
+stack_preflight() {
+  if [ ! -f "${DEPLOY_DIR}/jars/online-feature-job.jar" ] || [ ! -f "${DEPLOY_DIR}/jars/archive-job.jar" ]; then
+    die "job JARs missing: run 'deploy.sh build' first"
+  fi
+  docker image inspect "$ZEEK_IMAGE" >/dev/null 2>&1 || die "Zeek image ${ZEEK_IMAGE} missing: run 'deploy.sh build' first"
+  local interfaces
+  interfaces="$(list_interfaces | tr '\n' ' ')"
+  [ -n "${ZEEK_INTERFACE:-}" ] || die "ZEEK_INTERFACE is not set: run 'deploy.sh install --interface <name>' (this host has: ${interfaces})"
+  list_interfaces | grep -qxF "$ZEEK_INTERFACE" \
+    || die "capture interface ${ZEEK_INTERFACE} does not exist (this host has: ${interfaces})"
+  tune_check_drift
+  check_detector_bundle
+}
+
+# A topic's name: deploy/.env's value, else the template's -- a .env written
+# before a topic existed must not abort 'up' (Review Focus 5).
+topic_name() {
+  local value="${!1:-}"
+  [ -n "$value" ] || value="$(env_value "${DEPLOY_DIR}/.env.template" "$1")"
+  [ -n "$value" ] || die "topics.conf names $1, which neither deploy/.env nor .env.template sets"
+  printf '%s\n' "$value"
+}
+
+# The pinned detector bundle: deploy/.env's MODBUS_DETECTOR_BUNDLE when it has
+# the line (even empty), else the template's default -- what compose resolves.
+detector_bundle_setting() {
+  if grep -q '^MODBUS_DETECTOR_BUNDLE=' "$ENV_FILE" 2>/dev/null; then
+    env_value "$ENV_FILE" MODBUS_DETECTOR_BUNDLE
+  else
+    env_value "${DEPLOY_DIR}/.env.template" MODBUS_DETECTOR_BUNDLE
+  fi
+}
+
+# A pinned bundle must be on disk before the jobs start (spec section 7).
+check_detector_bundle() {
+  local bundle
+  bundle="$(detector_bundle_setting)"
+  [ -z "$bundle" ] && return 0
+  [ -f "${REPO_ROOT}/models/${bundle}/bundle.json" ] \
+    || die "the Modbus detector bundle models/${bundle} is missing: package it with deploy/models/package-modbus-detector.sh <delivery-dir> and copy it to models/${bundle}/, or set MODBUS_DETECTOR_BUNDLE= (empty) in deploy/.env to run without scoring"
+  # Each file must be the one bundle.json records -- the check the online job
+  # makes before it submits, done here so a corrupt copy stops 'up' at once.
+  local file key expected actual
+  for file in model.onnx:modelSha preprocessing.json:preprocessingSha thresholds.json:thresholdsSha; do
+    key="${file#*:}"; file="${file%%:*}"
+    expected="$(jq -r ".${key} // empty" "${REPO_ROOT}/models/${bundle}/bundle.json" 2>/dev/null || true)"
+    actual="$(sha256sum "${REPO_ROOT}/models/${bundle}/${file}" 2>/dev/null | cut -c1-64 || true)"
+    if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+      die "the Modbus detector bundle is corrupt: models/${bundle}/${file} does not match its SHA-256 in bundle.json (expected ${expected:-none}, got ${actual:-no file}); package it again with deploy/models/package-modbus-detector.sh, or set MODBUS_DETECTOR_BUNDLE= (empty) in deploy/.env to run without scoring"
+    fi
+  done
+}
+
+# Every topic both jobs subscribe to, created before they start: a missing
+# topic crash-loops a whole job. '</dev/null' keeps 'compose exec' from
+# swallowing the rest of topics.conf (Review Focus 3).
+create_topics() {
+  local var partitions hours topic
+  while read -r var partitions hours; do
+    case "$var" in ''|'#'*) continue ;; esac
+    topic="$(topic_name "$var")"
+    compose exec -T kafka kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+      --topic "$topic" --partitions "$partitions" --replication-factor 1 \
+      --config "retention.ms=$(( hours * 3600000 ))" </dev/null >/dev/null
+  done < "${DEPLOY_DIR}/kafka/topics.conf"
+  log "topics: $(compose exec -T kafka kafka-topics --bootstrap-server kafka:29092 --list </dev/null | tr '\n' ' ')"
+}
+
+# The ClickHouse tables, through the repository's own idempotent DDL script.
+apply_ddl() {
+  CLICKHOUSE_HOST="$(host_addr)" CLICKHOUSE_PORT="$CLICKHOUSE_HTTP_PORT" \
+    bash "${REPO_ROOT}/scripts/database/apply-ddl.sh"
+}
+
+stack_up() {
+  load_env
+  stack_preflight
+  prepare_data_dirs
+
+  # Storage first, then its schema.
+  log "starting Kafka and ClickHouse"
+  compose up -d kafka clickhouse
+  wait_for 180 "Kafka" compose exec -T kafka kafka-topics --bootstrap-server kafka:29092 --list
+  wait_for 180 "ClickHouse" curl -fsS "http://$(host_addr):${CLICKHOUSE_HTTP_PORT}/ping"
+  create_topics
+  apply_ddl
+
+  # Then Flink, and the supervisor that submits (or resumes) both jobs.
+  log "starting Flink"
+  compose up -d flink-jobmanager flink-taskmanager
+  wait_for 180 "Flink JobManager" flink_rest /overview
+  wait_for 180 "Flink TaskManager" taskmanager_registered
+  log "starting the job supervisor (it submits both jobs, resuming any saved state)"
+  compose up -d job-submitter
+  wait_for 300 "both jobs RUNNING" jobs_running
+
+  # The sensor last, so its first records find the jobs running.
+  log "starting Zeek on ${ZEEK_INTERFACE}"
+  compose up -d zeek
+  stack_status
+}
+
+# --- down ---
+
+# restart: everything 'up' will insist on is checked first, so a missing
+# bundle, JAR or interface refuses the restart instead of stopping the stack
+# and then refusing to start it again (capture included).
+stack_restart() {
+  load_env
+  stack_preflight
+  stack_down
+  stack_up
+}
+
+stack_down() {
+  load_env
+  # The sensor and the supervisor first: no new input, and nobody to resubmit
+  # the jobs being stopped.
+  compose stop zeek job-submitter >/dev/null 2>&1 || true
+  if flink_rest /overview >/dev/null 2>&1; then
+    local jid name
+    while read -r jid name; do
+      [ -n "$jid" ] || continue
+      log "stopping ${name} with a savepoint"
+      compose exec -T flink-jobmanager flink stop \
+        --savepointPath "file:///flink-data/savepoints/${name}" "$jid" </dev/null \
+        || warn "the savepoint for ${name} failed: it will resume from its newest retained checkpoint"
+    done < <(flink_rest /jobs/overview | running_jobs)
+  fi
+  compose down
+  log "stopped; data kept in ${NETSEC_DATA_DIR_ABS}"
+}
+
+# --- status ---
+
+stack_status() {
+  load_env
+  log "containers:"
+  compose ps --format 'table {{.Service}}\t{{.State}}\t{{.Status}}' || true
+
+  # Jobs, and how old each running job's newest checkpoint is.
+  if flink_rest /overview >/dev/null 2>&1; then
+    log "Flink jobs:"
+    local now jid name age
+    now="$(now_millis)"
+    while read -r jid name; do
+      [ -n "$jid" ] || continue
+      # Right after 'up' a job has no completed checkpoint yet: say so in words.
+      age="$(flink_rest "/jobs/${jid}/checkpoints" | checkpoint_age "$now")"
+      if [ "$age" = none ]; then
+        age="no checkpoint yet"
+      else
+        age="last checkpoint ${age}s ago"
+      fi
+      printf '  %-20s RUNNING   %s\n' "$name" "$age"
+    done < <(flink_rest /jobs/overview | running_jobs)
+    flink_rest /jobs/overview | jq -r '.jobs[] | select(.state != "RUNNING") | "  \(.name)  \(.state)"' | sort -u || true
+  else
+    warn "the Flink JobManager is not reachable"
+  fi
+
+  # Traffic: records ever written to each raw topic.
+  local var
+  log "raw topics (records written since the topic was created):"
+  for var in MODBUS_RAW_TOPIC S7COMM_RAW_TOPIC; do
+    printf '  %-26s %s\n' "${!var}" \
+      "$(compose exec -T kafka kafka-get-offsets --bootstrap-server kafka:29092 --topic "${!var}" </dev/null 2>/dev/null | sum_offsets)"
+  done
+
+  # What reached ClickHouse lately, and what was rejected.
+  log "feature vectors archived in the last 5 minutes:"
+  ch_query "SELECT log_type, count() AS rows FROM feature_vectors WHERE archived_at > now64(3) - INTERVAL 5 MINUTE GROUP BY log_type ORDER BY log_type FORMAT PrettyCompactMonoBlock" \
+    || warn "ClickHouse is not reachable"
+  log "DLQ rows in the last hour, by reason:"
+  ch_query "SELECT log_type, reason_code, count() AS rows FROM invalid_events WHERE received_at > now64(3) - INTERVAL 1 HOUR GROUP BY log_type, reason_code ORDER BY rows DESC LIMIT 10 FORMAT PrettyCompactMonoBlock" \
+    || true
+}

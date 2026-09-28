@@ -2,6 +2,7 @@ package io.netsecml.platform.bootstrap.archive;
 
 import io.netsecml.platform.adapter.clickhouse.row.FeatureVectorRow;
 import io.netsecml.platform.adapter.clickhouse.row.InvalidEventRow;
+import io.netsecml.platform.adapter.clickhouse.row.ModbusDetectorPredictionRow;
 import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseBatchSink;
 import io.netsecml.platform.adapter.clickhouse.writer.ClickHouseConfig;
 import io.netsecml.platform.adapter.flink.source.RawBytesDeserializationSchema;
@@ -16,6 +17,7 @@ import org.apache.flink.streaming.api.environment.CheckpointConfig;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 
 // The independent Kafka-to-ClickHouse archive job.
@@ -174,6 +176,25 @@ public final class ArchiveJob {
             dlqChain(LogType.S7COMM, s7commDlqTopic));
     }
 
+    // Modbus Stage 1 predictions (spec section 6), their own three uids.
+    public static LogTypeChain<ModbusDetectorPredictionRow> modbusPredictionChain(String topic) {
+        return new LogTypeChain<>(topic, new ModbusDetectorPredictionRowMapFunction(topic),
+            "modbus_detector_predictions", "modbus-prediction-source", "modbus-prediction-row",
+            "modbus-predictions-clickhouse-sink");
+    }
+
+    // The nine chains main() wires: connDnsModbusAndS7commChains' eight plus
+    // Modbus predictions.
+    public static List<LogTypeChain<?>> connDnsModbusS7commAndModbusPredictionChains(
+            String connFeatureTopic, String connDlqTopic, String dnsFeatureTopic, String dnsDlqTopic,
+            String modbusFeatureTopic, String modbusDlqTopic, String s7commFeatureTopic, String s7commDlqTopic,
+            String modbusPredictionTopic) {
+        List<LogTypeChain<?>> chains = new ArrayList<>(connDnsModbusAndS7commChains(connFeatureTopic, connDlqTopic,
+            dnsFeatureTopic, dnsDlqTopic, modbusFeatureTopic, modbusDlqTopic, s7commFeatureTopic, s7commDlqTopic));
+        chains.add(modbusPredictionChain(modbusPredictionTopic));
+        return List.copyOf(chains);
+    }
+
     // One feature-vector chain for a log type. Mirrors dlqChain immediately
     // below -- a factory rather than three literal strings at each call site,
     // because the uids are checkpoint state identity and hand-writing them per
@@ -279,23 +300,38 @@ public final class ArchiveJob {
             .build();
     }
 
+    // Flink 2.x removed StreamExecutionEnvironment.setRestartStrategy, so the restart
+    // strategy is configuration-only now. exponential-delay, because a TaskManager
+    // that dies takes all eight of this job's chains down at once and each reports
+    // its own failure: exponential-delay merges the failures that arrive while a
+    // restart is pending into that one attempt, where failure-rate (3 per 10
+    // minutes, until the 2026-09-25 server test) counted all eight and failed the
+    // job on a single TaskManager restart (ArchiveJobRestartStrategyTest). A
+    // ClickHouse outage is retried with a growing pause, 10 s doubling to 2 min.
+    // A job that keeps failing is given up on after 10 attempts -- about a quarter
+    // of an hour -- so it turns FAILED and the supervisor's check for saved state
+    // that no longer fits (deploy/flink/submit-jobs.sh) gets to run; 10 minutes
+    // without a failure start the count afresh.
+    static Configuration restartStrategy() {
+        Configuration restartConfig = new Configuration();
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY,
+            RestartStrategyOptions.RestartStrategyType.EXPONENTIAL_DELAY.getMainValue());
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_EXPONENTIAL_DELAY_INITIAL_BACKOFF, Duration.ofSeconds(10));
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_EXPONENTIAL_DELAY_MAX_BACKOFF, Duration.ofMinutes(2));
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_EXPONENTIAL_DELAY_BACKOFF_MULTIPLIER, 2.0);
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_EXPONENTIAL_DELAY_RESET_BACKOFF_THRESHOLD, Duration.ofMinutes(10));
+        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_EXPONENTIAL_DELAY_ATTEMPTS, 10);
+        return restartConfig;
+    }
+
     // Production entry point: reads every setting from the environment (all
     // documented in .env.example) and runs the job until cancelled.
     public static void main(String[] args) throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
-        // Flink 2.x removed StreamExecutionEnvironment.setRestartStrategy, so the restart
-        // strategy is configuration-only now. Applied before enableCheckpointing below so
-        // the explicit checkpoint settings are the last word regardless of what configure()
-        // reads out of this Configuration. failure-rate keeps a transient ClickHouse outage
-        // recoverable while refusing to hot-loop a genuinely broken deployment.
-        Configuration restartConfig = new Configuration();
-        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY,
-            RestartStrategyOptions.RestartStrategyType.FAILURE_RATE.getMainValue());
-        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_MAX_FAILURES_PER_INTERVAL, 3);
-        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_FAILURE_RATE_INTERVAL, Duration.ofMinutes(10));
-        restartConfig.set(RestartStrategyOptions.RESTART_STRATEGY_FAILURE_RATE_DELAY, Duration.ofSeconds(10));
-        env.configure(restartConfig);
+        // Applied before enableCheckpointing below so the explicit checkpoint settings
+        // are the last word regardless of what configure() reads out of this Configuration.
+        env.configure(restartStrategy());
 
         // Checkpointing is what makes this job's delivery contract real, so it is not
         // optional tuning. A failed ClickHouse insert throws out of the sink writer's
@@ -326,6 +362,9 @@ public final class ArchiveJob {
         String s7commFeatureTopic = System.getenv().getOrDefault("S7COMM_FEATURE_VECTOR_TOPIC",
             "netsec.s7comm.feature-vector.v1");
         String s7commDlqTopic = System.getenv().getOrDefault("S7COMM_DLQ_TOPIC", "netsec.s7comm.dlq.v1");
+        // Modbus Stage 1 predictions; the topic must exist even when scoring is off.
+        String modbusPredictionTopic = System.getenv().getOrDefault("MODBUS_PREDICTION_TOPIC",
+            "netsec.modbus.prediction.v1");
 
         ClickHouseConfig clickHouse = ClickHouseConfig.of(
             System.getenv().getOrDefault("CLICKHOUSE_HOST", "localhost"),
@@ -334,16 +373,16 @@ public final class ArchiveJob {
             System.getenv().getOrDefault("CLICKHOUSE_USER", "default"),
             System.getenv().getOrDefault("CLICKHOUSE_PASSWORD", ""));
 
-        // Eight chains through connDnsModbusAndS7commChains() and the
-        // parameterised, list-form build(): conn's two (unchanged uids), then
-        // dns's, modbus's and s7comm's two each under the shared prefix
-        // pattern. connDnsAndModbusChains() and connAndDnsChains() stay public
-        // for the tests that call them directly. ArchiveJobTopologyTest's
-        // eight-chain case builds through connDnsModbusAndS7commChains() too,
-        // so it pins the exact list this method wires.
+        // Nine chains through connDnsModbusS7commAndModbusPredictionChains()
+        // and the parameterised, list-form build(): conn's two (unchanged
+        // uids), then dns's, modbus's and s7comm's two each under the shared
+        // prefix pattern, then Modbus predictions. The eight-, six- and
+        // four-chain methods stay public for the tests that call them
+        // directly. ArchiveJobTopologyTest's nine-chain case builds through
+        // the same method, so it pins the exact list this method wires.
         build(env, bootstrapServers,
-            connDnsModbusAndS7commChains(featureTopic, dlqTopic, dnsFeatureTopic, dnsDlqTopic,
-                modbusFeatureTopic, modbusDlqTopic, s7commFeatureTopic, s7commDlqTopic),
+            connDnsModbusS7commAndModbusPredictionChains(featureTopic, dlqTopic, dnsFeatureTopic, dnsDlqTopic,
+                modbusFeatureTopic, modbusDlqTopic, s7commFeatureTopic, s7commDlqTopic, modbusPredictionTopic),
             clickHouse);
         env.execute("archive-job");
     }

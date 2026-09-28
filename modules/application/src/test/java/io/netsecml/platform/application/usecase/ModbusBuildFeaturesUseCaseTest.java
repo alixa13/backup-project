@@ -168,4 +168,113 @@ class ModbusBuildFeaturesUseCaseTest {
         assertEquals(fixed, useCase.build(request(1000.0, 3, "17"), ModbusEntityState.empty())
             .vector().producedAt());
     }
+
+    // An event on the fixed key (10.0.0.5 -> 10.0.0.9, unit 1) with its own
+    // address and quantity, which may be null as Zeek v1.0.0 writes them.
+    private static ModbusEvent v1Event(double ts, ModbusDirection direction, String tid, Double address,
+                                       Double quantity) {
+        String uid = "u-" + ts;
+        EventEnvelope envelope = new EventEnvelope(EventId.derive(new SensorId("sensor-eu-1"), uid),
+            Instant.ofEpochMilli((long) (ts * 1000)), new SensorId("sensor-eu-1"), LogType.MODBUS, uid);
+        boolean request = direction == ModbusDirection.REQUEST;
+        return new ModbusEvent(envelope, ts, direction, request ? "10.0.0.5" : "10.0.0.9",
+            request ? "10.0.0.9" : "10.0.0.5", 3, tid, "1", address, quantity, null, new double[0], new double[0]);
+    }
+
+    // F2 (spec section 2.1): Zeek leaves a response's address off; it takes its request's.
+    @Test
+    void aResponseWithoutAddressTakesItsPendingRequestsAddressAndQuantity() {
+        ModbusBuildFeaturesUseCase useCase = useCase();
+        ModbusEntityState state = ModbusEntityState.empty();
+        useCase.build(v1Event(1000.0, ModbusDirection.REQUEST, "7", 100.0, 2.0), state);
+        float[] v = useCase.build(v1Event(1000.25, ModbusDirection.RESPONSE, "7", null, null), state)
+            .vector().values();
+        assertEquals(100f, v[8], "address_value");
+        assertEquals(1f, v[9], "address_present");
+        assertEquals(2f, v[10], "quantity_value");
+        assertEquals(1f, v[11], "quantity_present");
+    }
+
+    // F2: a response that carries its own address keeps it.
+    @Test
+    void aResponsesOwnAddressWins() {
+        ModbusBuildFeaturesUseCase useCase = useCase();
+        ModbusEntityState state = ModbusEntityState.empty();
+        useCase.build(v1Event(1000.0, ModbusDirection.REQUEST, "7", 100.0, 2.0), state);
+        float[] v = useCase.build(v1Event(1000.25, ModbusDirection.RESPONSE, "7", 300.0, null), state)
+            .vector().values();
+        assertEquals(300f, v[8], "its own address");
+        assertEquals(2f, v[10], "the request's quantity, since it had none");
+    }
+
+    // Review Focus 3: no pending request, no borrowing.
+    @Test
+    void anUnansweredResponseBorrowsNothing() {
+        float[] v = useCase().build(v1Event(1000.0, ModbusDirection.RESPONSE, "7", null, null),
+            ModbusEntityState.empty()).vector().values();
+        assertEquals(0f, v[9], "address_present");
+        assertEquals(0f, v[11], "quantity_present");
+    }
+
+    // Review Focus 3: a >15 s gap starts a new segment, which forgets the request.
+    @Test
+    void aResponseAcrossASegmentStartBorrowsNothing() {
+        ModbusBuildFeaturesUseCase useCase = useCase();
+        ModbusEntityState state = ModbusEntityState.empty();
+        useCase.build(v1Event(1000.0, ModbusDirection.REQUEST, "7", 100.0, 2.0), state);
+        float[] v = useCase.build(v1Event(1016.0, ModbusDirection.RESPONSE, "7", null, null), state)
+            .vector().values();
+        assertEquals(0f, v[9], "address_present");
+    }
+
+    // Review Focus 3: a request evicted by the 4096 cap is no longer pending.
+    @Test
+    void aResponseWhoseRequestWasEvictedBorrowsNothing() {
+        ModbusBuildFeaturesUseCase useCase = useCase();
+        ModbusEntityState state = ModbusEntityState.empty();
+        useCase.build(v1Event(1000.0, ModbusDirection.REQUEST, "evicted", 100.0, 2.0), state);
+        for (int i = 0; i < 4096; i++) {
+            useCase.build(v1Event(1000.0 + (i + 1) * 0.001, ModbusDirection.REQUEST, "t" + i, 200.0, 1.0), state);
+        }
+        float[] v = useCase.build(v1Event(1005.0, ModbusDirection.RESPONSE, "evicted", null, null), state)
+            .vector().values();
+        assertEquals(0f, v[9], "address_present");
+    }
+
+    // F2, amended 2026-09-28: for a coil or discrete-input read Zeek writes the
+    // response's quantity as the bits it returned (8 for one byte) while the
+    // request asked for 1. Training had quantity constant (quantity_delta zero
+    // on 100% of rows), so a matched response takes its request's quantity even
+    // over its own -- the held-out benign captures otherwise score ~5% NORMAL.
+    @Test
+    void aMatchedResponseTakesItsRequestsQuantityOverItsOwn() {
+        ModbusBuildFeaturesUseCase useCase = useCase();
+        ModbusEntityState state = ModbusEntityState.empty();
+        useCase.build(v1Event(1000.0, ModbusDirection.REQUEST, "7", 14.0, 1.0), state);
+        float[] v = useCase.build(v1Event(1000.25, ModbusDirection.RESPONSE, "7", null, 8.0), state)
+            .vector().values();
+        assertEquals(1f, v[10], "quantity_value: the request's 1, not Zeek's 8");
+        assertEquals(1f, v[11], "quantity_present");
+        assertEquals(0f, v[29], "quantity_delta: no change between request and response");
+    }
+
+    // A request without a quantity has none to give: the response keeps its own.
+    @Test
+    void aMatchedResponseWhoseRequestHadNoQuantityKeepsItsOwn() {
+        ModbusBuildFeaturesUseCase useCase = useCase();
+        ModbusEntityState state = ModbusEntityState.empty();
+        useCase.build(v1Event(1000.0, ModbusDirection.REQUEST, "7", 14.0, null), state);
+        float[] v = useCase.build(v1Event(1000.25, ModbusDirection.RESPONSE, "7", null, 8.0), state)
+            .vector().values();
+        assertEquals(8f, v[10], "quantity_value");
+    }
+
+    // With no pending request there is nothing to prefer: the response keeps its own.
+    @Test
+    void anUnansweredResponseKeepsItsOwnQuantity() {
+        float[] v = useCase().build(v1Event(1000.0, ModbusDirection.RESPONSE, "7", null, 8.0),
+            ModbusEntityState.empty()).vector().values();
+        assertEquals(8f, v[10], "quantity_value");
+        assertEquals(1f, v[11], "quantity_present");
+    }
 }

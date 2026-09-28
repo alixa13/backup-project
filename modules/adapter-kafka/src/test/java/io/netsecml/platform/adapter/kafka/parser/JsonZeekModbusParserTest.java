@@ -261,4 +261,13 @@ class JsonZeekModbusParserTest {
     private static String describe(MappingResult<ZeekModbusRecord> result) {
         return result.isValid() ? "valid" : result.reason() + ": " + result.detail();
     }
+
+    // icsnpp-modbus v1.0.0's `values` string binds to the new component.
+    @Test
+    void theValuesStringBinds() {
+        ZeekModbusRecord record = new JsonZeekModbusParser().parse(("{\"ts\":1.5,\"uid\":\"C1\",\"tid\":1,"
+            + "\"func\":\"READ_COILS\",\"values\":\"T,F,F,F\"}").getBytes(StandardCharsets.UTF_8))
+            .value();
+        assertEquals("T,F,F,F", record.values());
+    }
 }

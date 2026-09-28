@@ -1,5 +1,6 @@
 package io.netsecml.platform.bootstrap.online;
 
+import io.netsecml.platform.adapter.flink.process.ModbusFeatureProcessFunction;
 import io.netsecml.platform.adapter.flink.process.S7commFeatureProcessFunction;
 import io.netsecml.platform.domain.event.SensorId;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -10,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.Field;
 import java.time.Duration;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -289,15 +291,16 @@ class OnlineFeatureJobTopologyTest {
         assertTrue(uids.containsAll(CONN_UIDS), "conn's historical uids must be byte-identical, found: " + uids);
     }
 
-    // main() calls the build(...) overload that takes the s7comm state TTL. The
-    // default-TTL overload the tests above use delegates to it, so its wiring
-    // is already covered; what those tests cannot see is whether the Duration
-    // it is given actually reaches s7comm-features. This builds with a
-    // non-default TTL and reads it back off that operator's function -- and
+    // main() calls the build(...) overload that takes the modbus and s7comm
+    // state TTLs. The default-TTL overloads the tests above use delegate to
+    // it, so its wiring is already covered; what those tests cannot see is
+    // whether each Duration it is given reaches its own operator. This builds
+    // with two different non-default TTLs -- so passing them to the wrong
+    // operators fails too -- reads each back off its operator's function, and
     // checks the uids are unchanged, since a TTL is a runtime setting, never
     // checkpoint identity.
     @Test
-    void theTtlTakingOverloadThatMainCallsPassesItsTtlToTheS7commOperator() throws Exception {
+    void theTtlTakingOverloadThatMainCallsPassesEachTtlToItsOwnOperator() throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
         OnlineFeatureJob.build(env, "localhost:9092",
@@ -307,18 +310,81 @@ class OnlineFeatureJobTopologyTest {
                 "netsec.modbus.dlq.v1"),
             new OnlineFeatureJob.ProtocolTopics("netsec.s7comm.raw.v1", "netsec.s7comm.feature-vector.v1",
                 "netsec.s7comm.dlq.v1"),
-            new SensorId("sensor-eu-1"), Duration.ofMinutes(90));
+            new SensorId("sensor-eu-1"), Duration.ofMinutes(45), Duration.ofMinutes(90));
         assertEquals(uidsOf(buildFourProtocol()), uidsOf(env));
 
-        // The s7comm-features node's operator is a KeyedProcessOperator whose
-        // user function is the S7commFeatureProcessFunction the chain built.
+        assertEquals(Duration.ofMinutes(45),
+            stateTtlOf(env, "modbus-features", ModbusFeatureProcessFunction.class));
+        assertEquals(Duration.ofMinutes(90),
+            stateTtlOf(env, "s7comm-features", S7commFeatureProcessFunction.class));
+    }
+
+    // The stateTtl a feature operator was built with: the node with this uid is
+    // a KeyedProcessOperator whose user function is that operator's function.
+    private static Object stateTtlOf(StreamExecutionEnvironment env, String uid, Class<?> functionClass)
+            throws ReflectiveOperationException {
         StreamNode features = env.getStreamGraph(false).getStreamNodes().stream()
-            .filter(node -> "s7comm-features".equals(node.getTransformationUID()))
+            .filter(node -> uid.equals(node.getTransformationUID()))
             .findFirst().orElseThrow();
         Object function = ((AbstractUdfStreamOperator<?, ?>)
             ((SimpleOperatorFactory<?>) features.getOperatorFactory()).getOperator()).getUserFunction();
-        Field stateTtl = S7commFeatureProcessFunction.class.getDeclaredField("stateTtl");
+        Field stateTtl = functionClass.getDeclaredField("stateTtl");
         stateTtl.setAccessible(true);
-        assertEquals(Duration.ofMinutes(90), stateTtl.get(function));
+        return stateTtl.get(function);
+    }
+
+    // Scoring adds exactly three uids -- modbus-score, modbus-prediction-sink
+    // and the committer node Flink's Sink V2 derives from the sink's uid, as
+    // it does for every other sink here -- and a null ModbusScoring adds none
+    // (spec S10).
+    @Test
+    void scoringAddsItsTwoOperatorsAndOnlyWhenEnabled() {
+        StreamExecutionEnvironment on = StreamExecutionEnvironment.getExecutionEnvironment();
+        on.setParallelism(1);
+        OnlineFeatureJob.build(on, "localhost:9092",
+            new OnlineFeatureJob.ProtocolTopics("conn", "netsec.conn.feature-vector.v1", "netsec.conn.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("dns", "netsec.dns.feature-vector.v1", "netsec.dns.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("netsec.modbus.raw.v1", "netsec.modbus.feature-vector.v1",
+                "netsec.modbus.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("netsec.s7comm.raw.v1", "netsec.s7comm.feature-vector.v1",
+                "netsec.s7comm.dlq.v1"),
+            new SensorId("sensor-eu-1"), Duration.ofMinutes(60), Duration.ofMinutes(60),
+            new OnlineFeatureJob.ModbusScoring("/opt/netsec/models/modbus-stage1-detector/v1",
+                "netsec.modbus.prediction.v1"));
+        Set<String> withScoring = uidsOf(on);
+        Set<String> without = uidsOf(buildFourProtocol());
+        assertEquals(without.size() + 3, withScoring.size(), "found: " + withScoring);
+        assertTrue(withScoring.containsAll(Set.of("modbus-score", "modbus-prediction-sink",
+            "Sink Committer: modbus-prediction-sink")));
+        assertTrue(withScoring.containsAll(without), "no existing uid changes");
+    }
+
+    // An empty MODBUS_DETECTOR_BUNDLE keeps modbus-score and its sink in the
+    // job (disabled), so switching scoring off after it has run never leaves
+    // savepoint state without an operator to restore into.
+    @Test
+    void scoringOffKeepsTheScoringOperatorsSoNoStateIsOrphaned() {
+        OnlineFeatureJob.ModbusScoring off = OnlineFeatureJob.modbusScoring(
+            Map.of("MODBUS_DETECTOR_BUNDLE", "", "NETSEC_MODELS_DIR", "/opt/netsec/models"));
+        OnlineFeatureJob.ModbusScoring on = OnlineFeatureJob.modbusScoring(
+            Map.of("MODBUS_DETECTOR_BUNDLE", "modbus-stage1-detector/v1", "NETSEC_MODELS_DIR", "/opt/netsec/models"));
+        assertNull(off.bundleDir(), "an empty pin scores nothing");
+        assertEquals("/opt/netsec/models/modbus-stage1-detector/v1", on.bundleDir());
+        assertEquals("netsec.modbus.prediction.v1", off.predictionTopic());
+        assertEquals(uidsOf(buildWith(on)), uidsOf(buildWith(off)));
+    }
+
+    private static StreamExecutionEnvironment buildWith(OnlineFeatureJob.ModbusScoring scoring) {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        OnlineFeatureJob.build(env, "localhost:9092",
+            new OnlineFeatureJob.ProtocolTopics("conn", "netsec.conn.feature-vector.v1", "netsec.conn.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("dns", "netsec.dns.feature-vector.v1", "netsec.dns.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("netsec.modbus.raw.v1", "netsec.modbus.feature-vector.v1",
+                "netsec.modbus.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("netsec.s7comm.raw.v1", "netsec.s7comm.feature-vector.v1",
+                "netsec.s7comm.dlq.v1"),
+            new SensorId("sensor-eu-1"), Duration.ofMinutes(60), Duration.ofMinutes(60), scoring);
+        return env;
     }
 }

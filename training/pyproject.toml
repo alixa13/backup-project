@@ -22,6 +22,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The S7comm Stage 1 detector v2 (docs/superpowers/specs/2026-09-28-s7comm-detector-v2-design.md).
+# torch comes from the CPU index first (see training/README.md); this pin only records it.
+s7comm = [
+    "torch==2.5.1",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "scikit-learn>=1.5",
+    "joblib>=1.4",
+    "onnx>=1.16",
+    "onnxruntime>=1.19",
+    "pyyaml>=6.0",
+]
 dev = [
     "pytest",
     "pytest-cov",

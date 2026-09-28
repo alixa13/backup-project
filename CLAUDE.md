@@ -113,7 +113,10 @@ domain → ports → application → adapters → bootstrap
   is oriented by `is_orig`, which is then required. A record is a request iff its destination
   port is 102. `S7commEventMapper` holds the rule; state is keyed by uid, so a request and its
   response share it whatever their endpoints.
-- CPU-only: no GPU, no CUDA, no deep-learning frameworks. ONNX Runtime Java with intra/inter-op threads pinned to 1 per subtask.
+- CPU-only: no GPU, no CUDA. No deep-learning framework on the serving path: the online job runs
+  ONNX Runtime Java only, with intra/inter-op threads pinned to 1 per subtask. CPU-only PyTorch is
+  allowed in `training/` alone, to train the S7comm detector (2026-09-28, owner's decision; spec
+  `docs/superpowers/specs/2026-09-28-s7comm-detector-v2-design.md` section 6).
 - Model bundle is pinned in job config and loaded once in `open()`. No live hot reload.
 - ClickHouse is never on the online scoring path. Predictions go to Kafka first; the archive job writes to ClickHouse asynchronously.
 - ClickHouse inserts are idempotent (`ReplacingMergeTree`). Do not promise exactly-once for the archive sink.

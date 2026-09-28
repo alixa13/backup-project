@@ -12,6 +12,7 @@ import io.netsecml.platform.domain.feature.QualityFlags;
 import io.netsecml.platform.domain.feature.S7commConnectionKey;
 import io.netsecml.platform.domain.feature.S7commConnectionState;
 import org.apache.flink.api.common.functions.OpenContext;
+import org.apache.flink.api.common.state.StateTtlConfig;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
@@ -266,8 +267,15 @@ class S7commFeatureProcessFunctionTest {
 
         @Override
         public void open(OpenContext openContext) {
-            state = getRuntimeContext().getState(new ValueStateDescriptor<>(
-                "s7comm-connection-state", TypeInformation.of(S7commConnectionState.class)));
+            ValueStateDescriptor<S7commConnectionState> descriptor = new ValueStateDescriptor<>(
+                "s7comm-connection-state", TypeInformation.of(S7commConnectionState.class));
+            // The deployed operator's TTL, so the snapshot has the deployed layout.
+            descriptor.enableTimeToLive(StateTtlConfig.newBuilder(S7commFeatureProcessFunction.DEFAULT_STATE_TTL)
+                .setUpdateType(StateTtlConfig.UpdateType.OnCreateAndWrite)
+                .setStateVisibility(StateTtlConfig.StateVisibility.NeverReturnExpired)
+                .cleanupFullSnapshot()
+                .build());
+            state = getRuntimeContext().getState(descriptor);
             useCase = new S7commBuildFeaturesUseCase();
         }
 
@@ -281,10 +289,11 @@ class S7commFeatureProcessFunctionTest {
         }
     }
 
-    // A key restored from a snapshot taken before the counter existed keeps its
-    // state and counts from its next event: it does not restart at once.
+    // A key restored from a snapshot taken before the counter existed restarts at
+    // its first event (final review): its run length is unbounded and may already
+    // be past what the detector flags, and its new score window warms up anyway.
     @Test
-    void aKeyRestoredWithoutACounterCountsFromItsNextEvent() throws Exception {
+    void aKeyRestoredWithoutACounterRestartsAtItsFirstEvent() throws Exception {
         var before = new KeyedOneInputStreamOperatorTestHarness<>(
             new KeyedProcessOperator<>(new WithoutCounter()),
             new S7commConnectionKeySelector(), TypeInformation.of(S7commConnectionKey.class));
@@ -295,7 +304,7 @@ class S7commFeatureProcessFunctionTest {
         OperatorSubtaskState snapshot = before.snapshot(1L, 1L);
         before.close();
 
-        var after = harness(S7commFeatureProcessFunction.DEFAULT_STATE_TTL, 2);
+        var after = harness(S7commFeatureProcessFunction.DEFAULT_STATE_TTL, 3);
         after.initializeState(snapshot);
         after.open();
         for (int i = 5; i < 8; i++) {
@@ -303,11 +312,11 @@ class S7commFeatureProcessFunctionTest {
         }
         List<FeatureVector> out = after.extractOutputValues();
         List<KeyedS7commVector> side = scoring(after);
-        assertFalse(side.get(0).freshState(), "the restored state is used");
-        assertEquals(6f, out.get(0).values()[3], "the run continues from the restored state");
-        assertFalse(restarted(out.get(0)));
-        assertFalse(restarted(out.get(1)), "counted 1 of 2");
-        assertTrue(restarted(out.get(2)), "counted 2 of 2: the restart");
+        assertTrue(restarted(out.get(0)), "no counter: the restored key restarts at once");
+        assertTrue(side.get(0).freshState(), "and the scorer re-warms");
+        assertEquals(1f, out.get(0).values()[3], "the run starts again");
+        assertFalse(restarted(out.get(1)), "then it counts: 1 of 3");
+        assertFalse(restarted(out.get(2)), "2 of 3");
         after.close();
     }
 

@@ -120,9 +120,10 @@ public final class S7commFeatureProcessFunction
         Long counted = eventsSinceRestart.value();
         // A connection that has run restartEvents events starts again from empty
         // state: its run lengths are unbounded, and the detector flags a connection
-        // that runs too long (amendment A1, item 4). A key restored without a
-        // counter counts from here.
-        boolean restart = state != null && counted != null && counted >= restartEvents;
+        // that runs too long (amendment A1, item 4). A key restored without a counter
+        // (state from before the restart existed) restarts at once: its run may
+        // already be past what the detector flags, and its score window is new anyway.
+        boolean restart = state != null && (counted == null || counted >= restartEvents);
         // Empty state -- a new connection, a TTL expiry, a restore without state,
         // or a restart -- is where the scorer's window must start again (spec section 5).
         boolean freshState = state == null || restart;

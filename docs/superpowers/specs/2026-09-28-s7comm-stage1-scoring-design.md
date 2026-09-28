@@ -27,8 +27,11 @@
 >      state. That event carries the new quality flag `S7COMM_RESTARTED` (bit 5, value 32), and
 >      it reaches the scorer with `freshState` true, so the scorer resets as for any reset
 >      (section 5, D4).
->    - A key restored without a counter (after the upgrade) counts from its first event after
->      the upgrade.
+>    - A key restored without a counter (after the upgrade) restarts at its first event after
+>      the upgrade (final review, 2026-09-28; the earlier wording let it count from there). Its
+>      run may already be past about 73,000, and v2 would flag every event for up to 16,384
+>      events. Restarting costs nothing, because its score window is new at the upgrade and
+>      warms up anyway.
 >    - Measured on v2 (the model card's "Measured after release"): with restarts every 16,384
 >      events, every gated source stays at 99.46–100% NORMAL past each segment's 64th event, and
 >      0.4% of events fall in a segment's first 64.

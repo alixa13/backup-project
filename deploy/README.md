@@ -70,7 +70,7 @@ It checks every file against the release's own `FROZEN_MANIFEST.json`.
   grows without bound, and the restarted event carries the quality flag 32.
 - **Turning it off.** Set `S7COMM_DETECTOR_BUNDLE=` (empty) to run S7 features only.
 
-Each prediction's `verdict`:
+Each Modbus prediction's `verdict` (`modbus_detector_predictions`):
 
 | Verdict | Meaning |
 |---|---|
@@ -81,6 +81,21 @@ Each prediction's `verdict`:
 `./deploy/deploy.sh sql "SELECT verdict, count() FROM modbus_detector_predictions GROUP BY verdict"`
 shows the split. Upgrading from a deployment without scoring restarts every
 Modbus stream's state once (its layout changed); nothing else is lost.
+
+Each S7comm prediction's `verdict` (`s7comm_detector_predictions`):
+
+| Verdict | Meaning |
+|---|---|
+| `WARMUP` | The first 64 events of this connection (uid) since it started or last reset: a TTL expiry, a restore without its state, or the periodic restart every 16,384 events -- no score. `events_since_reset` counts them |
+| `NORMAL` / `ANOMALY` | Scored: `ANOMALY` when the event's conformal `p_value` is at most its `score_group`'s `alpha` |
+| `UNSCORABLE` | The score was not finite (not expected) |
+
+- **Some events are `ANOMALY` by design.** The detector flags every S7 operation it rarely saw
+  mid-connection: setup, PLC stop, user-data (CPU function) requests and their responses, and bare
+  ROSCTR 2 ACK responses. These are the operator actions it exists to surface; on a plain polling
+  connection they do not occur.
+- **Upgrading restarts every S7 connection once**, at its next event (restored state has no
+  restart count yet); nothing else is lost.
 
 ## Day to day
 

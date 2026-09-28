@@ -42,7 +42,8 @@ compose() {
   fi
 }
 create_topics >/dev/null
-assert_eq 13 "$(grep -c -- '--create' "$tmp/calls")" "create_topics creates every topic"
+assert_eq 14 "$(grep -c -- '--create' "$tmp/calls")" "create_topics creates every topic"
+assert_eq 1 "$(grep -c -- '--topic netsec.s7comm.prediction.v1 --partitions 1 --replication-factor 1 --config retention.ms=604800000' "$tmp/calls")" "the S7 prediction topic: 1 partition, 7 days"
 assert_eq 1 "$(grep -c -- '--topic netsec.s7comm.raw.v1 --partitions 1 --replication-factor 1 --config retention.ms=604800000' "$tmp/calls")" "raw topic: 1 partition, 7 days"
 unset -f compose
 
@@ -98,22 +99,22 @@ compose() {
   fi
 }
 create_topics >/dev/null
-assert_eq 13 "$(grep -c -- '--create' "$tmp/calls")" "create_topics creates all 13 topics"
+assert_eq 14 "$(grep -c -- '--create' "$tmp/calls")" "create_topics creates all 14 topics"
 assert_eq 1 "$(grep -c -- '--topic netsec.modbus.prediction.v1 ' "$tmp/calls")" "including the prediction topic from the template"
 unset -f compose
 
 # The preflight refuses a pinned bundle that is missing, and accepts an empty pin.
 # Each check runs in its own subshell: die exits, and the status must still print.
 REPO_ROOT_SAVED="$REPO_ROOT"; REPO_ROOT="$tmp/repo"; mkdir -p "$REPO_ROOT/models"
-ENV_FILE_SAVED="$ENV_FILE"; ENV_FILE="$tmp/stack.env"; printf 'MODBUS_DETECTOR_BUNDLE=modbus-stage1-detector/v1\n' > "$ENV_FILE"
+ENV_FILE_SAVED="$ENV_FILE"; ENV_FILE="$tmp/stack.env"; printf 'MODBUS_DETECTOR_BUNDLE=modbus-stage1-detector/v1\nS7COMM_DETECTOR_BUNDLE=\n' > "$ENV_FILE"
 out="$( (check_detector_bundle) 2>&1; echo "exit=$?")"
 assert_eq 1 "$(grep -c 'models/modbus-stage1-detector/v1 is missing' <<< "$out")" "a missing pinned bundle is refused"
 assert_eq 1 "$(grep -cx 'exit=1' <<< "$out")" "and stops"
-printf 'MODBUS_DETECTOR_BUNDLE=\n' > "$ENV_FILE"
+printf 'MODBUS_DETECTOR_BUNDLE=\nS7COMM_DETECTOR_BUNDLE=\n' > "$ENV_FILE"
 out="$( (check_detector_bundle) 2>&1; echo "exit=$?")"
 assert_eq 1 "$(grep -cx 'exit=0' <<< "$out")" "an empty pin needs no bundle"
 mkdir -p "$REPO_ROOT/models/modbus-stage1-detector/v1"; cp "${REPO_ROOT_SAVED}/tests/fixtures/models/modbus-stage1-detector/v1/"* "$REPO_ROOT/models/modbus-stage1-detector/v1/"
-printf 'MODBUS_DETECTOR_BUNDLE=modbus-stage1-detector/v1\n' > "$ENV_FILE"
+printf 'MODBUS_DETECTOR_BUNDLE=modbus-stage1-detector/v1\nS7COMM_DETECTOR_BUNDLE=\n' > "$ENV_FILE"
 out="$( (check_detector_bundle) 2>&1; echo "exit=$?")"
 assert_eq 1 "$(grep -cx 'exit=0' <<< "$out")" "a present bundle passes"
 # Review finding I5: a corrupt or missing file is refused before anything starts,
@@ -132,7 +133,7 @@ REPO_ROOT="$REPO_ROOT_SAVED"; ENV_FILE="$ENV_FILE_SAVED"
 # missing bundle (or JAR, or interface) never leaves the whole stack down.
 DEPLOY_DIR_SAVED="$DEPLOY_DIR"; DEPLOY_DIR="$tmp/deploy"; touch "$DEPLOY_DIR/jars/online-feature-job.jar" "$DEPLOY_DIR/jars/archive-job.jar"
 REPO_ROOT_SAVED="$REPO_ROOT"; REPO_ROOT="$tmp/restart-repo"; mkdir -p "$REPO_ROOT/models"
-ENV_FILE_SAVED="$ENV_FILE"; ENV_FILE="$tmp/restart.env"; printf 'MODBUS_DETECTOR_BUNDLE=modbus-stage1-detector/v1\n' > "$ENV_FILE"
+ENV_FILE_SAVED="$ENV_FILE"; ENV_FILE="$tmp/restart.env"; printf 'MODBUS_DETECTOR_BUNDLE=modbus-stage1-detector/v1\nS7COMM_DETECTOR_BUNDLE=\n' > "$ENV_FILE"
 load_env() { :; }
 docker() { return 0; }
 list_interfaces() { printf 'lo\neth0\n'; }
@@ -148,6 +149,48 @@ mkdir -p "$REPO_ROOT/models/modbus-stage1-detector/v1"; cp "${REPO_ROOT_SAVED}/t
 # shellcheck disable=SC2034  # stack_preflight reads ZEEK_INTERFACE
 out="$( (ZEEK_INTERFACE=eth0; stack_restart) 2>&1; echo "exit=$?")"
 assert_eq "stack_down called|stack_up called|exit=0" "$(grep -E 'called|exit=' <<< "$out" | paste -sd'|' -)" "with everything in place it stops, then starts"
+DEPLOY_DIR="$DEPLOY_DIR_SAVED"; REPO_ROOT="$REPO_ROOT_SAVED"; ENV_FILE="$ENV_FILE_SAVED"
+unset -f load_env docker list_interfaces tune_check_drift stack_down stack_up
+
+# The S7comm pin (docs/superpowers/specs/2026-09-28-s7comm-stage1-scoring-design.md
+# section 7), checked like the Modbus one: missing, present, corrupt, empty.
+REPO_ROOT_SAVED="$REPO_ROOT"; REPO_ROOT="$tmp/s7repo"; mkdir -p "$REPO_ROOT/models"
+ENV_FILE_SAVED="$ENV_FILE"; ENV_FILE="$tmp/s7.env"
+printf 'MODBUS_DETECTOR_BUNDLE=\nS7COMM_DETECTOR_BUNDLE=s7comm-stage1-detector/v2\n' > "$ENV_FILE"
+out="$( (check_detector_bundle) 2>&1; echo "exit=$?")"
+assert_eq 1 "$(grep -c 'the S7comm detector bundle models/s7comm-stage1-detector/v2 is missing' <<< "$out")" "a missing S7 bundle is refused"
+assert_eq 1 "$(grep -cx 'exit=1' <<< "$out")" "and stops"
+mkdir -p "$REPO_ROOT/models/s7comm-stage1-detector/v2"; cp "${REPO_ROOT_SAVED}/tests/fixtures/models/s7comm-stage1-detector/v2/"* "$REPO_ROOT/models/s7comm-stage1-detector/v2/"
+out="$( (check_detector_bundle) 2>&1; echo "exit=$?")"
+assert_eq 1 "$(grep -cx 'exit=0' <<< "$out")" "a present S7 bundle passes"
+printf 'x' >> "$REPO_ROOT/models/s7comm-stage1-detector/v2/calibration.npz"
+out="$( (check_detector_bundle) 2>&1; echo "exit=$?")"
+assert_eq 1 "$(grep -c 'models/s7comm-stage1-detector/v2/calibration.npz does not match its SHA-256 in bundle.json' <<< "$out")" "a corrupt calibration file is refused"
+assert_eq 1 "$(grep -cx 'exit=1' <<< "$out")" "and stops"
+printf 'MODBUS_DETECTOR_BUNDLE=\nS7COMM_DETECTOR_BUNDLE=\n' > "$ENV_FILE"
+out="$( (check_detector_bundle) 2>&1; echo "exit=$?")"
+assert_eq 1 "$(grep -cx 'exit=0' <<< "$out")" "empty pins need no bundle"
+# Review Focus 1: an older .env without the S7 line gets the template's pin, as compose does.
+printf 'MODBUS_DETECTOR_BUNDLE=\n' > "$ENV_FILE"
+assert_eq s7comm-stage1-detector/v2 "$(detector_bundle_setting S7COMM_DETECTOR_BUNDLE)" "the template's S7 pin applies"
+REPO_ROOT="$REPO_ROOT_SAVED"; ENV_FILE="$ENV_FILE_SAVED"
+
+# Review Focus 1: restart stops nothing when only the S7 bundle is missing.
+DEPLOY_DIR_SAVED="$DEPLOY_DIR"; DEPLOY_DIR="$tmp/deploy"; touch "$DEPLOY_DIR/jars/online-feature-job.jar" "$DEPLOY_DIR/jars/archive-job.jar"
+REPO_ROOT_SAVED="$REPO_ROOT"; REPO_ROOT="$tmp/s7restart"; mkdir -p "$REPO_ROOT/models/modbus-stage1-detector/v1"
+cp "${REPO_ROOT_SAVED}/tests/fixtures/models/modbus-stage1-detector/v1/"* "$REPO_ROOT/models/modbus-stage1-detector/v1/"
+ENV_FILE_SAVED="$ENV_FILE"; ENV_FILE="$tmp/s7restart.env"
+printf 'MODBUS_DETECTOR_BUNDLE=modbus-stage1-detector/v1\nS7COMM_DETECTOR_BUNDLE=s7comm-stage1-detector/v2\n' > "$ENV_FILE"
+load_env() { :; }
+docker() { return 0; }
+list_interfaces() { printf 'lo\neth0\n'; }
+tune_check_drift() { :; }
+stack_down() { echo "stack_down called"; }
+stack_up() { echo "stack_up called"; }
+# shellcheck disable=SC2034  # stack_preflight reads ZEEK_INTERFACE
+out="$( (ZEEK_INTERFACE=eth0; stack_restart) 2>&1; echo "exit=$?")"
+assert_eq 0 "$(grep -c 'stack_down called' <<< "$out")" "restart stops nothing when the S7 bundle is missing"
+assert_eq 1 "$(grep -c 'models/s7comm-stage1-detector/v2 is missing' <<< "$out")" "and says why"
 DEPLOY_DIR="$DEPLOY_DIR_SAVED"; REPO_ROOT="$REPO_ROOT_SAVED"; ENV_FILE="$ENV_FILE_SAVED"
 unset -f load_env docker list_interfaces tune_check_drift stack_down stack_up
 

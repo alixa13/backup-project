@@ -138,11 +138,12 @@ is_restore_failure() {
   grep -qE 'StreamOperatorStateContext|Could not restore (keyed|operator) state backend|StateMigrationException|Cannot map checkpoint/savepoint state|Failed to rollback to checkpoint/savepoint'
 }
 
-# True when 'flink run' output on stdin failed inside the Modbus detector
-# bundle's loader: the online job's main() verifies the pinned bundle before it
-# submits, so a missing or corrupt bundle fails here, with state not involved.
+# True when 'flink run' output on stdin failed inside a detector bundle's
+# loader, Modbus or S7comm: the online job's main() verifies each pinned bundle
+# before it submits, so a missing or corrupt bundle fails here, with state not
+# involved (plan ruling P4).
 is_bundle_failure() {
-  grep -q 'SequenceDetectorBundleLoader'
+  grep -qE 'SequenceDetectorBundleLoader|S7commDetectorBundleLoader'
 }
 
 # One pass: submit every job that is not active. A failed submission is
@@ -183,7 +184,7 @@ supervise_once() {
       if [ -n "$output" ]; then printf '%s\n' "$output"; fi
       if is_bundle_failure <<< "$output"; then
         # The bundle, not the saved state: never offer to discard that.
-        log "submitting ${name} failed on the Modbus detector bundle, not on its saved state, so leave that alone: $(root_cause <<< "$output"). Package the bundle again (deploy/models/package-modbus-detector.sh) or set MODBUS_DETECTOR_BUNDLE= (empty) in deploy/.env to run without scoring, then 'deploy.sh restart'. Retrying in 60 s."
+        log "submitting ${name} failed on a detector bundle, not on its saved state, so leave that alone: $(root_cause <<< "$output"). Package the bundle again (deploy/models/package-modbus-detector.sh or package-s7comm-detector.sh) or set its pin (MODBUS_DETECTOR_BUNDLE= or S7COMM_DETECTOR_BUNDLE=) empty in deploy/.env to run without that scoring, then 'deploy.sh restart'. Retrying in 60 s."
       else
         log "submitting ${name} failed; retrying in 60 s. If it keeps failing while restoring, its saved state no longer fits the job: $(way_out "$name")"
       fi

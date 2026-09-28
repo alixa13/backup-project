@@ -28,24 +28,26 @@ selftest_cleanup() {
     || warn "could not delete the selftest's DLQ rows"
   ch_query "ALTER TABLE modbus_detector_predictions DELETE WHERE connection_uid = '$2'" mutations_sync=1 >/dev/null \
     || warn "could not delete the selftest's prediction rows"
+  ch_query "ALTER TABLE s7comm_detector_predictions DELETE WHERE connection_uid = '$3'" mutations_sync=1 >/dev/null \
+    || warn "could not delete the selftest's S7comm prediction rows"
 }
 
 # One Modbus and one S7comm request/response pair, in exactly the JSON Zeek
 # writes, through Kafka, both jobs and ClickHouse. Documentation-only
 # addresses and SELFTEST- uids keep it apart from real devices; its rows --
-# the Modbus pair's two predictions included, when scoring is on -- are
-# deleted afterwards.
+# each scored pair's two predictions included -- are deleted afterwards.
 selftest_run() {
   load_env
-  local run uid_m uid_s ts_req ts_resp work got dlq deadline scoring preds
+  local run uid_m uid_s ts_req ts_resp work got dlq deadline modbus_scoring s7_scoring preds s7_preds
   run="SELFTEST-$(date -u +%Y%m%d%H%M%S)"
   uid_m="${run}-M"
   uid_s="${run}-S"
   ts_req="$(now_epoch)"
   ts_resp="$(plus_ms "$ts_req" 4)"
-  # With a detector bundle pinned, the Modbus pair must also be scored: two
-  # predictions (both WARMUP), archived by their own chain.
-  scoring="$(detector_bundle_setting)"
+  # With a detector bundle pinned, that protocol's pair must also be scored:
+  # two predictions each (both WARMUP), archived by their own chains.
+  modbus_scoring="$(detector_bundle_setting MODBUS_DETECTOR_BUNDLE)"
+  s7_scoring="$(detector_bundle_setting S7COMM_DETECTOR_BUNDLE)"
 
   # Render and publish the two pairs to the raw topics.
   work="$(mktemp -d)"
@@ -62,17 +64,25 @@ selftest_run() {
     got="$(ch_query "SELECT countIf(log_type = 'modbus'), countIf(log_type = 's7comm') FROM feature_vectors WHERE connection_uid IN ('${uid_m}', '${uid_s}')" || true)"
     dlq="$(ch_query "SELECT count() FROM invalid_events WHERE event_id LIKE '%${run}%'" || true)"
     preds=""
-    if [ -n "$scoring" ]; then
+    s7_preds=""
+    if [ -n "$modbus_scoring" ]; then
       preds="$(ch_query "SELECT count() FROM modbus_detector_predictions WHERE connection_uid = '${uid_m}'" || true)"
     fi
-    if [ "$got" = "$(printf '2\t2')" ] && [ "$dlq" = 0 ] && { [ -z "$scoring" ] || [ "$preds" = 2 ]; }; then
+    if [ -n "$s7_scoring" ]; then
+      s7_preds="$(ch_query "SELECT count() FROM s7comm_detector_predictions WHERE connection_uid = '${uid_s}'" || true)"
+    fi
+    if [ "$got" = "$(printf '2\t2')" ] && [ "$dlq" = 0 ] \
+       && { [ -z "$modbus_scoring" ] || [ "$preds" = 2 ]; } && { [ -z "$s7_scoring" ] || [ "$s7_preds" = 2 ]; }; then
       break
     fi
     if [ "${dlq:-0}" != 0 ] || [ "$(date +%s)" -ge "$deadline" ]; then
-      # The predictions are part of the verdict only when scoring is on.
+      # The predictions are part of the verdict only where scoring is on.
       local want_preds=""
-      if [ -n "$scoring" ]; then
+      if [ -n "$modbus_scoring" ]; then
         want_preds="; Modbus predictions = '${preds}', want 2"
+      fi
+      if [ -n "$s7_scoring" ]; then
+        want_preds="${want_preds}; S7comm predictions = '${s7_preds}', want 2"
       fi
       warn "selftest FAILED: feature vectors (modbus, s7comm) = '${got}', want 2 and 2; DLQ rows = '${dlq}', want 0${want_preds}"
       ch_query "SELECT log_type, reason_code, detail FROM invalid_events WHERE event_id LIKE '%${run}%' FORMAT PrettyCompactMonoBlock" >&2 || true
@@ -82,11 +92,11 @@ selftest_run() {
     sleep 5
   done
   selftest_cleanup "$run" "$uid_m" "$uid_s"
-  if [ -n "$scoring" ]; then
-    log "selftest PASSED: 2 Modbus and 2 S7comm feature vectors and 2 Modbus predictions reached ClickHouse, no DLQ rows (test rows removed)"
-  else
-    log "selftest PASSED: 2 Modbus and 2 S7comm feature vectors reached ClickHouse, no DLQ rows, Modbus scoring off (test rows removed)"
-  fi
+  # What reached ClickHouse, and which scoring was off.
+  local reached="" off=""
+  if [ -n "$modbus_scoring" ]; then reached="${reached}, 2 Modbus predictions"; else off="${off} Modbus"; fi
+  if [ -n "$s7_scoring" ]; then reached="${reached}, 2 S7comm predictions"; else off="${off} S7comm"; fi
+  log "selftest PASSED: 2 Modbus and 2 S7comm feature vectors${reached} reached ClickHouse, no DLQ rows${off:+, scoring off for${off}} (test rows removed)"
 }
 
 # --- zeek-check ---

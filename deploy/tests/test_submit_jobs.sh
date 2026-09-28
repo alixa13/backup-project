@@ -84,8 +84,22 @@ flink() {
   return 0
 }
 out="$(supervise_once 2>&1)"
-assert_eq 1 "$(grep -c 'submitting online-feature-job failed on the Modbus detector bundle' <<< "$out")" "a bundle failure is named as one"
-assert_eq 1 "$(grep -c "failed on the Modbus detector bundle.*model.onnx does not match bundle.json's recorded SHA-256" <<< "$out")" "quoting the loader's own message"
+assert_eq 1 "$(grep -c 'submitting online-feature-job failed on a detector bundle' <<< "$out")" "a bundle failure is named as one"
+assert_eq 1 "$(grep -c "failed on a detector bundle.*model.onnx does not match bundle.json's recorded SHA-256" <<< "$out")" "quoting the loader's own message"
+assert_eq 0 "$(grep -c 'online-feature-job.*aside' <<< "$out")" "and never offers to move its saved state aside"
+# The S7comm loader's failure is a bundle failure too.
+flink() {
+  printf '%s\n' "$*" >> "$tmp/calls"
+  case "$*" in
+    *online-feature-job.jar*)
+      printf '%s\n' "Caused by: java.lang.IllegalStateException: calibration.npz does not match bundle.json's recorded SHA-256" \
+        '	at io.netsecml.platform.adapter.registry.S7commDetectorBundleLoader.load(S7commDetectorBundleLoader.java:60)'
+      return 1 ;;
+  esac
+  return 0
+}
+out="$(supervise_once 2>&1)"
+assert_eq 1 "$(grep -c 'submitting online-feature-job failed on a detector bundle' <<< "$out")" "an S7 bundle failure is named as one"
 assert_eq 0 "$(grep -c 'online-feature-job.*aside' <<< "$out")" "and never offers to move its saved state aside"
 unset -f flink
 unset -f curl flink

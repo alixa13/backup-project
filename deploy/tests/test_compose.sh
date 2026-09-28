@@ -68,6 +68,9 @@ assert_eq 60 "$(config | jq -r '.services["job-submitter"].environment.MODBUS_ST
 assert_eq modbus-stage1-detector/v1 "$(q '.services["job-submitter"].environment.MODBUS_DETECTOR_BUNDLE')" "the detector pin reaches the jobs"
 assert_eq /opt/netsec/models "$(q '.services["job-submitter"].environment.NETSEC_MODELS_DIR')" "the models dir"
 assert_eq netsec.modbus.prediction.v1 "$(q '.services["job-submitter"].environment.MODBUS_PREDICTION_TOPIC')" "the prediction topic"
+# S7comm scoring (docs/superpowers/specs/2026-09-28-s7comm-stage1-scoring-design.md section 7).
+assert_eq s7comm-stage1-detector/v2 "$(q '.services["job-submitter"].environment.S7COMM_DETECTOR_BUNDLE')" "the S7 detector pin reaches the jobs"
+assert_eq netsec.s7comm.prediction.v1 "$(q '.services["job-submitter"].environment.S7COMM_PREDICTION_TOPIC')" "the S7 prediction topic"
 for svc in job-submitter flink-taskmanager; do
   assert_eq "/opt/netsec/models:true" "$(q ".services[\"$svc\"].volumes[] | select(.target == \"/opt/netsec/models\") | \"\(.target):\(.read_only)\"")" "$svc mounts models/ read-only"
 done
@@ -77,6 +80,13 @@ assert_eq modbus-stage1-detector/v1 "$(config | jq -r '.services["job-submitter"
 assert_eq netsec.modbus.prediction.v1 "$(config | jq -r '.services["job-submitter"].environment.MODBUS_PREDICTION_TOPIC')" "and gets the default topic"
 printf 'MODBUS_DETECTOR_BUNDLE=\n' >> "$tmp/env"
 assert_eq "" "$(config | jq -r '.services["job-submitter"].environment.MODBUS_DETECTOR_BUNDLE')" "an empty pin turns scoring off"
+make_env 127.0.0.1
+# Review Focus 1: the same for the S7comm pin.
+sed -i '/^S7COMM_DETECTOR_BUNDLE=/d; /^S7COMM_PREDICTION_TOPIC=/d' "$tmp/env"
+assert_eq s7comm-stage1-detector/v2 "$(config | jq -r '.services["job-submitter"].environment.S7COMM_DETECTOR_BUNDLE')" "an older .env scores S7 with the default bundle"
+assert_eq netsec.s7comm.prediction.v1 "$(config | jq -r '.services["job-submitter"].environment.S7COMM_PREDICTION_TOPIC')" "and gets the default S7 topic"
+printf 'S7COMM_DETECTOR_BUNDLE=\n' >> "$tmp/env"
+assert_eq "" "$(config | jq -r '.services["job-submitter"].environment.S7COMM_DETECTOR_BUNDLE')" "an empty S7 pin turns S7 scoring off"
 make_env 127.0.0.1
 
 # P6: widening BIND_ADDRESS moves the UI and ClickHouse, never Kafka.

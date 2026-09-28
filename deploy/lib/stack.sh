@@ -65,34 +65,43 @@ topic_name() {
   printf '%s\n' "$value"
 }
 
-# The pinned detector bundle: deploy/.env's MODBUS_DETECTOR_BUNDLE when it has
-# the line (even empty), else the template's default -- what compose resolves.
+# A detector pin: deploy/.env's value of VAR when it has the line (even empty),
+# else the template's default -- what compose resolves (plan ruling P4).
 detector_bundle_setting() {
-  if grep -q '^MODBUS_DETECTOR_BUNDLE=' "$ENV_FILE" 2>/dev/null; then
-    env_value "$ENV_FILE" MODBUS_DETECTOR_BUNDLE
+  if grep -q "^$1=" "$ENV_FILE" 2>/dev/null; then
+    env_value "$ENV_FILE" "$1"
   else
-    env_value "${DEPLOY_DIR}/.env.template" MODBUS_DETECTOR_BUNDLE
+    env_value "${DEPLOY_DIR}/.env.template" "$1"
   fi
 }
 
-# A pinned bundle must be on disk before the jobs start (spec section 7).
-check_detector_bundle() {
-  local bundle
-  bundle="$(detector_bundle_setting)"
+# One pinned bundle must be on disk and intact before the jobs start: LABEL
+# names it, VAR is its pin, SCRIPT packages it (USAGE: its arguments), FILES are
+# file:bundle.json-key pairs -- the check each loader makes before the job submits, done here so a
+# missing or corrupt bundle stops 'up' and 'restart' before anything stops.
+check_one_bundle() {
+  local label="$1" var="$2" script="$3" files="$4" usage="$5" bundle file key expected actual
+  bundle="$(detector_bundle_setting "$var")"
   [ -z "$bundle" ] && return 0
   [ -f "${REPO_ROOT}/models/${bundle}/bundle.json" ] \
-    || die "the Modbus detector bundle models/${bundle} is missing: package it with deploy/models/package-modbus-detector.sh <delivery-dir> and copy it to models/${bundle}/, or set MODBUS_DETECTOR_BUNDLE= (empty) in deploy/.env to run without scoring"
-  # Each file must be the one bundle.json records -- the check the online job
-  # makes before it submits, done here so a corrupt copy stops 'up' at once.
-  local file key expected actual
-  for file in model.onnx:modelSha preprocessing.json:preprocessingSha thresholds.json:thresholdsSha; do
+    || die "the ${label} detector bundle models/${bundle} is missing: package it with deploy/models/${script} ${usage} and copy it to models/${bundle}/, or set ${var}= (empty) in deploy/.env to run without ${label} scoring"
+  for file in $files; do
     key="${file#*:}"; file="${file%%:*}"
     expected="$(jq -r ".${key} // empty" "${REPO_ROOT}/models/${bundle}/bundle.json" 2>/dev/null || true)"
     actual="$(sha256sum "${REPO_ROOT}/models/${bundle}/${file}" 2>/dev/null | cut -c1-64 || true)"
     if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
-      die "the Modbus detector bundle is corrupt: models/${bundle}/${file} does not match its SHA-256 in bundle.json (expected ${expected:-none}, got ${actual:-no file}); package it again with deploy/models/package-modbus-detector.sh, or set MODBUS_DETECTOR_BUNDLE= (empty) in deploy/.env to run without scoring"
+      die "the ${label} detector bundle is corrupt: models/${bundle}/${file} does not match its SHA-256 in bundle.json (expected ${expected:-none}, got ${actual:-no file}); package it again with deploy/models/${script}, or set ${var}= (empty) in deploy/.env to run without ${label} scoring"
     fi
   done
+}
+
+# Every pinned detector bundle (both scoring designs, section 7).
+check_detector_bundle() {
+  check_one_bundle Modbus MODBUS_DETECTOR_BUNDLE package-modbus-detector.sh \
+    "model.onnx:modelSha preprocessing.json:preprocessingSha thresholds.json:thresholdsSha" "<delivery-dir>"
+  check_one_bundle S7comm S7COMM_DETECTOR_BUNDLE package-s7comm-detector.sh \
+    "model.onnx:modelSha preprocessing.json:preprocessingSha policy.json:policySha calibration.npz:calibrationSha" \
+    "<release-dir> <version>"
 }
 
 # Every topic both jobs subscribe to, created before they start: a missing

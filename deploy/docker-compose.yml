@@ -148,6 +148,10 @@ services:
       # bundle, while an explicit empty value turns scoring off.
       MODBUS_DETECTOR_BUNDLE: ${MODBUS_DETECTOR_BUNDLE-modbus-stage1-detector/v1}
       MODBUS_PREDICTION_TOPIC: ${MODBUS_PREDICTION_TOPIC:-netsec.modbus.prediction.v1}
+      # '-' (not ':-'), as for the Modbus pin: unset scores with the default
+      # bundle, an explicit empty value turns S7 scoring off.
+      S7COMM_DETECTOR_BUNDLE: ${S7COMM_DETECTOR_BUNDLE-s7comm-stage1-detector/v2}
+      S7COMM_PREDICTION_TOPIC: ${S7COMM_PREDICTION_TOPIC:-netsec.s7comm.prediction.v1}
       NETSEC_MODELS_DIR: /opt/netsec/models
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_PORT: "8123"

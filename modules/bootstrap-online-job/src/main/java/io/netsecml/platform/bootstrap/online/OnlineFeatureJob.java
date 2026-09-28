@@ -8,6 +8,7 @@ import io.netsecml.platform.adapter.flink.process.DnsFeatureProcessFunction;
 import io.netsecml.platform.adapter.flink.process.DnsParseMapValidateFunction;
 import io.netsecml.platform.adapter.flink.process.EventUidKeySelector;
 import io.netsecml.platform.adapter.flink.process.KeyedModbusVectorKeySelector;
+import io.netsecml.platform.adapter.flink.process.KeyedS7commVectorKeySelector;
 import io.netsecml.platform.adapter.flink.process.ModbusEntityKeySelector;
 import io.netsecml.platform.adapter.flink.process.ModbusFeatureProcessFunction;
 import io.netsecml.platform.adapter.flink.process.ModbusParseMapValidateFunction;
@@ -17,6 +18,7 @@ import io.netsecml.platform.adapter.flink.process.RejectedRecord;
 import io.netsecml.platform.adapter.flink.process.S7commConnectionKeySelector;
 import io.netsecml.platform.adapter.flink.process.S7commFeatureProcessFunction;
 import io.netsecml.platform.adapter.flink.process.S7commParseMapValidateFunction;
+import io.netsecml.platform.adapter.flink.process.S7commScoringProcessFunction;
 import io.netsecml.platform.adapter.flink.process.SnapshotUidKeySelector;
 import io.netsecml.platform.adapter.flink.process.SourceKeySelector;
 import io.netsecml.platform.adapter.flink.source.RawBytesDeserializationSchema;
@@ -24,6 +26,8 @@ import io.netsecml.platform.adapter.kafka.sink.FeatureVectorSerializer;
 import io.netsecml.platform.adapter.kafka.sink.ModbusDetectorPredictionSerializer;
 import io.netsecml.platform.adapter.kafka.sink.RejectedRecordPayload;
 import io.netsecml.platform.adapter.kafka.sink.RejectedRecordSerializer;
+import io.netsecml.platform.adapter.kafka.sink.S7commDetectorPredictionSerializer;
+import io.netsecml.platform.adapter.registry.S7commDetectorBundleLoader;
 import io.netsecml.platform.adapter.registry.SequenceDetectorBundleLoader;
 import io.netsecml.platform.domain.event.ConnEvent;
 import io.netsecml.platform.domain.event.DnsEvent;
@@ -34,6 +38,7 @@ import io.netsecml.platform.domain.event.SensorId;
 import io.netsecml.platform.domain.feature.ConnSnapshot;
 import io.netsecml.platform.domain.feature.FeatureVector;
 import io.netsecml.platform.domain.inference.ModbusDetectorPrediction;
+import io.netsecml.platform.domain.inference.S7commDetectorPrediction;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.serialization.SerializationSchema;
@@ -94,6 +99,25 @@ public final class OnlineFeatureJob {
             : Path.of(env.getOrDefault("NETSEC_MODELS_DIR", "/opt/netsec/models"), bundle).toString();
         return new ModbusScoring(bundleDir,
             env.getOrDefault("MODBUS_PREDICTION_TOPIC", "netsec.modbus.prediction.v1"));
+    }
+
+    // S7comm scoring's settings (docs/superpowers/specs/2026-09-28-s7comm-stage1-scoring-design.md
+    // section 7), shaped like ModbusScoring: a null bundleDir keeps s7comm-score
+    // and its sink in the job but disabled; a null S7commScoring builds neither
+    // (the overloads that predate S7 scoring).
+    public record S7commScoring(String bundleDir, String predictionTopic) {
+    }
+
+    // main()'s S7 scoring settings from its environment: the pinned bundle
+    // under NETSEC_MODELS_DIR, or a null bundleDir when S7COMM_DETECTOR_BUNDLE is
+    // empty. Never null, so main() always builds the two S7 scoring operators.
+    static S7commScoring s7commScoring(Map<String, String> env) {
+        String bundle = env.getOrDefault("S7COMM_DETECTOR_BUNDLE", "");
+        String bundleDir = bundle.isBlank()
+            ? null
+            : Path.of(env.getOrDefault("NETSEC_MODELS_DIR", "/opt/netsec/models"), bundle).toString();
+        return new S7commScoring(bundleDir,
+            env.getOrDefault("S7COMM_PREDICTION_TOPIC", "netsec.s7comm.prediction.v1"));
     }
 
     // The two-protocol topology: conn and dns each get their own source ->
@@ -245,21 +269,32 @@ public final class OnlineFeatureJob {
         build(env, bootstrapServers, conn, dns, modbus, s7comm, sensor, modbusStateTtl, s7commStateTtl, null);
     }
 
-    // As above, with Modbus scoring; main() passes modbusScoring(env), whose
-    // bundleDir is null when MODBUS_DETECTOR_BUNDLE is empty (spec S10).
+    // As above, with Modbus scoring and no S7 scoring; kept so every caller
+    // that predates S7 scoring builds exactly the topology it always has.
     public static void build(StreamExecutionEnvironment env, String bootstrapServers, ProtocolTopics conn,
                               ProtocolTopics dns, ProtocolTopics modbus, ProtocolTopics s7comm, SensorId sensor,
                               Duration modbusStateTtl, Duration s7commStateTtl, ModbusScoring scoring) {
+        build(env, bootstrapServers, conn, dns, modbus, s7comm, sensor, modbusStateTtl, s7commStateTtl, scoring,
+            null);
+    }
+
+    // As above, with S7comm scoring too; main() passes modbusScoring(env) and
+    // s7commScoring(env), whose bundleDirs are null when their pins are empty.
+    public static void build(StreamExecutionEnvironment env, String bootstrapServers, ProtocolTopics conn,
+                              ProtocolTopics dns, ProtocolTopics modbus, ProtocolTopics s7comm, SensorId sensor,
+                              Duration modbusStateTtl, Duration s7commStateTtl, ModbusScoring modbusScoring,
+                              S7commScoring s7commScoring) {
         build(env, bootstrapServers, conn, dns, sensor);
-        modbusChain(env, bootstrapServers, modbus, sensor, modbusStateTtl, scoring);
-        s7commChain(env, bootstrapServers, s7comm, sensor, s7commStateTtl);
+        modbusChain(env, bootstrapServers, modbus, sensor, modbusStateTtl, modbusScoring);
+        s7commChain(env, bootstrapServers, s7comm, sensor, s7commStateTtl, s7commScoring);
     }
 
     // s7comm's own chain, shaped exactly like modbusChain: source -> parse ->
     // narrow -> keyed features -> sink, plus its own DLQ. Nothing in it reads
     // or feeds another protocol's chain.
     private static void s7commChain(StreamExecutionEnvironment env, String bootstrapServers,
-                                     ProtocolTopics s7comm, SensorId sensor, Duration stateTtl) {
+                                     ProtocolTopics s7comm, SensorId sensor, Duration stateTtl,
+                                     S7commScoring scoring) {
         DataStream<byte[]> s7commRaw = rawSource(env, bootstrapServers, s7comm.input(), "s7comm-online-job",
             "s7comm-source");
 
@@ -276,7 +311,7 @@ public final class OnlineFeatureJob {
             .name("s7comm-event-narrow")
             .uid("s7comm-event-narrow");
 
-        DataStream<FeatureVector> s7commFeatureVectors = s7commEvents
+        SingleOutputStreamOperator<FeatureVector> s7commFeatureVectors = s7commEvents
             .keyBy(new S7commConnectionKeySelector())
             .process(new S7commFeatureProcessFunction(stateTtl))
             .name("s7comm-features")
@@ -286,6 +321,23 @@ public final class OnlineFeatureJob {
         DataStream<RejectedRecord> s7commRejected =
             s7commParsed.getSideOutput(ParseMapValidateFunction.REJECTED_TAG);
         sinkRejected(s7commRejected, bootstrapServers, s7comm.dlq(), "s7comm-dlq-sink");
+
+        // Scoring (docs/superpowers/specs/2026-09-28-s7comm-stage1-scoring-design.md
+        // section 4): the side output, keyed by the same connection key, into
+        // s7comm-score, then to the prediction topic. Off when null.
+        if (scoring != null) {
+            // A null bundleDir: the same operator, disabled (see S7commScoring).
+            S7commScoringProcessFunction scorer = scoring.bundleDir() == null
+                ? S7commScoringProcessFunction.disabled(stateTtl)
+                : new S7commScoringProcessFunction(new S7commDetectorScorerFactory(scoring.bundleDir()), stateTtl);
+            DataStream<S7commDetectorPrediction> predictions = s7commFeatureVectors
+                .getSideOutput(S7commFeatureProcessFunction.SCORING_TAG)
+                .keyBy(new KeyedS7commVectorKeySelector())
+                .process(scorer)
+                .name("s7comm-score")
+                .uid("s7comm-score");
+            sinkS7commPredictions(predictions, bootstrapServers, scoring.predictionTopic(), "s7comm-prediction-sink");
+        }
     }
 
     // The s7comm chain's narrowing bridge; see NarrowToModbusEvent. Any other
@@ -510,6 +562,27 @@ public final class OnlineFeatureJob {
         predictions.sinkTo(sink).name(uid).uid(uid);
     }
 
+    // The S7comm prediction topic: s7comm-detector-prediction-v1, one message per S7comm event.
+    private static void sinkS7commPredictions(DataStream<S7commDetectorPrediction> predictions,
+                                              String bootstrapServers, String topic, String uid) {
+        S7commDetectorPredictionSerializer serializer = new S7commDetectorPredictionSerializer();
+        KafkaSink<S7commDetectorPrediction> sink = KafkaSink.<S7commDetectorPrediction>builder()
+            .setBootstrapServers(bootstrapServers)
+            .setRecordSerializer(KafkaRecordSerializationSchema.<S7commDetectorPrediction>builder()
+                .setTopic(topic)
+                // An anonymous class, not a lambda, so Flink keeps the generic type.
+                .setValueSerializationSchema(new SerializationSchema<S7commDetectorPrediction>() {
+                    @Override
+                    public byte[] serialize(S7commDetectorPrediction prediction) {
+                        return serializer.serialize(topic, prediction);
+                    }
+                })
+                .build())
+            .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+            .build();
+        predictions.sinkTo(sink).name(uid).uid(uid);
+    }
+
     // Shared shape 2 of 3: publish a FeatureVector to its protocol's
     // feature-vector topic.
     //
@@ -665,9 +738,15 @@ public final class OnlineFeatureJob {
         if (scoring.bundleDir() != null) {
             SequenceDetectorBundleLoader.load(Path.of(scoring.bundleDir()));
         }
+        // S7comm scoring (docs/superpowers/specs/2026-09-28-s7comm-stage1-scoring-design.md
+        // section 7), verified the same way before submission.
+        S7commScoring s7commScoring = s7commScoring(System.getenv());
+        if (s7commScoring.bundleDir() != null) {
+            S7commDetectorBundleLoader.load(Path.of(s7commScoring.bundleDir()));
+        }
 
         build(env, bootstrapServers, conn, dns, modbus, s7comm, new SensorId(sensorId), modbusStateTtl,
-            s7commStateTtl, scoring);
+            s7commStateTtl, scoring, s7commScoring);
         env.execute("online-feature-job");
     }
 }

@@ -387,4 +387,50 @@ class OnlineFeatureJobTopologyTest {
             new SensorId("sensor-eu-1"), Duration.ofMinutes(60), Duration.ofMinutes(60), scoring);
         return env;
     }
+
+    // S7comm scoring adds exactly three uids -- s7comm-score,
+    // s7comm-prediction-sink and the committer Flink's Sink V2 derives from the
+    // sink's uid -- beside Modbus scoring, and changes no existing uid.
+    @Test
+    void s7commScoringAddsItsTwoOperatorsBesideModbusScoring() {
+        OnlineFeatureJob.ModbusScoring modbus = new OnlineFeatureJob.ModbusScoring(
+            "/opt/netsec/models/modbus-stage1-detector/v1", "netsec.modbus.prediction.v1");
+        Set<String> withS7 = uidsOf(buildWithBoth(modbus, new OnlineFeatureJob.S7commScoring(
+            "/opt/netsec/models/s7comm-stage1-detector/v2", "netsec.s7comm.prediction.v1")));
+        Set<String> without = uidsOf(buildWith(modbus));
+        assertEquals(without.size() + 3, withS7.size(), "found: " + withS7);
+        assertTrue(withS7.containsAll(Set.of("s7comm-score", "s7comm-prediction-sink",
+            "Sink Committer: s7comm-prediction-sink")));
+        assertTrue(withS7.containsAll(without), "no existing uid changes");
+    }
+
+    // An empty S7COMM_DETECTOR_BUNDLE keeps s7comm-score and its sink in the
+    // job (disabled), so switching S7 scoring off never orphans savepoint state.
+    @Test
+    void s7commScoringOffKeepsItsOperatorsSoNoStateIsOrphaned() {
+        OnlineFeatureJob.S7commScoring off = OnlineFeatureJob.s7commScoring(
+            Map.of("S7COMM_DETECTOR_BUNDLE", "", "NETSEC_MODELS_DIR", "/opt/netsec/models"));
+        OnlineFeatureJob.S7commScoring on = OnlineFeatureJob.s7commScoring(
+            Map.of("S7COMM_DETECTOR_BUNDLE", "s7comm-stage1-detector/v2", "NETSEC_MODELS_DIR", "/opt/netsec/models"));
+        assertNull(off.bundleDir(), "an empty pin scores nothing");
+        assertEquals("/opt/netsec/models/s7comm-stage1-detector/v2", on.bundleDir());
+        assertEquals("netsec.s7comm.prediction.v1", off.predictionTopic());
+        OnlineFeatureJob.ModbusScoring modbus = OnlineFeatureJob.modbusScoring(Map.of());
+        assertEquals(uidsOf(buildWithBoth(modbus, on)), uidsOf(buildWithBoth(modbus, off)));
+    }
+
+    private static StreamExecutionEnvironment buildWithBoth(OnlineFeatureJob.ModbusScoring modbus,
+                                                            OnlineFeatureJob.S7commScoring s7comm) {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        OnlineFeatureJob.build(env, "localhost:9092",
+            new OnlineFeatureJob.ProtocolTopics("conn", "netsec.conn.feature-vector.v1", "netsec.conn.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("dns", "netsec.dns.feature-vector.v1", "netsec.dns.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("netsec.modbus.raw.v1", "netsec.modbus.feature-vector.v1",
+                "netsec.modbus.dlq.v1"),
+            new OnlineFeatureJob.ProtocolTopics("netsec.s7comm.raw.v1", "netsec.s7comm.feature-vector.v1",
+                "netsec.s7comm.dlq.v1"),
+            new SensorId("sensor-eu-1"), Duration.ofMinutes(60), Duration.ofMinutes(60), modbus, s7comm);
+        return env;
+    }
 }

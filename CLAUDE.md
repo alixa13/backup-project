@@ -315,8 +315,9 @@ skips were hiding real defects — including a deduplication query that was
 syntactically invalid and could never have executed. **Do not read a skipped
 container test as a passing one.**
 
-Verified fresh for the Modbus scoring unit at `60cb748`, the tip after its
-final-review fixes (the commit after it changes only documentation). One reactor run with every
+Verified fresh for the Modbus scoring unit at `d9ee910`, the response-quantity
+fix on top of its final-review fixes (the commit after it changes only
+documentation). One reactor run with every
 Testcontainers class excluded by name (`ArchiveJobE2ETest`, `ClickHouseOutageTest`,
 `ClientV2InserterTest`, `DdlMigrationTest`, `FeatureVectorDeduplicationTest`,
 `OnlineFeatureJobE2ETest`, and the `ClickHouseTestSupport` helper) -- so those were
@@ -327,7 +328,7 @@ were involved; BUILD SUCCESS:
 |---|---|
 | `domain` | 225/225, 0 skipped |
 | `ports` | no tests exist |
-| `application` | 99/99, 0 skipped |
+| `application` | 102/102, 0 skipped (`ModbusBuildFeaturesUseCaseTest` 17, three of them the response-quantity rule) |
 | `adapter-kafka` | 160/160, 0 skipped |
 | `adapter-flink` | 71/71, 0 skipped (`ModbusScoringProcessFunctionTest` ×5, including scoring switched off and on again through savepoints) |
 | `adapter-onnx` | 16/16, 0 skipped (`OnnxSequenceScorerTest` ×7: both scores equal Python ONNX Runtime's to 1e-5) |
@@ -591,13 +592,30 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   values as one `values` string (`"170,171"`, `"T,F,F"`); `ZeekModbusValues` parses
   it into `request_values` on a request and `response_values` on a response (T/F
   as 1/0), an array present in the record wins, and a string that is not wholly
-  numeric is absent, never a rejection. F2: Zeek leaves address and quantity off
-  most responses; a response takes its pending request's, through the same causal
-  pairing `response_matched` uses; one whose request is not pending keeps them
-  absent. Training statistics motivate both (every response carried values; every
-  row carried address and quantity), and neither is confirmed by the model team
-  yet, like `response_matched`. They change the vectors on
+  numeric is absent, never a rejection. F2: a response takes its pending
+  request's address when it has none, and ALWAYS takes its request's quantity
+  (amended 2026-09-28), through the same causal pairing `response_matched` uses;
+  one whose request is not pending keeps its own fields. The quantity rule exists
+  because Zeek writes a coil or discrete-input read's response quantity as the
+  bits it returned (8 for one byte) where the request asked for 1, while upstream's
+  training table never saw quantity change (`quantity_delta` zero on 100% of rows).
+  Training statistics motivate both F1 and F2 (every response carried values;
+  every row carried address and quantity), and neither is confirmed by the model
+  team yet, like `response_matched`. They change the vectors on
   `netsec.modbus.feature-vector.v1` too, not only what is scored.
+- **Real benign traffic scores 93.53% NORMAL; upstream reports 99.17%
+  (2026-09-28).** Measured on the model's own held-out benign test captures -- CIC
+  Modbus 2023 `network-wide-normal-30/31/32`, 521,351 events, through the deployed
+  Zeek image and the production parser, feature engine, preprocessing and ONNX
+  scorer. Before the quantity rule above it was 4.73%: the detector flagged almost
+  all benign traffic. Two of the three streams now score 99.4-99.7%; the third
+  (SCADA `185.175.0.3` -> IED `.5`) stays ~12% anomalous on plain polling in all
+  three captures (timing features and holding-register values 8-12 lead its
+  reconstruction error), and `.8` dips to 85.6% in capture 31. Not explained yet:
+  diffing upstream's canonical table for one held-out capture
+  (`network-wide-normal-30.parquet`, pinned in the delivery's
+  `NORMAL_CAPTURE_ASSIGNMENT_V1.csv`) against ours, event by event, is the way to
+  close it. Until then an `ANOMALY` on such a stream is weak evidence.
 - **The state rename (one-time), and why a rename alone is not a migration.** F2
   keeps each pending request's address and quantity, so `ModbusEntityState`'s Kryo
   layout changed and the state was renamed `modbus-entity-state-v2`; every Modbus

@@ -69,6 +69,13 @@ The rules (decided 2026-09-26; to be confirmed with the model team, like `respon
   request's, through the causal pairing `response_matched` already uses. A response whose request is
   not pending (unanswered, evicted by the 4096 cap, or across a segment start) and a request without
   them stay absent — the latter (diagnostics, for example) is an input the detector never saw.
+  *(Amended 2026-09-28: a matched response takes its request's quantity even when it carries its
+  own. For a coil or discrete-input read Zeek writes the response's quantity as the bits returned —
+  8 for one byte — where the request asked for 1, and the training table never saw quantity change
+  (`quantity_delta` zero on 100% of rows). On the model's held-out benign captures (CIC Modbus 2023
+  normal-30/31/32, 521,351 events) this took the production path from 4.73% to 93.53% NORMAL;
+  upstream reports 99.17%, and the remaining gap is concentrated on one stream. The address rule is
+  unchanged: Zeek writes a response address only where a write response echoes its request's.)*
 - **State.** F2 keeps each pending request's address and quantity, so `ModbusEntityState`'s layout
   changes; it is Kryo-serialized, so the state is renamed `modbus-entity-state-v2`, and the deployed
   `modbus-entity-state` (test data only) is left unread in the savepoint: every Modbus stream starts

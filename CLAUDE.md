@@ -504,7 +504,16 @@ scoring: a 25-event stream gave 19 `WARMUP` and 6 scored predictions, each score
 equal to Python ONNX Runtime's within 5e-8; F1/F2 held on the ICSNPP sample
 (every response with numeric values, or whose request had an address, carries
 them); the final-review fixes were rolled out the same way, and the fixed
-`selftest` waited for its two predictions and removed them. A host reboot was
+`selftest` waited for its two predictions and removed them. On 2026-09-28, S7comm
+scoring with detector v2: `feat/deploy-mvp` fast-forwarded to `0d14ef8` and pushed, the
+v2 bundle packaged and copied (every file equal to `bundle.json`), `build --jars-only`
+and `restart` -- both jobs stopped with a savepoint and resumed from it, the new topic
+`netsec.s7comm.prediction.v1` created and DDL `004` applied -- with `s7comm-score`
+RUNNING and 0 exceptions. `selftest` passed with both pairs' predictions (2 Modbus,
+2 S7comm). A live 96-event S7 connection gave 64 `WARMUP` rows with null scores and
+32 scored rows, every verdict equal to the Python reference (upstream's builder and v2's
+released files) and every score within 2.2e-7 relative; its rows were then removed. No
+real S7 traffic reached the sensor at the time, so none was scored yet. A host reboot was
 not tested: on server3 it takes down the capture interfaces and other projects'
 containers, so that test was dropped.
 

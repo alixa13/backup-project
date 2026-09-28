@@ -1,0 +1,23 @@
+# S7comm Stage 1 detector v2 (docs/superpowers/specs/2026-09-28-s7comm-detector-v2-design.md).
+# Captures are named as in training/s7comm/sources.sha256; each has <features_dir>/<capture>.csv.
+release_id: v2_multisource_r1
+features_dir: /data/features
+sources:
+  qut-control:     {captures: [qut-control], clients: [10.10.10.20], role: normal}
+  4sics-hmi:       {captures: [4sics-151020, 4sics-151021, 4sics-151022], clients: [10.10.10.20], role: normal}
+  server3-benign:  {captures: [server3-s7, server3-s701, server3-s702, server3-S7COMM], clients: [192.168.10.100], role: normal}
+  libnodave-bench: {captures: [libnodave-bench], clients: [192.168.1.10], role: normal}
+  qut-attack-hmi:  {captures: [qut-attack], clients: [10.10.10.20], role: normal-test}
+  s7comm-clean:    {captures: [s7comm-clean], clients: [192.168.0.21], role: unseen}
+  cyclic-1s:       {captures: [cyclic-1s], clients: [192.168.1.20], role: unseen}
+  engineering:     {captures: [eng-readDiagData, eng-readVarTab, eng-plc-status, eng-blocklist, eng-download-db1, eng-plc-time, eng-snap7-everything], role: report}
+  4sics-other:     {captures: [4sics-151020, 4sics-151021, 4sics-151022], clients: [10.10.10.30, 192.168.1.10, 192.168.2.42], role: report}
+split: {train: 0.70, validation: 0.15, gap_events: 64, gap_fraction: 0.01}
+model: {hidden: 32, latent: 16, sequence: 16, train_stride: 8}
+training: {batch: 256, lr: 0.001, weight_decay: 1.0e-5, clip: 1.0, max_epochs: 40, patience: 7, seed: 42, threads: 16}
+candidates:
+  - {name: id0.5-equal, identity_weight: 0.5, balance: equal, write_fraction: 0.1}
+  - {name: id0.0-equal, identity_weight: 0.0, balance: equal, write_fraction: 0.1}
+  - {name: id0.5-proportional, identity_weight: 0.5, balance: proportional, write_fraction: 0.1}
+calibration: {alpha: {RESPONSE: 0.001, READ_REQUEST: 0.001}, fallback_alpha: 0.001, min_calibration: 1000}
+gates: {normal_rate_past_64: 0.99, onnx_parity: 1.0e-4}

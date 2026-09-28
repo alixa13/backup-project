@@ -74,11 +74,19 @@ def traffic(seed: int) -> list[dict]:
                         "id_resp_h": "10.0.0.9", "id_resp_p": 502, "is_orig": False, "source_h": "10.0.0.9",
                         "source_p": 502, "destination_h": "10.0.0.5", "destination_p": 50200, "tid": tid,
                         "unit": unit, "func": func, "request_response": "RESPONSE"}
+            # The quantity (and, for a write, the address) Zeek writes on each
+            # response, as on real icsnpp-modbus v1.0.0 output (CIC Modbus 2023
+            # captures): a coil read's is the bits returned -- 8 per byte --
+            # not the quantity asked for; a register read's and a write's are
+            # the request's. No draw from rng, so the traffic itself is unchanged.
             if func == "READ_COILS":
+                response["quantity"] = 8 * ((quantity + 7) // 8)
                 response["values"] = ",".join(rng.choice("TF") for _ in range(quantity))
             elif func == "READ_HOLDING_REGISTERS":
+                response["quantity"] = quantity
                 response["values"] = ",".join(str(rng.randrange(65536)) for _ in range(quantity))
             else:
+                response["address"], response["quantity"] = address, 1
                 response["values"] = request["values"]
             records += [request, response]
             ts += rng.uniform(0.1, 0.5)
@@ -93,8 +101,9 @@ def values_of(text: str | None) -> list[float]:
 
 
 def canonical(records: list[dict]) -> pd.DataFrame:
-    # Upstream's adapter shape: arrays, and a response's address, quantity and
-    # matched from its pending request (spec F2), per stream and segment.
+    # Upstream's adapter shape: arrays, and a response's address (when it has
+    # none), quantity (always) and matched from its pending request (spec F2),
+    # per stream and segment.
     rows, pending, last_ts = [], {}, {}
     for i, r in enumerate(records):
         key = (r["unit"],)
@@ -109,7 +118,8 @@ def canonical(records: list[dict]) -> pd.DataFrame:
         elif r["tid"] in stream:
             req_address, req_quantity = stream.pop(r["tid"])
             address = address if address is not None else req_address
-            quantity = quantity if quantity is not None else req_quantity
+            # F2, amended 2026-09-28: the request's quantity wins over the response's own.
+            quantity = req_quantity if req_quantity is not None else quantity
             matched = True
         rows.append({"capture_key": "oracle", "capture_event_index": i, "ts": r["ts"],
                      "src_ip": r["source_h"], "dst_ip": r["destination_h"],

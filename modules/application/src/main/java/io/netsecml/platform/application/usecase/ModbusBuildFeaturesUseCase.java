@@ -134,9 +134,11 @@ public final class ModbusBuildFeaturesUseCase implements BuildFeaturesUseCase<Mo
         }
 
         // Step 2b (docs/superpowers/specs/2026-09-26-modbus-stage1-scoring-design.md
-        // section 2.1, F2): a response Zeek wrote without an address or quantity
-        // takes its pending request's, as upstream's capture adapter did (100% of
-        // training rows carry both). After the reset above, so a new segment --
+        // section 2.1, F2): a response Zeek wrote without an address takes its
+        // pending request's, and a matched response always takes its request's
+        // quantity, as upstream's capture adapter did (100% of training rows
+        // carry both, and quantity never changes between a request and its
+        // response). After the reset above, so a new segment --
         // which forgets every pending request -- borrows nothing. Everything
         // below reads the effective event.
         event = withPendingRequestFields(event, currentState);
@@ -191,12 +193,12 @@ public final class ModbusBuildFeaturesUseCase implements BuildFeaturesUseCase<Mo
         return new FeatureBuildResult<>(vector, currentState);
     }
 
-    // The event with its pending request's address and quantity filled in
-    // where a response lacks them; the event itself in every other case.
+    // A response with its pending request's fields applied: the request's
+    // address where the response has none, and the request's quantity whenever
+    // the request has one; the event itself in every other case.
     static ModbusEvent withPendingRequestFields(ModbusEvent event, ModbusEntityState state) {
-        // Only a response lacking a field can borrow.
-        if (event.direction() != ModbusEvent.ModbusDirection.RESPONSE
-                || (event.address() != null && event.quantity() != null)) {
+        // Only a response borrows.
+        if (event.direction() != ModbusEvent.ModbusDirection.RESPONSE) {
             return event;
         }
         // Unanswered, evicted by the cap, or forgotten by a new segment: nothing to borrow.
@@ -204,9 +206,19 @@ public final class ModbusBuildFeaturesUseCase implements BuildFeaturesUseCase<Mo
         if (request == null) {
             return event;
         }
-        // The response's own value wins; the request fills only what is missing.
+        // Address: the response's own wins (Zeek writes one only where a write
+        // response echoes its request's); the request fills a missing one.
         Double address = event.address() != null ? event.address() : request.address();
-        Double quantity = event.quantity() != null ? event.quantity() : request.quantity();
+        // Quantity: the request's wins (F2, amended 2026-09-28). For a coil or
+        // discrete-input read Zeek writes the response's quantity as the bits
+        // it returned -- 8 for one byte -- where the request asked for 1, and
+        // training never saw quantity change between the two. A request with
+        // no quantity leaves the response's own.
+        Double quantity = request.quantity() != null ? request.quantity() : event.quantity();
+        // Nothing changed: the event as it is.
+        if (Objects.equals(address, event.address()) && Objects.equals(quantity, event.quantity())) {
+            return event;
+        }
         return event.withAddressAndQuantity(address, quantity);
     }
 }

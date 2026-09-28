@@ -240,4 +240,41 @@ class ModbusBuildFeaturesUseCaseTest {
             .vector().values();
         assertEquals(0f, v[9], "address_present");
     }
+
+    // F2, amended 2026-09-28: for a coil or discrete-input read Zeek writes the
+    // response's quantity as the bits it returned (8 for one byte) while the
+    // request asked for 1. Training had quantity constant (quantity_delta zero
+    // on 100% of rows), so a matched response takes its request's quantity even
+    // over its own -- the held-out benign captures otherwise score ~5% NORMAL.
+    @Test
+    void aMatchedResponseTakesItsRequestsQuantityOverItsOwn() {
+        ModbusBuildFeaturesUseCase useCase = useCase();
+        ModbusEntityState state = ModbusEntityState.empty();
+        useCase.build(v1Event(1000.0, ModbusDirection.REQUEST, "7", 14.0, 1.0), state);
+        float[] v = useCase.build(v1Event(1000.25, ModbusDirection.RESPONSE, "7", null, 8.0), state)
+            .vector().values();
+        assertEquals(1f, v[10], "quantity_value: the request's 1, not Zeek's 8");
+        assertEquals(1f, v[11], "quantity_present");
+        assertEquals(0f, v[29], "quantity_delta: no change between request and response");
+    }
+
+    // A request without a quantity has none to give: the response keeps its own.
+    @Test
+    void aMatchedResponseWhoseRequestHadNoQuantityKeepsItsOwn() {
+        ModbusBuildFeaturesUseCase useCase = useCase();
+        ModbusEntityState state = ModbusEntityState.empty();
+        useCase.build(v1Event(1000.0, ModbusDirection.REQUEST, "7", 14.0, null), state);
+        float[] v = useCase.build(v1Event(1000.25, ModbusDirection.RESPONSE, "7", null, 8.0), state)
+            .vector().values();
+        assertEquals(8f, v[10], "quantity_value");
+    }
+
+    // With no pending request there is nothing to prefer: the response keeps its own.
+    @Test
+    void anUnansweredResponseKeepsItsOwnQuantity() {
+        float[] v = useCase().build(v1Event(1000.0, ModbusDirection.RESPONSE, "7", null, 8.0),
+            ModbusEntityState.empty()).vector().values();
+        assertEquals(8f, v[10], "quantity_value");
+        assertEquals(1f, v[11], "quantity_present");
+    }
 }

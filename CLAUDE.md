@@ -293,8 +293,11 @@ plan: `docs/superpowers/plans/2026-09-28-s7comm-detector-v2-plan-a.md`; model ca
   online job's own parser, mapper and `S7commBuildFeaturesUseCase` to CSV, one
   connection state per uid, so training never computes a feature itself
 - `training/src/netsec_ml/s7comm/`: loading and per-source time splits, the
-  delivered preprocessing, LSTM autoencoder and loss ported verbatim (checked
-  against `models/S7/` whenever it is present), windows and training, conformal
+  delivered preprocessing, LSTM autoencoder and loss ported verbatim. All five
+  definitions were identical by source comparison when ported and at the final
+  review. Only the preprocessing also has a parity test
+  (`test_the_port_matches_the_delivered_code`), which runs whenever `models/S7/` is
+  present. Then come windows and training, conformal
   calibration, ONNX export, a SHA-pinned release, evaluation, candidate selection
   by leave-one-source-out, and `pipeline`, which releases only when G1 (at least
   99% NORMAL past each connection's 64th event on every normal source's held-out
@@ -352,11 +355,12 @@ on the development machine, nothing deployed):
 | Suite | Result |
 |---|---|
 | `bootstrap-online-job`, `S7commFeatureExportTest` only (filtered) | 7/7, 0 skipped (the 84-record ICSNPP sample, every value equal to the use case's) |
-| `training/tests/unit/s7comm` (development machine, `training/.venv`) | 44 passed, 0 skipped |
-| `training/tests/unit/s7comm` (server3 image `netsec-ml/s7-train:1`) | 43 passed, 1 skipped: `test_the_port_matches_the_delivered_code`, because `models/S7` is git-ignored and so absent there |
-| `training/s7comm/tests/test_acquire.sh` | 17 checks, 0 failed; shellcheck v0.10.0 clean |
-| server3 `acquire.sh` | 19 captures, 0 rejected records; qut-control gave 238,172 rows, exactly the delivered model's training size |
+| `training/tests/unit/s7comm` (development machine, `training/.venv`) | 49 passed, 0 skipped (after the final-review fixes) |
+| `training/tests/unit/s7comm` (server3 image `netsec-ml/s7-train:1`) | 48 passed, 1 skipped: `test_the_port_matches_the_delivered_code`, because `models/S7` is git-ignored and so absent there |
+| `training/s7comm/tests/test_acquire.sh` | 20 checks, 0 failed (development machine and server3); shellcheck v0.10.0 clean |
+| server3 `acquire.sh` | 19 captures, 0 rejected records; qut-control gave 238,172 rows, exactly the delivered model's training size; qut-attack, re-pinned to the spec's `master.pcap` at the final review, gave 1,590,492 (HMI 258,790, attacker 1,331,702) |
 | server3 run-1 (training stride 8) | G1 FAILED: server3-benign 54.20% NORMAL. Every training window of a request/response poller ended on the same direction (see the model card); stride amended to 1 by the owner |
+| frozen release, measured after the final review (its own files; the harness reproduces its recorded G1 rows exactly) | QUT attack-run HMI on the spec's `master.pcap`: 99.46% NORMAL past the 64th of 258,726 events. Every event of a read-only connection flips to ANOMALY once `s7_same_function_run_length` passes about 73,000 (about 20 h at 1 read/s) |
 | server3 run-2 (release `v2_multisource_r1`) | G1 passed: 4SICS HMI 100.00%, libnodave 100.00%, QUT attack-run HMI 99.96%, QUT control 99.84%, server3-benign 100.00%. G3 passed (4.5e-7). Reported, not gated: unseen `s7comm-clean` 100.00%, `cyclic-1s` (push-style cyclic data) 0.74%, engineering sessions 0.00%. Judged on the same test parts as run-1 |
 
 Verified fresh for the Modbus scoring unit at `d9ee910`, the response-quantity
@@ -825,6 +829,15 @@ container startup (two Flink mini-clusters plus two containers do not fit in
   100%. A push-style cyclic-data client (`cyclic-1s`) scores 0.74%: v2 is general
   only across the polling styles it was trained on. Its attack detection is not
   measured yet (Plan B). See `docs/models/s7comm-stage1-detector-v2.md`.
+- **v2 flags long-lived connections in full: not fit for live scoring until the owner
+  rules.** `s7_same_function_run_length` is unbounded: it counts one uninterrupted
+  same-function run since the connection began.
+  - Every event of a read-only connection is flagged once that value passes about 73,000.
+    The training maximum is 52,529. That is about 20 h of one uninterrupted connection
+    polling once a second (4SICS), or about 5 h at server3's rate. It was measured on the
+    frozen release at the final review.
+  - The remedy is a new feature schema (a windowed or capped run length) or retraining.
+    Decide it before S7 scoring goes live.
 
 The common feature tier (`contracts/features/common-feature-tier-v1.json`) and
 its `conn.log` enrichment carrier are implemented and now consumed:

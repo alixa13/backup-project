@@ -40,6 +40,53 @@ live scoring cannot disagree about what a feature is.
 | `artifacts/model/causal_online_conformal_calibration_scores.npz` | `b36a62590478e7c1eb48c1d2cedd6490ed72ec0e321a9bbc77ab9bd165a2a3ed` |
 | `artifacts/model/shadow_deployment_manifest.json` | `0e8aa866112b0ff5d501ee66c91f8bed909ea7bf63a5025ca3ce5c5e94e024f0` |
 
+## Recipe
+
+The values below are from `config/run_config.json` and the policy file in the release.
+
+**Data preparation**
+- **Split:** each normal source is split separately and chronologically, 70/15/15
+  train/validation/test by timestamp. The parts are separated by a gap of min(64, 1% of the
+  source) events. The other roles are test-only.
+- **Preprocessing:** the delivered `StableNumericTransformer` recipe, fitted on the pooled train
+  part:
+  - median imputation;
+  - centre and scale over the 5–95 percentile span, with a minimum scale of 0.1;
+  - clipping at ±20;
+  - the eight bounded ratios clipped to [0, 1];
+  - the binary features passed through;
+  - the two categories one-hot encoded (an unseen category encodes as all zeros).
+- **Windows:** 16 consecutive events of one connection, stride 1 for both training and scoring.
+  A training window lies wholly inside one part.
+
+**Training**
+- **Sampling:** the chosen candidate `id0.0-equal` weights every source equally and raises
+  windows that end in a write request to 10% of the samples.
+- **Model and loss:**
+  - the delivered LSTM autoencoder, hidden 32, latent 16;
+  - the loss is the weighted squared error of the window's last event;
+  - the operation columns carry training weight 0.0 (the chosen candidate) and scoring weight 0.
+- **Optimisation:**
+  - Adam, learning rate 1e-3, weight decay 1e-5, batch 256, gradient clip 1.0, seed 42, 16
+    threads;
+  - up to 40 epochs, stopping after 7 epochs without improvement in the validation score;
+  - the final model ran 36 epochs and kept epoch 29 (validation score 3.2e-5).
+
+**Calibration and selection**
+- **Calibration:** per score group, the last-event scores of the validation part:
+  - RESPONSE uses alpha 0.001 (32,760 scores) and READ_REQUEST alpha 0.001 (31,978).
+  - WRITE_REQUEST has 782 scores, fewer than 1,000, so it takes the smallest attainable
+    p-value, 1/783 ≈ 0.00128.
+  - OTHER_REQUEST has none, so it is judged against every group's scores pooled, with the
+    fallback alpha 0.001.
+- **Early stopping and calibration use the same validation part.** The delivered recipe
+  early-stopped on a separate nested split. Choosing the epoch on the calibration scores can
+  bias the thresholds slightly low, giving slightly more false alarms than alpha. G1 measures the
+  false-alarm rate directly on the held-out test rows, so any such bias is already in its numbers.
+- **Selection:** three candidates, ranked by their mean leave-one-source-out NORMAL rate past the
+  64th event. Each held-out source is scored on its train and validation rows, never its test
+  rows.
+
 ## How it got here: run-1 failed, run-2 is the release
 
 **Run-1 used the delivered recipe's training stride of 8.** It failed G1 on server3-benign (54.20%
@@ -88,7 +135,37 @@ bash training/s7comm/run-pipeline.sh /root/s7data/v2 <bootstrap-online-job-*-all
   4SICS HMI about 14%: each is a polling style no other training source has. This is why v2 is
   trained on all four, and why a site should retrain on its own traffic.
 
+## Measured after release (final review, 2026-09-28)
+
+These were measured on the frozen release's own files (preprocessor, ONNX graph, calibration,
+policy), with no retraining. The harness first reproduced the release's recorded G1 rows exactly
+(for example qut-control 99.8430% of 35,662), so its numbers are the release's.
+
+- **G1 holds on the QUT attack capture the spec names.** Run-2's pin was the attack run's
+  `hmi.pcap`, which holds only 12,956 records of the HMI's connection; the release's own summary
+  shows 99.96% for it. The spec names `master.pcap`, which holds the HMI's 258,790 records plus the
+  attacker's 1,331,702, and it is now pinned. The release scores its HMI rows **99.46% NORMAL past
+  the 64th event, over 258,726 events** (87.76% from the 16th to the 64th).
+- **Every event becomes ANOMALY once a connection is old enough.** `s7_same_function_run_length`
+  counts one uninterrupted run of the same function since the connection began, without bound.
+  - With that value raised artificially on the test rows, every event of a read-only poller flips
+    to ANOMALY once it passes about **73,000**. The training data's maximum is 52,529. On server3,
+    71,880 still passes and 75,001 is flagged.
+  - It grows 1.0 per second on the 4SICS HMI and 4.2 per second on server3's poller. So one
+    uninterrupted read-only connection is flagged in full after roughly **20 hours** at 4SICS's
+    rate and **5 hours** at server3's.
+  - This follows from the frozen feature, not from the training. Removing it needs either a new
+    feature schema (a windowed or capped run length) or a model that ignores the feature's
+    magnitude; that decision is the owner's.
+  - Until it is taken, v2 is not fit to score long-lived connections.
+- **Re-acquiring changes every export's SHA-256 but no feature value.** Zeek draws random
+  connection uids on each run, and the exports carry uid and event id. The harness's exact
+  reproduction of the recorded G1 rows is the evidence that the features did not change.
+
 ## Limits (spec section 10)
+
+- **Long-lived connections (measured above).** v2 flags every event of a read-only connection
+  whose same-function run passes about 73,000 events: about 20 h at 1 read per second.
 
 - v2 is general only across the polling styles its data contains (four real training sources).
   Trust at a real site comes from re-running the pipeline on that site's own traffic.

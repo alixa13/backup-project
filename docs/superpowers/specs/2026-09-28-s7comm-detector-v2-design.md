@@ -63,7 +63,7 @@ exports, runs. Every file is pinned by SHA-256 (git sources also by commit) in
 
 | Logical source | Captures | Client(s) | What it is | Events | Role |
 |---|---|---|---|---|---|
-| `qut-control` | QUT `20161219132813_control_set/master.pcap` | 10.10.10.20 | the delivered model's training connection: pipelined HMI, 2 PDU refs | 238,172 | normal: train/val/test |
+| `qut-control` | QUT `20161219132813_control_set/master.pcap` (pinned as its `hmi.pcap`: the same 238,172 S7 records seen from the HMI's side, only sub-ms timestamps differ; final review, 2026-09-28) | 10.10.10.20 | the delivered model's training connection: pipelined HMI, 2 PDU refs | 238,172 | normal: train/val/test |
 | `4sics-hmi` | 4SICS Geek Lounge 151020, 151021, 151022 (Netresec) | 10.10.10.20 | a real lab HMI polling a real S7 PLC for ~25 h, one request at a time | 178,362 | normal: train/val/test |
 | `server3-benign` | `s7`, `s701`, `s702`, `S7COMM` (another project's, read-only copies) | 192.168.10.100 | a lab poller, one request at a time, new PDU ref per request | 11,960 | normal: train/val/test |
 | `libnodave-bench` | ITI `s7comm_varservice_libnodavedemo_bench.pcap` | 192.168.1.10 | libnodave benchmark against a real S7-300: fast reads and writes | 10,006 | normal: train/val/test |

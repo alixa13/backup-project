@@ -16,6 +16,10 @@
 > 3. **The loader reads the one-hot width from the bundle** (Plan A ruling A2): v2's is 22, not 21.
 > 4. **The fixture bundle and every number pinned against the delivered model are regenerated
 >    from v2:** the oracle, the thresholds, and the live-check expectations.
+>
+> **Before resuming at all, the owner rules on v2's long-lived-connection limit.** Every event of a
+> read-only connection is flagged once `s7_same_function_run_length` passes about 73,000, which is
+> about 20 h at one read per second (the model card's "Measured after release").
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
